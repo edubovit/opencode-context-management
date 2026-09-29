@@ -1,0 +1,36 @@
+{
+  "name": "opencode-context-manager",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": { "opencode": "1.18.x", "node": ">=22" },
+  "exports": { "./server": "./src/server.ts", "./tui": "./src/tui.tsx" },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test test/*.test.ts",
+    "test:tui": "node script/test-tui.mjs",
+    "check": "npm run typecheck && npm test && npm run test:tui"
+  },
+  "peerDependencies": {
+    "@opencode-ai/plugin": "1.18.x",
+    "@opentui/core": "0.4.5",
+    "@opentui/keymap": "0.4.5",
+    "@opentui/solid": "0.4.5",
+    "solid-js": "^1.9.10"
+  },
+  "dependencies": {
+    "gpt-tokenizer": "4.0.0"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "1.18.32",
+    "@opencode-ai/sdk": "1.18.32",
+    "@opentui/core": "0.4.5",
+    "@opentui/keymap": "0.4.5",
+    "@opentui/solid": "0.4.5",
+    "@types/node": "^24.0.0",
+    "bun": "1.3.14",
+    "solid-js": "1.9.12",
+    "tsx": "^4.20.0",
+    "typescript": "~5.8.3"
+  }
+}
