@@ -20,11 +20,13 @@ function previewText(block: Block, policy: Policy) {
 
 export function rangeToolStats(status: ReturnType<typeof toolStatus>) {
   return [
-    `tools:${status.total}`,
-    ...(status.pruned ? [`pruned:${status.pruned}`] : []),
-    ...(status.eligible ? [`eligible:${status.eligible}`] : []),
+    status.allPruned ? `pruned:${status.pruned}` : `tools:${status.total}`,
+    ...(!status.allPruned && status.pruned ? [`pruned:${status.pruned}`] : []),
+    ...(status.eligible ? [`large:${status.eligible}`] : []),
     ...(status.fileBacked ? [`files:${status.fileBacked}`] : []),
     ...(status.pending ? [`pending:${status.pending}`] : []),
     ...(status.nativeCleared ? [`native-cleared:${status.nativeCleared}`] : []),
+    ...(status.noTools ? ["no tools"] : []),
+    ...(status.noReason ? ["no reason"] : []),
   ].join(" · ")
 }

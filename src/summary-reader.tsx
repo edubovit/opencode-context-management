@@ -101,7 +101,7 @@ export function SummaryReader(props: {
       [...(props.editor.draft === undefined ? [] : [{ key: "Ctrl+S", label: "apply proposed edit" }]), { key: "m", label: "model" }, { key: "t", label: "effort" }, { key: "Esc", label: "discard edits and return" }],
     ]
   return <box width="100%" height="100%" flexDirection="column" overflow="hidden" padding={1}>
-    <text height={1} wrapMode="none" truncate fg={props.api.theme.current.primary}>Summary reader · {props.editor.view.block.kind} · {mode() === "read" ? "READ-ONLY" : mode().toUpperCase()}{busy() ? " · WORKING" : ""}</text>
+    <text height={1} wrapMode="none" truncate fg={props.api.theme.current.primary}>Summary reader · SUMMARY · {mode() === "read" ? "READ-ONLY" : mode().toUpperCase()}{busy() ? " · WORKING" : ""}</text>
     <text height={1} wrapMode="none" truncate>{`≈${tokenCount(text(), props.editor.view.tokenizer.encoding)} tokens · ${props.editor.draft === undefined ? "Applied summary" : "Proposed edit (not applied)"} · ${props.choice()?.providerID}/${props.choice()?.modelID} · ${props.choice()?.variant ?? "default"}`}</text>
     <text height={2} width="100%" overflow="hidden">{notice()}</text>
     <box id="cm-summary-header-rule" width="100%" height={1} flexShrink={0} border={["top"]} borderStyle="single" borderColor={props.api.theme.current.textMuted ?? "#8daecc"} />
@@ -114,7 +114,7 @@ export function SummaryReader(props: {
         <textarea id="cm-summary-edit" flexGrow={1} minHeight={0} initialValue={buffer()} ref={(value) => { textarea = value }} onContentChange={() => { if (textarea) setBuffer(textarea.plainText) }} focused={!busy() && !props.modalOpen()} />
       </Show>
     }>
-      <scrollbox flexGrow={1} minHeight={0} focused={!props.modalOpen()}><text>{`SUMMARY READER\n\nArrows: scroll 10 lines. PageUp/PageDown: one viewport. Home/End: start/end.\n\ne: enter manual editing; Ctrl+S saves, Esc cancels.\nr: ask a model to revise the current summary. The first request contains only the applied summary and your instructions, not original conversation context.\nSubsequent requests use the same edit dialogue and proposed summary. Ctrl+S applies the proposed edit. Applying or leaving the reader deletes that dialogue.\n\nm/t: choose next editing model/effort.\nEsc in the reader discards proposed edits and returns to ranges.\nSaved summary changes are undoable.`}</text></scrollbox>
+      <scrollbox flexGrow={1} minHeight={0} focused={!props.modalOpen()}><text>{`SUMMARY READER\n\nArrows: scroll 10 lines. PageUp/PageDown: one viewport. Home/End: start/end.\n\ne: enter manual editing; Ctrl+S saves, Esc cancels.\nr: ask a model to revise the current summary. The first request contains only the applied summary and your instructions, not original conversation context.\nSubsequent requests use the same edit dialogue and proposed summary. Ctrl+S applies the proposed edit. Applying or leaving the reader deletes that dialogue.\n\nm/t: choose next editing model/effort.\nEsc in the reader discards proposed edits and returns to ranges.\nSaved changes have no Undo. Summary expansion restores the pre-summary context, including earlier pruning.`}</text></scrollbox>
     </Show>
     <Show when={!help() && mode() === "request"}>
       <text height={1} fg={props.api.theme.current.primary}>Requested summary changes:</text>

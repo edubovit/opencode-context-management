@@ -1,11 +1,11 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { KEY } from "../src/config.ts"
-import { append, blockMessages, emptyPolicy, moveCursor, operation, project, readPolicy, select, turns } from "../src/context.ts"
+import { append, blockMessages, emptyPolicy, operation, project, readPolicy, select, turns } from "../src/context.ts"
 import { snapshot } from "../src/snapshot.ts"
 import { operationLabel, rangeLabel, toolStatus, turnIndex } from "../src/status.ts"
 import { summaryPrompt } from "../src/summarize.ts"
-import { messages, pruneRule, session } from "./fixtures.ts"
+import { legacyCursor, messages, pruneRule, session } from "./fixtures.ts"
 
 test("turn status distinguishes manual pruning, eligibility and file previews without inspecting marker text", () => {
   const raw = messages()
@@ -47,7 +47,7 @@ test("pending and native-cleared results are identifiable separately", () => {
   assert.equal(status.eligible, 1)
 })
 
-test("unprune can restore a subset of a wider operation without reverting later unrelated summaries", () => {
+test("legacy unprune replays a subset of a wider operation without reverting unrelated summaries", () => {
   const raw = messages()
   const original = structuredClone(raw)
   const rule = pruneRule()
@@ -65,7 +65,7 @@ test("unprune can restore a subset of a wider operation without reverting later 
   assert.deepEqual(raw, original)
 })
 
-test("unprune removes all manual layers and allows pruning the restored output again", () => {
+test("legacy unprune replays all manual layers and subsequent saved pruning", () => {
   const raw = messages()
   const rule = pruneRule()
   let policy = append(emptyPolicy("ses_test"), operation("tool-prune", turns(raw), rule))
@@ -77,7 +77,7 @@ test("unprune removes all manual layers and allows pruning the restored output a
   assert.deepEqual(project(raw, policy), once)
 })
 
-test("unprune restores error and interrupted text while preserving inputs, metadata and file references", () => {
+test("legacy unprune replays errors and interrupted text while preserving inputs, metadata and file references", () => {
   for (const interrupted of [false, true]) {
     const raw = messages()
     const part = raw[1].parts[0]
@@ -143,7 +143,7 @@ test("expansion restores pruning signatures even when omission notes exceed the 
   assert.equal(toolStatus([project(raw, policy)[0]], rule).eligible, 0)
 })
 
-test("unprune on a mixed selection does not reach inside summaries", () => {
+test("legacy unprune on a mixed selection does not reach inside summaries", () => {
   const raw = messages()
   const rule = pruneRule()
   let policy = append(emptyPolicy("ses_test"), operation("tool-prune", turns(raw), rule))
@@ -157,29 +157,29 @@ test("unprune on a mixed selection does not reach inside summaries", () => {
   assert.equal(toolStatus([project(raw, policy)[0]], rule).pruned, 1)
 })
 
-test("restore actions support undo/redo and truncate the redo branch on new edits", () => {
+test("legacy saved cursors and unprune operations replay; new edits discard inactive legacy operations", () => {
   const raw = messages()
   const rule = pruneRule()
   let policy = append(emptyPolicy("ses_test"), operation("tool-prune", turns(raw), rule))
   const pruned = project(raw, policy)
   policy = append(policy, operation("unprune", select(pruned, 1, 1)))
   const restored = project(raw, policy)
-  const undone = moveCursor(policy, -1)
+  const undone = legacyCursor(policy, -1)
   assert.deepEqual(project(raw, undone), pruned)
-  assert.deepEqual(project(raw, moveCursor(undone, 1)), restored)
+  assert.deepEqual(project(raw, legacyCursor(undone, 1)), restored)
   const branch = append(undone, { ...operation("brief", select(pruned, 2, 2)), summary: "New branch" })
   assert.equal(branch.operations.length, 2)
   assert.equal(branch.operations[1].mode, "brief")
 })
 
-test("version-1 histories remain readable and new restore writes use version 5", () => {
+test("version-1 histories remain readable and new writes use version 6", () => {
   const raw = messages()
   const op = operation("tool-prune", select(turns(raw), 0, 0), { threshold: 8000, head: 2000, tail: 2000 })
   const legacy = { ...emptyPolicy("ses_test"), version: 1 as const, revision: 1, cursor: 1, operations: [op] }
   assert.equal(readPolicy({ ...session(), metadata: { [KEY]: legacy } }).version, 1)
   const restore = operation("unprune", select(project(raw, legacy), 0, 0))
   const next = append(legacy, restore)
-  assert.equal(next.version, 5)
+  assert.equal(next.version, 6)
   assert.deepEqual(blockMessages(project(raw, next)), raw)
   assert.throws(() => readPolicy({ ...session(), metadata: { [KEY]: { ...next, version: 1 } } }), /version 2/)
 })

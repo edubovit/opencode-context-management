@@ -104,7 +104,7 @@ export async function createHooks(ctx: Pick<PluginInput, "client" | "directory">
     },
     "experimental.session.compacting": async (input) => {
       if (readPolicy(await getSession(input.sessionID)).cursor > 0)
-        throw new Error("Native compaction cannot be mixed with context-manager operations. Use /context-manager or undo its operations first.")
+        throw new Error("Native compaction cannot be mixed with context-manager operations. Use /context-manager instead.")
     },
     "tool.execute.after": async (_input, output) => {
       const result = output as unknown as Record<string, unknown>

@@ -18,17 +18,14 @@ async function setup(t: { after(fn: () => Promise<void>): void }) {
   return { data, host, storage, controller, ids: data.messages.slice(0, 2).map((m) => m.info.id) }
 }
 
-test("controller manual prune, undo, redo preserve unrelated metadata and original transcript", async (t) => {
+test("controller pruning preserves unrelated metadata and original transcript without exposing undo", async (t) => {
   const { data, controller, ids } = await setup(t)
   const original = structuredClone(data.messages)
   await controller.prune(ids)
   assert.equal(readPolicy(data.session).cursor, 1)
   assert.equal(data.session.metadata?.unrelated, "keep")
   assert.deepEqual(data.messages, original)
-  await controller.undo(-1)
-  assert.equal(readPolicy(data.session).cursor, 0)
-  await controller.undo(1)
-  assert.equal(readPolicy(data.session).cursor, 1)
+  assert.equal("undo" in controller, false)
 })
 
 test("summary is inactive until applied; editing works; default model variant carried", async (t) => {
@@ -292,42 +289,40 @@ test("cleanup failure after approval warns without reporting that the applied op
 
 test("range restore previews are read-only until confirmed and use no model", async (t) => {
   const { data, controller } = await setup(t)
-  const all = data.messages.map((message) => message.info.id)
-  await controller.prune(all)
   const middle = data.messages.slice(2, 4).map((message) => message.info.id)
-  const preview = await controller.prepareRestore("unprune", middle)
-  assert.equal(preview.outputs, 1)
+  const draft = await controller.summarize("brief", middle)
+  await controller.apply(draft, "Middle summary")
+  const calls = data.calls.length
+  const preview = await controller.prepareRestore("expand", middle)
+  assert.equal(preview.summaries, 1)
   assert.ok(preview.afterChars > preview.operation.beforeChars)
   assert.equal(readPolicy(data.session).cursor, 1)
   await controller.applyRestore(preview)
   const loaded = await controller.load()
   assert.deepEqual(loaded.blocks[1].messages, data.messages.slice(2, 4))
   assert.equal(readPolicy(data.session).cursor, 2)
-  assert.equal(readPolicy(data.session).version, 5)
-  assert.equal(data.calls.length, 0)
-  await controller.undo(-1)
-  assert.ok(JSON.stringify((await controller.load()).blocks[1].messages).includes("middle omitted"))
+  assert.equal(readPolicy(data.session).version, 6)
+  assert.equal(data.calls.length, calls)
 })
 
 test("restore confirmation rejects a busy session or changed source/revision", async (t) => {
   const { data, controller, ids } = await setup(t)
-  await controller.prune(ids)
-  const preview = await controller.prepareRestore("unprune", ids)
+  const draft = await controller.summarize("brief", ids)
+  await controller.apply(draft, "First summary")
+  const preview = await controller.prepareRestore("expand", ids)
   data.idle = false
   await assert.rejects(controller.applyRestore(preview), /idle/)
   data.idle = true
-  await controller.undo(-1)
+  await controller.editSummary(await controller.summary(draft.operation.id), "Changed summary")
   await assert.rejects(controller.applyRestore(preview), /changed/)
-  await controller.undo(1)
-  const fresh = await controller.prepareRestore("unprune", ids)
+  const fresh = await controller.prepareRestore("expand", ids)
   data.messages[0].parts = []
   await assert.rejects(controller.applyRestore(fresh))
-  assert.equal(readPolicy(data.session).cursor, 1)
+  assert.equal(readPolicy(data.session).cursor, 2)
 })
 
 test("restore and prune no-ops do not add misleading history entries", async (t) => {
   const { data, controller, ids } = await setup(t)
-  await assert.rejects(controller.prepareRestore("unprune", ids), /No manually pruned/)
   await assert.rejects(controller.prepareRestore("expand", ids), /No expandable/)
   await controller.prune(ids)
   await assert.rejects(controller.prune(ids), /No eligible/)

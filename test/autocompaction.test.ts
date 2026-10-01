@@ -10,7 +10,7 @@ import { Controller } from "../src/controller.ts"
 import { append, historyHash, operation, readPolicy, turns } from "../src/context.ts"
 import { Storage } from "../src/storage.ts"
 import { controlClient, controlServer } from "../src/control.ts"
-import { fixtureHost } from "./fixtures.ts"
+import { fixtureHost, pruneRule } from "./fixtures.ts"
 import { contentTokens } from "../src/metrics.ts"
 
 async function setup(t: { after(fn: () => Promise<void>): void }, selected: Strategy = "MANUAL") {
@@ -155,17 +155,31 @@ test("exactly at threshold does not pause; unknown or stale owner state grants n
   await waiting
 })
 
-test("native revert and undo of a protected-turn operation cannot bypass suspension guards", async (t) => {
+test("native revert and new pruning modes cannot bypass protected-turn suspension guards", async (t) => {
   const { data, auto, maintenance } = await setup(t)
   const rule = (await maintenance.load()).pruneRule
   data.session.metadata![KEY] = append(readPolicy(data.session), operation("tool-prune", [turns(data.messages)[2]], rule))
   const waiting = auto.beforeRequest(data.messages).catch(() => {})
   await until(async () => !!(await auto.state(data.session.id)).pause)
-  await assert.rejects(maintenance.undo(-1), /protected/)
+  for (const options of [{ reasoning: true }, { reasoning: true, tools: "all" as const }, { reasoning: true, tools: "delete" as const }])
+    await assert.rejects(maintenance.prune(turns(data.messages)[2].sourceIDs, options), /protected/)
   data.session.revert = { messageID: data.messages[4].info.id }
   assert.equal((await auto.state(data.session.id)).pause?.phase, "invalid")
   auto.cancel(data.session.id)
   await waiting
+})
+
+test("checked control writes reject cursor rewinds and new unprune operations", async (t) => {
+  const { data, auto } = await setup(t)
+  data.idle = true
+  const before = append(readPolicy(data.session), operation("tool-prune", [turns(data.messages)[0]], pruneRule()))
+  data.session.metadata![KEY] = before
+  const expected = { revision: before.revision, fingerprint: historyHash(data.messages) }
+  const rewind = { ...before, revision: before.revision + 1, cursor: before.cursor - 1 }
+  await assert.rejects(auto.commit(data.session.id, { ...data.session.metadata, [KEY]: rewind }, expected), /must append/)
+  const unprune = append(before, { ...before.operations[0], id: "legacy_unprune", mode: "unprune" })
+  await assert.rejects(auto.commit(data.session.id, { ...data.session.metadata, [KEY]: unprune }, expected), /final/)
+  assert.deepEqual(readPolicy(data.session), before)
 })
 
 test("cancelling an AUTO request rejects late output, cleans its helper, and never applies it", async (t) => {

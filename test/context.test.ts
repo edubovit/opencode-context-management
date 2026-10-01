@@ -2,10 +2,10 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 import { settings, KEY } from "../src/config.ts"
 import { chars, pruneText, spills, spillPreview } from "../src/text.ts"
-import { append, blockMessages, emptyPolicy, hash, historyHash, moveCursor, nativeActive, operation, project, readPolicy, replacementTokens, select, serialize, turns } from "../src/context.ts"
+import { append, blockMessages, emptyPolicy, hash, historyHash, nativeActive, operation, project, readPolicy, replacementTokens, select, serialize, turns } from "../src/context.ts"
 import { distribution, snapshot } from "../src/snapshot.ts"
 import { generateSummary, summaryPrompt } from "../src/summarize.ts"
-import { messages, pruneRule, session } from "./fixtures.ts"
+import { legacyCursor, messages, pruneRule, session } from "./fixtures.ts"
 
 test("settings validate configurable budgets and model pairing", () => {
   assert.equal(settings().spill.maxBytes, 51200)
@@ -139,7 +139,7 @@ test("old dependent-operation fingerprints replay without forwarding legacy prun
   assert.throws(() => project(changedRaw, policy), /content changed/)
 })
 
-test("summary blocks can be merged with other summaries and turns, undo/redo restores exact view", () => {
+test("summary blocks merge with summaries/turns and legacy saved cursors replay the exact view", () => {
   const raw = messages()
   const first = { ...operation("compact", select(turns(raw), 0, 0)), summary: "Learned fact A." }
   let state = append(emptyPolicy("ses_test"), first)
@@ -152,8 +152,8 @@ test("summary blocks can be merged with other summaries and turns, undo/redo res
   assert.equal(effective.length, 1)
   assert.equal(effective[0].kind, "compact")
   assert.equal(effective[0].sourceIDs.length, 6)
-  assert.deepEqual(project(raw, moveCursor(state, -1)), before)
-  assert.deepEqual(project(raw, moveCursor(moveCursor(state, -1), 1)), effective)
+  assert.deepEqual(project(raw, legacyCursor(state, -1)), before)
+  assert.deepEqual(project(raw, legacyCursor(legacyCursor(state, -1), 1)), effective)
   assert.ok(!blockMessages(effective).some((m) => m.info.role === "assistant" && m.info.summary))
 })
 

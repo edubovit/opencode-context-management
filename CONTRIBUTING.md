@@ -16,7 +16,7 @@ This is the development guide for OpenCode Context Manager. User setup and optio
 
 ## Setup and checks
 
-Use Node.js 22+ and npm. The package targets OpenCode 1.18.x's **ordinary session engine**, with host integration tested on 1.18.32 and 1.18.33. Plugin/SDK declarations are pinned to 1.18.32, OpenTUI to 0.4.5, Solid to 1.9.12, and the local renderer-test runtime to Bun 1.3.14. Matching declarations alone do not prove runtime compatibility.
+Use Node.js 22+ and npm. The package targets OpenCode 1.18.x's **ordinary session engine**. Version 2.0.0's host integration was tested on 1.18.34; earlier releases used 1.18.32–1.18.33. Plugin/SDK declarations are pinned to 1.18.32, OpenTUI to 0.4.5, Solid to 1.9.12, and the local renderer-test runtime to Bun 1.3.14. Matching declarations alone do not prove runtime compatibility.
 
 From the repository root:
 
@@ -53,6 +53,7 @@ The default suite uses synthetic data and makes no live model calls. Package ins
 | Text and metrics | `src/text.ts`, `src/tokens.ts`, `src/metrics.ts`, `src/status.ts` | Spill/prune rules, local tokenization, distributions and operation labels. |
 | Storage/export | `src/storage.ts`, `src/snapshot.ts` | Local captures, output files, runtime discovery and effective snapshots. |
 | Selection/list | `src/ranges.ts`, `src/range-rows.ts`, `src/range-list.tsx` | Inclusive ranges, previews, measured variable-height rows. |
+| Compaction configuration | `src/compaction.ts`, `src/compaction-menu.tsx` | Mode combinations, mandatory reasoning removal for tool deletion, selection menu. |
 | Readers/help | `src/turn-view.ts`, `src/turn-reader.tsx`, `src/summary-reader.tsx`, `src/tui-help.tsx` | Read-only turn extraction, summary editing UI and reserved hotkey footers. |
 
 ### Data flow
@@ -70,25 +71,32 @@ Distinguish four things: stored transcript, effective projection, hook-stage run
 
 The ordered ledger lives in session metadata under `opencode_context_manager`. It contains source IDs/fingerprints, rules or summary text, an operation cursor, and a revision. Autocompaction strategy/status has a separate namespace and is not undone with context operations.
 
-Policy format **5** is independent of package version **1.0.0**. Readers support formats 1–5; new edits write 5. Older character-based pruning keeps its original units, wording and dependent fingerprints. New token operations pin budgets, encoding and tokenizer library version. Unsupported saved tokenizer builds fail closed instead of reinterpreting history. Do not confuse removing an obsolete config field with removing saved-state compatibility.
+Policy format **6** is independent of package version **2.0.0**. Readers support formats 1–6; new edits write 6. New modes are `prune-reason`, `tool-prune-all`, and `tool-delete`; `tool-prune` retains the existing large-output rules. Combined pruning uses one operation per range, with `pruneReason: true` on a tool operation; this flag is mandatory for deletion. Unsupported versions/combinations fail validation.
 
-Summary blocks carry projection-only provenance (`summaryID`, `previous` blocks, pruning signatures). It is reconstructed through replay, not inserted into provider metadata. Effective exports and model input exclude the hidden expansion layers.
+Undo/Redo and Unprune are removed from the UI, controller and checked control writes. Old saved cursors and `unprune` operations still replay exactly, without rewriting on inspection. New operations append to the active prefix and discard inactive legacy redo entries. Keep this compatibility code; removing recovery actions is not permission to reinterpret saved history. No transcript parts are erased from OpenCode storage. Older plugin builds cannot read new policies; require a full restart of both entrypoints and no mixed-version writers.
+
+Older character-based pruning keeps its original units, wording and dependent fingerprints. Token operations pin budgets, encoding and tokenizer library version. Unsupported saved tokenizer builds fail closed instead of reinterpreting history. Do not confuse removing an obsolete config field with removing saved-state compatibility.
+
+Summary blocks carry projection-only provenance (`summaryID`, `previous` blocks, pruning signatures and flags). It is reconstructed through replay, not inserted into provider metadata. Effective exports and model input exclude the hidden expansion layers. `reasonPruned`, `toolsDeleted` and `allToolsPruned` describe the visible USER projection and survive summary expansion; they are not inferred from marker text. Internally, `turn`/`compact`/`brief` still distinguish prompt and replay semantics; the UI displays only USER/SUMMARY.
 
 Forked sessions cannot reuse policies bound to another session's message IDs. Native revert or changed source invalidates pending work. Metadata writes have source/revision checks, but the host API is not compare-and-swap: simultaneous external writers are unsupported.
 
 ## Behavior and invariants
 
-### Selection and reversibility
+### Selection, pruning and expansion
 
 - A turn starts at a user message and includes following assistant messages/tool steps up to the next user message. It can be unfinished or user-only.
 - Selection is inclusive, with disjoint closed ranges. Adjacent ranges stay distinct; overlaps are rejected. Existing summaries are indivisible blocks.
 - Reading/selecting while busy is allowed. Changes require idle status **or live, server-verified suspended maintenance**. A persisted pause flag is never sufficient.
 - Original stored messages/parts are not rewritten. Operations change the effective request view.
-- Pruning edits only visible tool-result text. Preserve inputs, attachments, tool identity/status and provider metadata. A rule reapplied to its own output must not repeatedly shorten it.
-- Unprune restores selected visible results to their stored pre-manual-pruning text, not an entire spill file or native-pruned content. Expand restores one exact pre-compaction layer, including earlier pruning/nested summaries.
-- Restoration has a before/after preview and explicit confirmation, makes no model call, and rejects no-ops. Multi-range changes use one checked metadata write, leaving gaps intact.
+- Large-output pruning edits only result text. Preserve inputs, attachments, tool identity/status and provider metadata. A rule reapplied to its own output must not repeatedly shorten it.
+- Reasoning pruning removes complete `reasoning` parts, including their opaque metadata. Leave user parts, tool calls and all visible assistant text untouched; do not remove commentary by guessing whether it is reasoning.
+- All-output pruning replaces completed/error results with `[Tool output pruned]`, including empty or tiny results without a savings check. Remove tool-result attachments; retain inputs, call identity, status and call-provider metadata. Handle interrupted `metadata.output` and ordinary error text, without retaining the original error alongside a pruned interruption output. Pending/running calls have no saved result to prune and remain pending; native-cleared results can still use the host's cleared-content placeholder.
+- Whole-tool deletion removes complete `tool` parts, including pending calls and both call/result data. It requires reasoning removal. OpenCode's inspected converter drops assistant messages containing only step markers; do not manufacture replacement prose or mutate visible assistant text to fill them.
+- Pruning is final in effective context, with no recovery action. It does not reach inside a summary, erase stored transcript/spill files, disable future tool execution or remove the current tool catalog. Expand restores one exact pre-summary layer, preserving earlier pruning and nested summaries.
+- Expansion has a before/after preview and explicit confirmation, makes no model call, and rejects no-ops. Multi-range changes use one checked metadata write, leaving gaps intact. Combined pruning is one operation per affected range; it never sends a partial pruning combination.
 - Summary edits append `revise` operations targeting stable visible summary IDs; they do not rewrite old operations or create a new expansion layer.
-- Undo/redo moves through individual operations, not whole batches. A new operation after undo discards the redo branch. Undo must remain reachable if projection fails before the list loads.
+- No Undo/Redo, including saved summary edits. A bad source fingerprint fails visibly rather than silently resetting policy or resurrecting pruned content. Historical cursors remain read-only replay data, not a recovery API.
 - User-only summary replacements need a distinct deterministic assistant message ID and valid host fields. Never reuse a user ID for an assistant or invent a completed outcome.
 
 ### Compaction batches
@@ -125,7 +133,7 @@ Display, pruning and compact-size review use the **main model's** tokenizer. Hel
 
 No plugin output reservation or output cap is applied. Preserve host/provider parameters, including deliberately omitted `maxOutputTokens`. Input preflight does not guarantee response room in a shared input/output window.
 
-Token-budgeted head/tail extraction keeps exact original substrings at valid Unicode boundaries, recounts retained pieces, includes notice/link overhead in net savings, and skips non-saving edits. Fresh spill limits use lines/UTF-8 bytes, separately from historical token pruning. Existing native spills may already have been created before our tool hook; validate their real paths before reading. Preserve native and MCP result shapes and non-text attachments.
+Large-mode token-budgeted head/tail extraction keeps exact original substrings at valid Unicode boundaries, recounts retained pieces, includes notice/link overhead in net savings, and skips non-saving edits. All-output removal intentionally ignores these limits, even if a marker is larger than an empty result. Fresh spill limits use lines/UTF-8 bytes, separately from historical token pruning. Existing native spills may already have been created before our tool hook; validate their real paths before reading. Preserve native and MCP result shapes and non-text attachments during ingestion/large-mode pruning.
 
 Metrics count known content, not inspector IDs/labels. Loaded skill bodies must not be double-counted as ordinary tool output; runtime overhead is session-wide, not allocated to selected turns. Provider usage is historical evidence, not a recount after edits. Media, hidden reasoning, provider framing and unavailable inventories remain unknown—not zero.
 
@@ -135,7 +143,7 @@ Check before **every main-session provider request**, including after new input 
 
 The gate waits in the messages-transform hook, not in `tool.execute.after`, which runs before ordinary tool-result persistence. The host may already have allocated an empty assistant record. Releasing the gate resumes the existing loop with updated projection and **no added user/continue message**. Do not fake resume through public `session.prompt()`, which creates a user message even with `noReply`.
 
-The entire active last USER turn is protected during suspension. Manual changes, restores and undo/redo must not alter it. Protect the whole turn because resumption appends within it. Recheck source identity, native revert, policy and live ownership before maintenance and release.
+The entire active last USER turn is protected during suspension. No manual pruning mode, summarization or expansion may alter it. Protect the whole turn because resumption appends within it. Recheck source identity, native revert, policy and live ownership before maintenance and release.
 
 Strategies are per-session preferences:
 
@@ -143,7 +151,7 @@ Strategies are per-session preferences:
 - `AUTO_PER_TURN`: try each earlier ordinary USER oldest first, once per pause. Discard non-saving candidates; recount successful reductions. If needed, try the whole earlier prefix once, including summaries.
 - `AUTO_SESSION`: try that earlier prefix once.
 
-AUTO candidates use compact's normal size review but apply only net-saving replacements. Successful reductions remain undoable if later work fails. Resume only when the recount fits; otherwise remain suspended for recovery. If the protected turn alone exceeds the threshold, earlier reductions cannot solve it. No endless retry loop.
+AUTO candidates use compact's normal size review but apply only net-saving replacements. Successful summaries remain expandable if later work fails. Resume only when the recount fits; otherwise remain suspended for maintenance. If the protected turn alone exceeds the threshold, earlier reductions cannot solve it. No endless retry loop.
 
 Saving a strategy does not execute it. Running an AUTO strategy while already paused requires an explicit action. Helper sessions are excluded from this gate and use their own input checks.
 
@@ -187,14 +195,19 @@ Keep UI actions deterministic and out of ordinary prompt text. Register separate
 | View | Keys |
 | --- | --- |
 | Range list | Arrows/j/k; Shift+Up/Down by five; PageUp/Down by viewport; Home/End. Space opens/closes a range or removes the closed range under the cursor. Esc cancels an open range first. |
-| Main actions | `p` prune; `c/b` compact/brief; `Ctrl+U/E` unprune/expand preview; `Ctrl+S` confirms restoration; `u/r` undo/redo. |
+| Main actions | `c` opens compaction configuration for closed ranges; `Ctrl+E` previews summary expansion; `Ctrl+S` confirms expansion. No p/b shortcuts, Undo/Redo or Unprune. |
+| Compaction configuration | Arrows/j/k, Home/End navigate six modes; Space toggles; Enter runs; Esc cancels; `m/t` chooses model/effort. |
 | Inspection | Enter opens hovered turn/summary; `v` cycles detail views; `n` switches token/character diagnostics; Tab switches pane focus; `f` reloads and clears selection; `o` exports; `?` shows help. |
-| Model/automation | `m/t` chooses model/effort; `a` saves strategy; `g` retries a pending failed batch, otherwise runs AUTO while paused. |
+| Automation/batch | `a` saves strategy; `g` retries a pending failed batch, otherwise runs AUTO while paused. Failed batches keep `m/t` model/effort selection. |
 | Readers | Arrows scroll 10 display lines; PageUp/Down one viewport; Home/End; Esc returns with selection/cursor preserved. |
 | Summary editing | `e` manual edit; `r` model request; Ctrl+S saves/sends/applies according to active mode; Esc cancels the current editor or leaves the reader. `m/t` picks model/effort; Ctrl+O/T works inside the request editor. |
 | Paused exit | `s`/Esc stays; `r` requests checked resume; `a` aborts and exits. |
 
 Rows are content-sized up to `ui.maxLinesPerTurn` (default 4, minimum 3), with no padding. USER rows show header, sparse tool stats and user preview; summary rows omit tool stats and show the applied summary, including revisions. Skip blank lines only in menu previews. Keep stable original turn spans and `R1`, `R2`, `Rn*` labels. Use measured geometry for cursor reveal and paging after resize or reader return.
+
+Compaction configuration defaults to detailed summarization and retains choices for that inspector only. Reasoning may combine with one tool mode. Selecting a summary clears all pruning; selecting pruning clears a summary; tool modes replace each other. Deleting tools selects and locks reasoning removal until deletion is deselected. Enter with no mode selected fails without a write. Opening/cancelling configuration is read-only. Keep whole-context and selected-range totals visible, and prevent model-picker keys from also toggling or running compaction behind it.
+
+USER stats always show `tools` including zero, except all-output-pruned rows replace it with `pruned`. `large` replaces the former `eligible` label and still means the current large-output rule would change the result. Add `no tools` after deletion and `no reason` last after reasoning removal. Keep file previews, pending and native-cleared counts distinct. Aggregate removal flags are shown only when all visible USER blocks have that flag; do not claim a mixed selection has no tools/reasoning.
 
 Keep whole-context and combined-selection totals pinned while category details scroll. Fixed footer space prevents hotkey/content overlap. Key names use theme primary; labels/separators/notes use muted color. Fullscreen readers have fixed header/footer rules outside their scrollbox. Ordinary readers exclude reasoning/tool activity/intermediate commentary and label missing/unfinished final answers honestly.
 
@@ -218,7 +231,8 @@ Add a regression that fails before a bug fix when practical. Test the exact fail
 Coverage should include:
 
 - Threshold equality, Unicode/UTF-8, long lines, literal special-token-like text, net savings and unchanged inputs/metadata/attachments.
-- Saved-policy replay, legacy fingerprints, nested expansion/revisions, partial restoration, undo/redo branching, forks and stale sources.
+- Saved-policy replay, legacy fingerprints/cursors/unprune entries, nested expansion/revisions, retained pruning flags, forks and stale sources. New controller/control writes must reject Unprune and cursor rewind.
+- All pruning combinations, small/empty/error/interrupted results, result attachments, opaque reasoning parts, whole-call removal and unchanged visible text. No-op pruning must not add entries; summary expansion must never restore content pruned before that summary.
 - Both soft-size review directions and exact boundaries, at most one retry, truncated/empty failure, full helper history and unchanged provider caps.
 - True parallel workers with identical frozen background, failed sibling retry, one metadata write, cancellation during creation/preflight and cleanup after successful persistence.
 - Fresh summary-only editing and continued proposals without original-history leakage.
@@ -237,7 +251,7 @@ The runner expects a directly spawnable executable (on Windows, the actual `.exe
 
 The fixture redirects home and XDG/config/storage, uses synthetic sessions and a loopback fake provider, and disables default plugins/external skills. It can still bootstrap host/provider dependencies from the package registry. Its provider uses an ephemeral port; the host uses 41973. It writes a host log and `result.json` under the chosen root and stops its owned child in cleanup.
 
-It covers loading/settings, spill/prune/unprune, valid requests immediately after projection changes, compaction/revision/expansion, a barrier proving parallel arrival before either response completes, saved-summary editing, user-only turns, exports, and MANUAL/AUTO same-loop pause/resume/abort. Inspect the result, process exit and released port; a PASS line alone is insufficient if cleanup failed.
+It covers loading/settings, spill/large-result pruning, valid immediate same-model requests after reasoning removal, all-output removal and whole-call deletion, compaction/revision/expansion, a barrier proving parallel arrival before either response completes, saved-summary editing, user-only turns, exports, and MANUAL/AUTO same-loop pause/resume/abort. Inspect the result, process exit and released port; a PASS line alone is insufficient if cleanup failed. The generic fake provider does not validate every provider's signed-reasoning dependencies.
 
 When launching from a Windows automation tool that cannot wait safely, use a detached supervisor with closed inherited handles and ordinary stdout/stderr files. Record owned PIDs, poll completion, and verify executable/command line before terminating anything. Never use a broad process-name kill or terminate the user's TUI. A foreground terminal invocation is simpler when available.
 
@@ -280,7 +294,7 @@ The ignore rules are a safety net, not a secret scanner: already-tracked files s
 | Message schema error after pruning | Reproduce the immediate next main request; inspect provider-metadata shapes and call/result pairing. Do not use metadata for internal hashes. |
 | Unsupported output parameter | Inspect upstream provider hooks. Confirm the plugin leaves both numeric and omitted caps unchanged. |
 | Summary recaps unrelated work | Verify selected/background boundaries and helper system prompt; check for injected host step-limit instructions. Synthetic transport success does not establish semantic fidelity. |
-| Stale source/revision | Reload and select again; undo affected operations or restore source when replay itself fails. Do not bypass fingerprints. Finish native revert/undo first. |
+| Stale source/revision | Reload and select again; restore the original host source when replay itself fails. Do not bypass fingerprints or reset policy. Finish native revert/undo first. |
 | Pause cannot resume | Check threshold and protected active turn. Only the live owning server can release the loop. Abort if the active turn alone is too large or ownership/source is invalid. |
 | Headless session appears stuck | MANUAL near-limit mode waits for a controlling client or abort; it does not create its own continuation prompt. |
 | Correct tests, broken terminal focus/layout | Check native dialog guards, host mode, measured layout after resize, textarea refs and encoded keyboard events. |

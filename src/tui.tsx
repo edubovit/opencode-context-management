@@ -10,6 +10,8 @@ import { SummaryEditor } from "./summary-editor.ts"
 import { SummaryReader } from "./summary-reader.tsx"
 import { TurnReader } from "./turn-reader.tsx"
 import { RangeList } from "./range-list.tsx"
+import { CompactionMenu } from "./compaction-menu.tsx"
+import { COMPACTION_MODES, selectedModes, toggleMode, type Compaction } from "./compaction.ts"
 import { rangePreview, rangeToolStats } from "./range-rows.ts"
 import { Hotkeys, type HotkeyLine } from "./tui-help.tsx"
 import { anchorRanges, pressSpace, rangeIDs, rangeTag, selectedBlocks, visibleRanges, type Selection } from "./ranges.ts"
@@ -49,6 +51,9 @@ export function Inspector(props: { api: TuiPluginApi; sessionID: string; control
   const [strategyPicker, setStrategyPicker] = createSignal(false)
   const [strategyIndex, setStrategyIndex] = createSignal(0)
   const [exitDialog, setExitDialog] = createSignal(false)
+  const [configuring, setConfiguring] = createSignal(false)
+  const [compaction, setCompaction] = createSignal<Compaction>({ kind: "summary", mode: "compact" })
+  const [compactionIndex, setCompactionIndex] = createSignal(4)
   const automatic = () => auto().pause?.phase === "auto"
   const canResume = () => auto().pause?.phase === "manual" && auto().pause!.tokens <= auto().pause!.threshold
   const basis = () => loaded()?.tokenizer ?? FALLBACK_BASIS
@@ -138,6 +143,21 @@ export function Inspector(props: { api: TuiPluginApi; sessionID: string; control
     await summaries.generate(touch)
     await finishBatch()
   }
+  const openCompaction = () => {
+    try { selectedIDs() } catch (error) { setNotice(error instanceof Error ? error.message : String(error)); return }
+    setCompactionIndex(selectedModes(compaction())[0] ?? 0)
+    setConfiguring(true)
+  }
+  const runCompaction = async () => {
+    const value = compaction()
+    if (!selectedModes(value).length) throw new Error("Select at least one compaction mode")
+    setConfiguring(false)
+    if (value.kind === "summary") { await beginSummary(value.mode); return }
+    const ids = selectedIDs()
+    await props.controller.pruneRanges(ids, value)
+    await refresh(ids)
+    setNotice("Pruning applied. Final in effective context; stored history is unchanged.")
+  }
   const openReader = async () => {
     const block = blocks()[cursor()]
     if (!block) throw new Error("Hover a turn or summary and press Enter")
@@ -164,12 +184,6 @@ export function Inspector(props: { api: TuiPluginApi; sessionID: string; control
     setRestoring(undefined)
     await refresh(preview.ranges)
     setNotice(`${preview.mode} applied to selected ranges. Unselected gaps are unchanged.`)
-  }
-  const changeHistory = async (delta: -1 | 1) => {
-    const policy = loaded()?.policy
-    const op = policy?.operations[policy.cursor + (delta < 0 ? -1 : 0)]
-    await props.controller.undo(delta)
-    await refresh(op ? [op.sourceIDs] : undefined)
   }
   const pickerOptions = createMemo(() => {
     const current = choice()
@@ -235,6 +249,21 @@ export function Inspector(props: { api: TuiPluginApi; sessionID: string; control
       return
     }
     if (reader()) return
+    if (configuring()) {
+      key.preventDefault()
+      if (busy()) return
+      if (key.name === "escape") setConfiguring(false)
+      if (key.ctrl || key.meta) return
+      if (key.name === "up" || key.name === "k") setCompactionIndex(Math.max(0, compactionIndex() - 1))
+      if (key.name === "down" || key.name === "j") setCompactionIndex(Math.min(COMPACTION_MODES.length - 1, compactionIndex() + 1))
+      if (key.name === "home") setCompactionIndex(0)
+      if (key.name === "end") setCompactionIndex(COMPACTION_MODES.length - 1)
+      if (key.name === "space") setCompaction(toggleMode(compaction(), compactionIndex()))
+      if (key.name === "return") void run(runCompaction)
+      if (key.name === "m") openPicker("model")
+      if (key.name === "t") openPicker("effort")
+      return
+    }
     if (key.name === "escape") {
       key.preventDefault()
       if (busy()) { void summaries.cancel().catch((e) => setNotice(String(e))); return }
@@ -255,7 +284,6 @@ export function Inspector(props: { api: TuiPluginApi; sessionID: string; control
       return
     }
     if (busy() || automatic()) return
-    if (key.ctrl && key.name === "u") { key.preventDefault(); void run(() => previewRestore("unprune")); return }
     if (key.ctrl && key.name === "e") { key.preventDefault(); void run(() => previewRestore("expand")); return }
     if (key.ctrl || key.meta) return
     if (key.name === "tab") { key.preventDefault(); setPane(pane() === "list" ? "content" : "list"); return }
@@ -265,13 +293,7 @@ export function Inspector(props: { api: TuiPluginApi; sessionID: string; control
       g: () => run(() => autoCommand("run")),
       "?": () => { setHelp(true) },
       space: () => { if (pane() !== "list") return; try { setSelection(pressSpace(selection(), cursor(), blocks())) } catch (error) { setNotice(String(error)) } },
-      p: () => run(async () => { const ids = selectedIDs(); await props.controller.pruneRanges(ids); await refresh(ids) }),
-      c: () => run(() => beginSummary("compact")),
-      b: () => run(() => beginSummary("brief")),
-      m: () => openPicker("model"),
-      t: () => openPicker("effort"),
-      u: () => run(() => changeHistory(-1)),
-      r: () => run(() => changeHistory(1)),
+      c: openCompaction,
       f: () => run(refresh),
       o: () => run(async () => { setNotice(`Snapshot saved: ${await props.controller.dump(api.app.version)}`) }),
       v: () => { setView(view() === "distribution" ? "content" : view() === "content" ? "runtime" : "distribution") },
@@ -285,7 +307,7 @@ export function Inspector(props: { api: TuiPluginApi; sessionID: string; control
     const tag = rangeTag(selection(), cursor(), index)
     const status = toolStatus([block], rule(), basis())
     return {
-      title: `${selected ? "[+]" : "[ ]"} ${tag ? `${tag} · ` : ""}${rangeLabel(block.sourceIDs, sourceTurns())} · ${block.kind === "turn" ? "USER" : block.kind.toUpperCase()} · ${size(distribution([block], undefined, basis(), unit()).total)}${block.closed ? "" : " · unfinished"}${auto().pause && block.sourceIDs.includes(auto().pause!.userID) ? " · PROTECTED" : ""}`,
+      title: `${selected ? "[+]" : "[ ]"} ${tag ? `${tag} · ` : ""}${rangeLabel(block.sourceIDs, sourceTurns())} · ${block.kind === "turn" ? "USER" : "SUMMARY"} · ${size(distribution([block], undefined, basis(), unit()).total)}${block.closed ? "" : " · unfinished"}${auto().pause && block.sourceIDs.includes(auto().pause!.userID) ? " · PROTECTED" : ""}`,
       stats: block.kind === "turn" ? rangeToolStats(status) : undefined,
       preview: rangePreview(block, loaded()!.policy),
     }
@@ -317,14 +339,9 @@ export function Inspector(props: { api: TuiPluginApi; sessionID: string; control
       ...selection().ranges.map((range, index) => `R${index + 1}: ${rangeLabel(blocks().slice(range.start, range.end + 1).flatMap((block) => block.sourceIDs), sourceTurns())}`),
       "Runtime inventory may be stale/incomplete; missing is not zero. Session overhead is not assigned to selected ranges.",
       usage ? `Last reported usage: ${usage.total.toLocaleString()} tokens · ${usage.providerID}/${usage.modelID}` : "Last reported usage: unavailable",
-      "Historical usage is not a recount. Pruned = manual; eligible = current rule; file previews are separate.",
+      "Historical usage is not a recount. Large = eligible under current rules; file previews are separate. Pruning is final.",
     ].join("\n")
   })
-  const historyHints = () => [
-    { key: "u", label: `Undo ${loaded() ? operationLabel(loaded()!.policy.operations[loaded()!.policy.cursor - 1], sourceTurns()) : "latest action"}` },
-    { key: "r", label: `Redo ${loaded() ? operationLabel(loaded()!.policy.operations[loaded()!.policy.cursor], sourceTurns()) : "latest action"}` },
-  ]
-  const undoLabel = () => historyHints().map((hint) => `${hint.key} ${hint.label}`).join(" · ")
   const hints = (): HotkeyLine[] => exitDialog() ? [[{ key: "s/Esc", label: "stay" }, { key: "r", label: "resume if below threshold" }, { key: "a", label: "abort run and exit" }]]
     : strategyPicker() ? [[{ key: "Up/Down", label: "strategy" }, { key: "Enter", label: "save only" }, { key: "Esc", label: "cancel" }]]
     : automatic() ? [["Automatic compaction in progress"], [{ key: "Esc", label: "exit choices / abort run" }]]
@@ -333,10 +350,10 @@ export function Inspector(props: { api: TuiPluginApi; sessionID: string; control
     : busy() ? [[{ key: "Esc", label: "cancel running model requests — writes already in progress may finish" }]]
     : restoring() ? [[{ key: "Ctrl+S", label: "confirm restore" }, { key: "Esc", label: "cancel" }], ["Selected ranges only; no model call. Restoring increases context size."]]
     : runningBatch() ? [[{ key: "g", label: "retry failed ranges" }, { key: "m", label: "model" }, { key: "t", label: "effort" }, { key: "Esc", label: "discard batch" }], ["Successful results stay pending until the entire batch can autoapply."]]
+    : configuring() ? [[{ key: "Up/Down", label: "mode" }, { key: "Space", label: "toggle" }, { key: "Enter", label: "run" }], [{ key: "m/t", label: "model/effort" }, { key: "Esc", label: "cancel" }]]
     : [
-      [{ key: "?", label: "help" }, { key: "Space", label: "range" }, { key: "c", label: "compact" }, { key: "b", label: "brief" }, { key: "Enter", label: "read" }],
-      historyHints(),
-      [{ key: "p", label: "prune" }, { key: "Ctrl+U", label: "unprune" }, { key: "Ctrl+E", label: "expand" }, { key: "m/t", label: "model/effort" }, { key: "Tab", label: "pane" }, { key: "Esc", label: "back" }],
+      [{ key: "?", label: "help" }, { key: "Space", label: "range" }, { key: "c", label: "configure compaction" }, { key: "Enter", label: "read" }],
+      [{ key: "Ctrl+E", label: "expand summary" }, { key: "Tab", label: "pane" }, { key: "Esc", label: "back" }],
     ]
   const batchStatus = () => { epoch(); return summaries.entries.map((entry, index) => `R${index + 1} ${rangeLabel(entry.ids, sourceTurns())}: ${entry.status}${entry.error ? `\n${entry.error}` : ""}`).join("\n\n") }
   return <box width="100%" height="100%" flexDirection="column" overflow="hidden">
@@ -353,27 +370,29 @@ export function Inspector(props: { api: TuiPluginApi; sessionID: string; control
             <box width="45%" flexDirection="column" minHeight={0} overflow="hidden">
               <Show when={restoring()} keyed fallback={
                 <Show when={runningBatch()} fallback={
-                  <RangeList api={api} rows={rows()} maxLines={props.controller.config.ui.maxLinesPerTurn} selectedIndex={cursor()} onChange={setCursor} focused={!busy() && !automatic() && !exitDialog() && !strategyPicker() && !picker() && pane() === "list"} />
+                  <Show when={configuring()} fallback={<RangeList api={api} rows={rows()} maxLines={props.controller.config.ui.maxLinesPerTurn} selectedIndex={cursor()} onChange={setCursor} focused={!busy() && !automatic() && !exitDialog() && !strategyPicker() && !picker() && pane() === "list"} />}>
+                    <CompactionMenu api={api} value={compaction()} index={compactionIndex()} toggle={(index) => { if (!picker() && !api.ui?.dialog?.open) setCompaction(toggleMode(compaction(), index)) }} />
+                  </Show>
                 }>
                   <text height={1} fg={api.theme.current.primary}>Batch progress — automatic acceptance</text>
                   <scrollbox flexGrow={1} minHeight={0} focused={!busy() && !picker()}><text>{batchStatus()}</text></scrollbox>
                 </Show>
               }>{(preview) => <>
                 <text height={2} fg={api.theme.current.primary}>Restore preview — {preview.operations.map((op) => operationLabel(op, sourceTurns())).join("; ")}</text>
-                <text height={2}>{preview.mode === "unprune" ? `Restore ${preview.outputs} visible tool outputs.` : `Expand ${preview.summaries} summaries by one layer.`}{` Context delta: ${signed(preview.afterTokens - preview.beforeTokens)} tokens`}</text>
+                <text height={2}>{`Expand ${preview.summaries} summaries by one layer.`}{` Context delta: ${signed(preview.afterTokens - preview.beforeTokens)} tokens`}</text>
                 <scrollbox flexGrow={1} minHeight={0} focused={!busy()}><text selectable>{limited(`BEFORE\n\n${serialize(blockMessages(preview.before))}\n\nAFTER\n\n${serialize(blockMessages(preview.after))}`)}</text></scrollbox>
               </>}</Show>
             </box>
             <box width="55%" flexDirection="column" minHeight={0} overflow="hidden">
               <text height={2} flexShrink={0} wrapMode="none" truncate>{globalStats().split("\n").slice(0, 2).join("\n")}</text>
               <Show when={ranges().length}><text height={2} flexShrink={0} wrapMode="none" truncate>{selectionStats().split("\n").slice(0, 2).join("\n")}</text></Show>
-              <scrollbox flexGrow={1} minHeight={0} focused={!runningBatch() && !busy() && !picker() && !restoring() && pane() === "content"}>
+              <scrollbox flexGrow={1} minHeight={0} focused={!configuring() && !runningBatch() && !busy() && !picker() && !restoring() && pane() === "content"}>
                 <text selectable>{globalStats().split("\n").slice(2).join("\n")}{ranges().length ? `\n\nSELECTED RANGE DETAILS\n${selectionStats().split("\n").slice(2).join("\n")}` : ""}{`\n\n${panel()}`}</text>
               </scrollbox>
             </box>
           </box>
         }>
-          <scrollbox flexGrow={1} minHeight={0} focused={!picker()}><text>{`RANGE MENU HOTKEYS\n\nSpace: start/finish a range; inside a closed range, remove it.\nArrows: move cursor. Esc: cancel open range, then return.\nc / b: compact / brief all selected ranges. Results autoapply together.\nEnter: read the hovered turn or summary fullscreen.\nOrdinary turns show the user message and final assistant response, without reasoning or tool activity.\np: prune selected tool outputs. Ctrl+U: unprune. Ctrl+E: expand summaries.\nu / r: undo / redo one ledger operation.\nm / t: choose next model / effort.\na: save per-session autocompaction strategy (does not execute).\ng: explicitly run selected AUTO strategy while suspended.\nPaused exit: s/Esc stays; r resumes only below threshold; a aborts.\nThe active USER turn is entirely protected while suspended.\nf: refresh. v: cycle details/content/runtime. n: tokens/characters.\nTab: switch list/details focus. o: export effective snapshot.\n\nIncomplete batch: g retries failed ranges; Esc discards.\nReaders: arrows move 10 lines; PageUp/PageDown move one screen.\nSummary reader only: e manual editing; r model edit; Ctrl+S applies an edit.\n? opens this help.\n\n${undoLabel()}`}</text></scrollbox>
+          <scrollbox flexGrow={1} minHeight={0} focused={!picker()}><text>{`RANGE MENU HOTKEYS\n\nSpace: start/finish a range; inside a closed range, remove it.\nArrows: move cursor. Esc: cancel open range, then return.\nc: configure compaction for selected ranges.\nConfiguration: arrows choose mode; Space toggles; Enter runs; m/t picks model/effort.\nReasoning can combine with one tool mode. Tool deletion requires reasoning removal. Summaries cannot combine with pruning.\nPruning is final in effective context. No Undo, Redo or Unprune. Stored history is unchanged.\nSummaries run in parallel and autoapply together.\nEnter: read the hovered USER or SUMMARY fullscreen.\nOrdinary turns show user text and final assistant response without reasoning or tools.\nCtrl+E: preview one-layer summary expansion, retaining earlier pruning.\na: save per-session autocompaction strategy (does not execute).\ng: explicitly run selected AUTO strategy while suspended.\nPaused exit: s/Esc stays; r resumes only below threshold; a aborts.\nThe active USER turn is entirely protected while suspended.\nf: refresh. v: cycle details/content/runtime. n: tokens/characters.\nTab: switch list/details focus. o: export effective snapshot.\n\nIncomplete batch: g retries failed ranges; m/t changes model/effort; Esc discards.\nReaders: arrows move 10 lines; PageUp/PageDown move one screen.\nSummary reader: e manual editing; r model edit; Ctrl+S applies an edit; m/t chooses model/effort.\n? opens this help.`}</text></scrollbox>
         </Show>
         <Hotkeys api={api} lines={hints()} />
       </box>

@@ -3,7 +3,11 @@ import { chars, pruneText, type PruneRule } from "./text.ts"
 import { FALLBACK_BASIS, tokenCount, type TokenBasis } from "./tokens.ts"
 
 export function toolStatus(blocks: Block[], rule: PruneRule, basis: TokenBasis = FALLBACK_BASIS) {
-  const result = { total: 0, pruned: 0, eligible: 0, pending: 0, fileBacked: 0, nativeCleared: 0, summaries: 0, pruneDelta: 0, pruneCharDelta: 0 }
+  const users = blocks.filter((block) => block.kind === "turn")
+  const result = { total: 0, pruned: 0, eligible: 0, pending: 0, fileBacked: 0, nativeCleared: 0, summaries: 0, pruneDelta: 0, pruneCharDelta: 0,
+    noReason: users.length > 0 && users.every((block) => block.reasonPruned),
+    noTools: users.length > 0 && users.every((block) => block.toolsDeleted),
+    allPruned: users.length > 0 && users.every((block) => block.allToolsPruned) }
   const signature = hash(rule)
   for (const block of blocks) {
     if (block.summaryID) result.summaries++
@@ -17,7 +21,7 @@ export function toolStatus(blocks: Block[], rule: PruneRule, basis: TokenBasis =
       if (outputPath) result.fileBacked++
       if (part.state.status === "completed" && part.state.time.compacted) result.nativeCleared++
       const before = toolText(part)
-      const after = prior === signature ? before : pruneText(before, rule, outputPath)
+      const after = prior === signature || prior === "all" ? before : pruneText(before, rule, outputPath)
       if (before !== after) {
         result.eligible++
         result.pruneDelta += tokenCount(after, basis.encoding) - tokenCount(before, basis.encoding)

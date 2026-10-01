@@ -124,7 +124,7 @@ test("helper input estimate includes the entire conversation, system and input-o
   assert.ok(inputEstimate(prompt, basis, history) > inputEstimate(prompt, basis))
 })
 
-test("old character policies replay unchanged alongside token rules and remain undoable", () => {
+test("old character policies and saved cursors replay unchanged alongside token rules", () => {
   const raw = messages()
   const legacyRule = { threshold: 8000, head: 2000, tail: 2000 }
   const legacy = operation("tool-prune", select(turns(raw), 0, 0), legacyRule)
@@ -136,7 +136,7 @@ test("old character policies replay unchanged alongside token rules and remain u
   assert.ok(serialize(oldView[0].messages).includes("characters omitted"))
   const tokenOp = operation("tool-prune", select(oldView, 1, 1), pruneRule())
   const next = append(old, tokenOp)
-  assert.equal(next.version, 5)
+  assert.equal(next.version, 6)
   const view = project(raw, next)
   assert.deepEqual(view[0], oldView[0])
   assert.ok(serialize(view[1].messages).includes("tokens (o200k_base)"))

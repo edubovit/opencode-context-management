@@ -1,5 +1,5 @@
 import type { Model, Session, ToolPart } from "@opencode-ai/sdk/v2"
-import type { Envelope } from "../src/context.ts"
+import type { Envelope, Policy } from "../src/context.ts"
 import type { Host, ModelChoice } from "../src/controller.ts"
 import { settings } from "../src/config.ts"
 import { bindPruneRule } from "../src/text.ts"
@@ -13,6 +13,10 @@ export const suppliedOptions = {
 
 export function pruneRule() {
   return bindPruneRule(settings().prune, FALLBACK_BASIS)
+}
+
+export function legacyCursor(policy: Policy, delta: -1 | 1): Policy {
+  return { ...policy, cursor: policy.cursor + delta, revision: policy.revision + 1 }
 }
 
 export function session(id = "ses_test"): Session {

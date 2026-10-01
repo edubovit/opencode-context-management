@@ -44,7 +44,7 @@ const provider = createServer(async (req, res) => {
   const revise = summarize && JSON.stringify(lastUser).includes("Requested changes:")
   const tool = !summarize && last?.role === "user" && JSON.stringify(last).includes("EXERCISE_TOOL")
   const text = editing ? (serialized.includes("FRESH_EDIT_ONE") ? "FRESH_EDIT_TWO: corrected summary" : "FRESH_EDIT_ONE: clarified summary") : revise ? "Revised retained facts: ROOT_FACT; MANUAL_KEEP; next step is to validate the fixture." : summarize ? "Detailed retained facts: ROOT_FACT; fixture tool produced HEAD_FIXTURE and TAIL_FIXTURE. Work remains understood." : "Fixture assistant response; ROOT_FACT retained."
-  const delta = tool ? { tool_calls: [{ index: 0, id: "call_fixture", type: "function", function: { name: "fixture_large", arguments: "{}" } }] } : { content: text }
+  const delta = tool ? { reasoning_content: "REASONING_FIXTURE", tool_calls: [{ index: 0, id: "call_fixture", type: "function", function: { name: "fixture_large", arguments: "{}" } }] } : { content: text }
   res.writeHead(200, { "content-type": "text/event-stream" })
   for (const choice of [{ index: 0, delta, finish_reason: null }, { index: 0, delta: {}, finish_reason: tool ? "tool_calls" : "stop" }])
     res.write(`data: ${JSON.stringify({ id: "chatcmpl_fixture", object: "chat.completion.chunk", created: 1, model: input.model, choices: [choice] })}\n\n`)
@@ -108,6 +108,7 @@ try {
   }
   await send("ROOT_FACT " + "Useful information. ".repeat(500) + " EXERCISE_TOOL")
   const stored = await host.messages(created.id)
+  assert.ok(stored.some((message) => message.parts.some((part) => part.type === "reasoning" && part.text.includes("REASONING_FIXTURE"))))
   const tool = stored.flatMap((m) => m.parts).find((p) => p.type === "tool")
   assert.ok(tool?.type === "tool" && tool.state.status === "completed", JSON.stringify(stored))
   assert.ok(tool.state.output.includes("HEAD_FIXTURE") && tool.state.output.includes("TAIL_FIXTURE"), "head/tail spill preview failed")
@@ -137,14 +138,8 @@ try {
   const prunedTool = toolResults.find((message) => message.content.includes("HEAD_FIXTURE"))
   assert.ok(prunedTool && tokenCount(prunedTool.content, savedPrune.encoding) < savedPrune.threshold, "Provider did not receive a token-budgeted result")
   assert.ok(!prunedTool.content.includes(tool.state.output), "Unpruned tool output leaked into the request")
-  const beforeUnprune = requests.length
-  const unprune = await controller.prepareRestore("unprune", ids)
-  assert.equal(unprune.outputs, 1)
-  await controller.applyRestore(unprune)
-  assert.equal(requests.length, beforeUnprune, "Unprune must not invoke a model")
-  await send("Continue after restoring selected tool outputs")
-  assert.ok(JSON.stringify(requests.at(-1)!.messages).includes("x".repeat(5000)), "Stored tool output was not restored")
-  await controller.prune(ids)
+  await send("Continue after retaining selected tool pruning")
+  assert.ok(JSON.stringify(requests.at(-1)!.messages).includes("middle omitted"))
   const beforeSummary = requests.length
   const draft = await controller.summarize("compact", ids, { providerID: "fixture", modelID: "fixture-model", variant: "high" })
   assert.equal(draft.attempts, 2, "Overshort compact draft must receive one expansion request")
@@ -194,10 +189,28 @@ try {
   const expandedRequest = JSON.stringify(requests.at(-1)!.messages)
   assert.ok(expandedRequest.includes("middle omitted"), "Expansion must retain pre-summary pruning")
   assert.ok(!expandedRequest.includes("Context manager compact summary"), "Expanded summary still in effective context")
-  await controller.dump("1.18.33")
-  await controller.undo(-1)
-  assert.equal((await controller.load()).blocks[0].kind, "compact")
-  await controller.undo(1)
+  let beforePruning = requests.length
+  await controller.prune(ids, { reasoning: true })
+  assert.equal(requests.length, beforePruning, "Reasoning removal must not invoke a model")
+  await send("Continue immediately after reasoning removal")
+  const withoutReasoning = JSON.stringify(requests.at(-1)!.messages)
+  assert.ok(!withoutReasoning.includes("REASONING_FIXTURE"))
+  assert.ok(withoutReasoning.includes("fixture_large") && withoutReasoning.includes("middle omitted"))
+  beforePruning = requests.length
+  await controller.prune(ids, { reasoning: false, tools: "all" })
+  assert.equal(requests.length, beforePruning)
+  await send("Continue immediately after all-output pruning")
+  const withoutOutputs = JSON.stringify(requests.at(-1)!.messages)
+  assert.ok(withoutOutputs.includes("[Tool output pruned]") && withoutOutputs.includes("fixture_large"))
+  assert.ok(!withoutOutputs.includes("HEAD_FIXTURE") && !withoutOutputs.includes("TAIL_FIXTURE"))
+  beforePruning = requests.length
+  await controller.prune(ids, { reasoning: true, tools: "delete" })
+  assert.equal(requests.length, beforePruning)
+  await send("Continue immediately after whole-tool deletion")
+  const withoutTools = JSON.stringify(requests.at(-1)!.messages)
+  assert.ok(!withoutTools.includes("fixture_large") && !withoutTools.includes("call_fixture") && !withoutTools.includes("Tool output pruned"))
+  assert.ok(withoutTools.includes("Useful information.") && withoutTools.includes("Fixture assistant response"))
+  await controller.dump("1.18.34")
   assert.equal((await controller.load()).blocks[0].kind, "turn")
   const restored = await host.messages(created.id)
   assert.deepEqual(restored.slice(0, stored.length), stored)
@@ -215,7 +228,7 @@ try {
   for (const request of requests.slice(firstParallelRequest)) {
     const body = JSON.stringify(request.messages)
     assert.ok(body.includes("Continue immediately after tool-prune only"))
-    assert.ok(body.includes("Continue after restoring selected tool outputs"))
+    assert.ok(body.includes("Continue after retaining selected tool pruning"))
     assert.ok(body.includes("Continue after expanding the selected summary"))
     assert.ok(!body.includes("PARALLEL_SUMMARY_"), "A sibling result leaked into frozen background")
   }
@@ -260,9 +273,6 @@ try {
   await send("Continue after editing a saved summary")
   const editedRequest = JSON.stringify(requests.at(-1)!.messages)
   assert.ok(editedRequest.includes("FRESH_EDIT_TWO") && editedRequest.includes("PARALLEL_SUMMARY_TWO"))
-  await controller.undo(-1)
-  assert.equal((await controller.summary(summaryID)).text, "PARALLEL_SUMMARY_ONE: retained ROOT_FACT")
-  await controller.undo(1)
   assert.equal((await controller.summary(summaryID)).text, "FRESH_EDIT_TWO: corrected summary")
   await editor.dispose()
   host.createJob = createJob

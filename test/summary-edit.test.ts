@@ -45,17 +45,14 @@ test("summary edits start fresh with only applied summary, continue for review, 
   assert.equal(readPolicy(data.session).cursor, 2)
 })
 
-test("summary revision operations survive undo, dependent compaction and expansion without rewriting originals", async (t) => {
+test("summary revision operations survive dependent compaction and expansion without rewriting originals", async (t) => {
   const { data, controller, editor, id, ids } = await setup(t)
   const original = structuredClone(data.messages)
   const originalOp = structuredClone(readPolicy(data.session).operations[0])
   await editor.apply("MANUAL_EDIT")
   assert.deepEqual(readPolicy(data.session).operations[0], originalOp)
-  assert.equal(readPolicy(data.session).version, 5)
+  assert.equal(readPolicy(data.session).version, 6)
   assert.equal((await controller.load()).blocks[0].summaryID, id)
-  await controller.undo(-1)
-  assert.equal((await controller.summary(id)).text, "APPLIED_SUMMARY_ONLY")
-  await controller.undo(1)
   assert.equal((await controller.summary(id)).text, "MANUAL_EDIT")
   const all = (await controller.load()).blocks.slice(0, 2).flatMap((block) => block.sourceIDs)
   const outer = await controller.summarize("brief", all)

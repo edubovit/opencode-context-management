@@ -1,6 +1,7 @@
 import type { Model, Session } from "@opencode-ai/sdk/v2"
 import { KEY, type Settings } from "./config.ts"
-import { append, hash, historyHash, moveCursor, nativeActive, operation, project, readPolicy, select, serialize, type Block, type Envelope, type Operation, type Policy, type RestoreMode } from "./context.ts"
+import { append, hash, historyHash, nativeActive, operation, project, readPolicy, select, serialize, type Block, type Envelope, type Operation, type Policy, type RestoreMode } from "./context.ts"
+import { validatePruning, type Pruning } from "./compaction.ts"
 import { generateSummary, inputEstimate, refinementPrompt, summaryEditPrompt, SUMMARY_EDIT_SYSTEM, SUMMARIZER_SYSTEM } from "./summarize.ts"
 import { Storage, type RuntimeCapture } from "./storage.ts"
 import { snapshot } from "./snapshot.ts"
@@ -36,12 +37,11 @@ export type RestorePreview = {
   after: Block[]
   afterChars: number
   afterTokens: number
-  outputs: number
   summaries: number
 }
 export type MultiRestorePreview = {
   mode: RestoreMode; operations: Operation[]; revision: number; fingerprint: string; ranges: string[][]
-  before: Block[]; after: Block[]; beforeTokens: number; afterTokens: number; tokenizer: TokenBasis; outputs: number; summaries: number
+  before: Block[]; after: Block[]; beforeTokens: number; afterTokens: number; tokenizer: TokenBasis; summaries: number
 }
 
 export class Controller {
@@ -67,23 +67,31 @@ export class Controller {
     if (!await this.host.idle(this.sessionID)) throw new Error("Wait for the main session to become idle")
   }
 
-  async prune(ids: string[]) {
-    return this.pruneRanges([ids])
+  async prune(ids: string[], options: Pruning = { reasoning: false, tools: "large" }) {
+    return this.pruneRanges([ids], options)
   }
 
-  async pruneRanges(ranges: string[][]) {
+  async pruneRanges(ranges: string[][], options: Pruning = { reasoning: false, tools: "large" }) {
+    validatePruning(options)
     await this.requireIdle()
     const loaded = await this.load()
     this.requireNotReverted(loaded.session)
     const selected = resolveRanges(loaded.blocks, ranges)
     this.requireUnprotected(loaded, ranges.flat())
-    const operations = selected.filter((blocks) => toolStatus(blocks, loaded.pruneRule, loaded.tokenizer).eligible)
-      .map((blocks) => operation("tool-prune", blocks, loaded.pruneRule, loaded.tokenizer))
-    if (!operations.length) throw new Error("No eligible tool outputs in the selected ranges")
+    const mode = options.tools === "large" ? "tool-prune" : options.tools === "all" ? "tool-prune-all" : options.tools === "delete" ? "tool-delete" : "prune-reason"
+    const operations = selected.map((blocks) => ({
+      ...operation(mode, blocks, options.tools === "large" ? loaded.pruneRule : undefined, loaded.tokenizer),
+      ...(options.reasoning && mode !== "prune-reason" ? { pruneReason: true as const } : {}),
+    })).filter((op) => {
+      const after = project(nativeActive(loaded.raw, loaded.session.revert), append(loaded.policy, op))
+      return historyHash(after.flatMap((block) => block.messages)) !== historyHash(loaded.blocks.flatMap((block) => block.messages))
+    })
+    if (!operations.length) throw new Error("No eligible content for the selected pruning modes")
     await this.applyOperations(operations, { revision: loaded.policy.revision, fingerprint: loaded.fingerprint })
   }
 
   async prepareRestoreRanges(mode: RestoreMode, ranges: string[][]): Promise<MultiRestorePreview> {
+    if (mode !== "expand") throw new Error("Only summary expansion is supported; pruning is final")
     if (this.job) throw new Error("Apply or discard the summary draft before restoring context")
     await this.requireIdle()
     const loaded = await this.load()
@@ -92,11 +100,8 @@ export class Controller {
     this.requireUnprotected(loaded, ranges.flat())
     const before = groups.flat()
     const status = toolStatus(before, loaded.pruneRule, loaded.tokenizer)
-    const operations = groups.filter((blocks) => {
-      const counts = toolStatus(blocks, loaded.pruneRule, loaded.tokenizer)
-      return mode === "unprune" ? counts.pruned : counts.summaries
-    }).map((blocks) => operation(mode, blocks, undefined, loaded.tokenizer))
-    if (!operations.length) throw new Error(mode === "unprune" ? "No manually pruned visible tool outputs in the selection" : "No expandable plugin summaries in the selection")
+    const operations = groups.filter((blocks) => blocks.some((block) => block.summaryID)).map((blocks) => operation(mode, blocks, undefined, loaded.tokenizer))
+    if (!operations.length) throw new Error("No expandable plugin summaries in the selection")
     const next = operations.reduce(append, loaded.policy)
     const projected = project(nativeActive(loaded.raw, loaded.session.revert), next)
     const after = resolveRanges(projected, ranges).flat()
@@ -104,7 +109,7 @@ export class Controller {
       mode, operations, revision: loaded.policy.revision, fingerprint: loaded.fingerprint, ranges, before, after,
       beforeTokens: contentTokens(before.flatMap((block) => block.messages), loaded.tokenizer),
       afterTokens: contentTokens(after.flatMap((block) => block.messages), loaded.tokenizer), tokenizer: loaded.tokenizer,
-      outputs: mode === "unprune" ? status.pruned : 0, summaries: mode === "expand" ? status.summaries : 0,
+      summaries: status.summaries,
     }
   }
 
@@ -119,9 +124,11 @@ export class Controller {
 
   async applyOperations(operations: Operation[], expected: { revision: number; fingerprint: string }, guard?: () => void) {
     if (!operations.length) throw new Error("No operations to apply")
+    if (operations.some((op) => op.mode === "unprune")) throw new Error("Pruning is final; unprune is no longer supported")
     const loaded = await this.checkSnapshot(expected)
     this.requireUnprotected(loaded, operations.flatMap((op) => op.sourceIDs))
     const next = operations.reduce(append, loaded.policy)
+    readPolicy({ id: this.sessionID, metadata: { [KEY]: next } })
     project(nativeActive(loaded.raw, loaded.session.revert), next)
     await this.save(loaded.policy, next, loaded.fingerprint, guard)
   }
@@ -160,6 +167,7 @@ export class Controller {
   }
 
   async prepareRestore(mode: RestoreMode, ids: string[]): Promise<RestorePreview> {
+    if (mode !== "expand") throw new Error("Only summary expansion is supported; pruning is final")
     if (this.job) throw new Error("Apply or discard the summary draft before restoring context")
     await this.requireIdle()
     const loaded = await this.load()
@@ -167,8 +175,7 @@ export class Controller {
     const before = this.selection(loaded.blocks, ids)
     this.requireUnprotected(loaded, ids)
     const status = toolStatus(before, loaded.pruneRule, loaded.tokenizer)
-    if (mode === "unprune" && !status.pruned) throw new Error("No manually pruned visible tool outputs in the selection; expand summaries first if needed")
-    if (mode === "expand" && !status.summaries) throw new Error("No expandable plugin summaries in the selected range")
+    if (!status.summaries) throw new Error("No expandable plugin summaries in the selected range")
     const op = { ...operation(mode, before, undefined, loaded.tokenizer), mode }
     const projected = project(nativeActive(loaded.raw, loaded.session.revert), append(loaded.policy, op))
     const after = this.selection(projected, ids)
@@ -176,12 +183,12 @@ export class Controller {
       operation: op, revision: loaded.policy.revision, fingerprint: loaded.fingerprint, before, after,
       afterChars: chars(serialize(after.flatMap((block) => block.messages))),
       afterTokens: contentTokens(after.flatMap((block) => block.messages), loaded.tokenizer),
-      outputs: mode === "unprune" ? status.pruned : 0,
-      summaries: mode === "expand" ? status.summaries : 0,
+      summaries: status.summaries,
     }
   }
 
   async applyRestore(preview: RestorePreview) {
+    if (preview.operation.mode !== "expand") throw new Error("Only summary expansion is supported; pruning is final")
     await this.requireIdle()
     const loaded = await this.load()
     this.requireNotReverted(loaded.session)
@@ -248,16 +255,6 @@ export class Controller {
     await this.save(loaded.policy, append(loaded.policy, { ...draft.operation, summary: text.trim() }), draft.fingerprint)
     try { await this.releaseJob() }
     catch { return `Summary applied, but temporary conversation ${draft.jobID} could not be deleted. Close the inspector to retry cleanup.` }
-  }
-
-  async undo(delta: -1 | 1) {
-    await this.requireIdle()
-    const session = await this.host.session(this.sessionID)
-    const policy = readPolicy(session)
-    const next = moveCursor(policy, delta)
-    const raw = await this.host.messages(this.sessionID)
-    if (delta === 1) project(nativeActive(raw, session.revert), next)
-    await this.save(policy, next, historyHash(raw))
   }
 
   async dump(hostVersion: string) {

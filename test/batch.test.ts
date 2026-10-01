@@ -128,8 +128,8 @@ test("cancel while helper creation is pending prevents every model call and clea
   assert.ok(batch.entries.every((entry) => entry.status === "error"))
 })
 
-test("disjoint prune/restore actions leave gaps untouched and commit each action with one write", async (t) => {
-  const { host, data, controller, ranges } = await setup(t, 5)
+test("disjoint pruning and summary expansion leave gaps untouched and commit each action with one write", async (t) => {
+  const { host, data, controller, batch, ranges } = await setup(t, 5)
   let writes = 0
   const update = host.update
   host.update = async (...args) => { writes++; await update(...args) }
@@ -138,12 +138,15 @@ test("disjoint prune/restore actions leave gaps untouched and commit each action
   const pruned = await controller.load()
   assert.deepEqual(pruned.blocks[1].messages, data.messages.slice(2, 4))
   assert.deepEqual(pruned.blocks[3].messages, data.messages.slice(6, 8))
-  const restore = await controller.prepareRestoreRanges("unprune", ranges)
-  assert.equal(restore.outputs, 3)
-  assert.equal(writes, 1)
-  await controller.applyOperations(restore.operations, restore)
+  await batch.start("brief", ranges)
+  await batch.generate()
+  await batch.apply()
+  const restore = await controller.prepareRestoreRanges("expand", ranges)
+  assert.equal(restore.summaries, 3)
   assert.equal(writes, 2)
-  assert.deepEqual((await controller.load()).blocks.flatMap((block) => block.messages), data.messages)
+  await controller.applyOperations(restore.operations, restore)
+  assert.equal(writes, 3)
+  assert.deepEqual((await controller.load()).blocks, pruned.blocks)
 })
 
 test("closing a running batch ignores late replies, waits for cleanup, and never writes main context", async (t) => {

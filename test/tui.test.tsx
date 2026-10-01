@@ -6,7 +6,7 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { testRender } from "@opentui/solid"
 import { KeyCodes } from "@opentui/core/testing"
-import { RGBA, type ScrollBoxRenderable, type TextRenderable } from "@opentui/core"
+import { RGBA, type ScrollBoxRenderable, type SelectRenderable, type TextRenderable } from "@opentui/core"
 import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
 import { Inspector, watchSuspensions } from "../src/tui.tsx"
 import { Controller } from "../src/controller.ts"
@@ -42,35 +42,123 @@ async function setup(t: { after(fn: () => Promise<void>): void }, width = 140, h
   }
   const key: typeof screen.mockInput.pressKey = (name, modifiers) => screen.mockInput.pressKey(
     name === "return" ? KeyCodes.RETURN : name === "pageup" ? "\u001b[5~" : name === "pagedown" ? "\u001b[6~" : name, modifiers)
-  return { ...fixture, controller, screen, frame, until, navigations, type: screen.mockInput.typeText, key, esc: screen.mockInput.pressEscape }
+  const compact = async (index: number) => {
+    await screen.mockInput.typeText("c")
+    await until(() => !!screen.renderer.root.findDescendantById("cm-compaction-config"))
+    key(KeyCodes.HOME)
+    for (let n = 0; n < index; n++) key(KeyCodes.ARROW_DOWN)
+    const modes = screen.renderer.root.findDescendantById("cm-compaction-modes") as SelectRenderable
+    if (!modes.options[index].name.startsWith("[+]")) await screen.mockInput.typeText(" ")
+    key("return")
+  }
+  return { ...fixture, controller, screen, frame, until, navigations, compact, type: screen.mockInput.typeText, key, esc: screen.mockInput.pressEscape }
 }
 
-test("Space ranges prune/undo and compaction autoapplies without a preview", async (t) => {
-  const { data, frame, until, type, key } = await setup(t)
+test("Space ranges use configured pruning and compaction autoapplies without recovery shortcuts", async (t) => {
+  const { data, frame, until, type, key, compact } = await setup(t)
   await until(() => frame().includes("Ready."))
   assert.ok(frame().includes("WHOLE EFFECTIVE CONTEXT"))
   await type("n")
   await until(() => /Total categorized text: .* chars/.test(frame()))
   await type("n ")
   key(KeyCodes.ARROW_DOWN)
-  await type(" p")
-  await until(() => readPolicy(data.session).cursor === 1 && frame().includes("Ready."))
+  await type(" ")
+  await compact(1)
+  await until(() => readPolicy(data.session).cursor === 1 && frame().includes("Pruning applied"))
   assert.equal(readPolicy(data.session).operations[0].sourceIDs.length, 4)
-  await type("u")
-  await until(() => readPolicy(data.session).cursor === 0 && frame().includes("Ready."))
-  await type("   c")
-  await until(() => frame().includes("Summaries applied automatically"))
+  await type("urpb")
+  key("u", { ctrl: true })
   assert.equal(readPolicy(data.session).cursor, 1)
+  await compact(4)
+  await until(() => frame().includes("Summaries applied automatically"))
+  assert.equal(readPolicy(data.session).cursor, 2)
   assert.equal(data.calls.length, 2)
   assert.match(data.calls[1].text, /too short/)
   assert.equal(data.removed.length, 1)
   assert.ok(!frame().includes("Review/edit") && !frame().includes("apply ALL drafts"))
 })
 
-test("fullscreen summary is read-only until manual edit, save is undoable", async (t) => {
-  const { data, controller, frame, until, type, key, esc } = await setup(t)
+test("compaction configuration combines pruning, forces reasoning for deletion and keeps context totals visible", async (t) => {
+  const { data, controller, screen, frame, until, type, key, esc } = await setup(t, 120, 32)
   await until(() => frame().includes("Ready."))
-  await type("  b")
+  await type("c")
+  assert.equal(screen.renderer.root.findDescendantById("cm-compaction-config"), undefined)
+  await type("  c")
+  await until(() => frame().includes("Compaction configuration"))
+  assert.ok(frame().includes("WHOLE EFFECTIVE CONTEXT") && frame().includes("SELECTED RANGES (1)"))
+  for (const label of ["Prune reasoning", "Prune tools (large)", "Prune tools (all)", "Prune tools (delete)", "Summarize (detailed)", "Summarize (brief)"]) assert.ok(frame().includes(label))
+  key(KeyCodes.HOME)
+  await type(" ")
+  key(KeyCodes.ARROW_DOWN)
+  await type(" ")
+  const choices = () => (screen.renderer.root.findDescendantById("cm-compaction-modes") as SelectRenderable).options.map((option) => option.name)
+  await until(() => choices()[0].startsWith("[+]") && choices()[1].startsWith("[+]"))
+  assert.ok(choices()[4].startsWith("[ ]"))
+  key(KeyCodes.ARROW_DOWN)
+  await type(" ")
+  await until(() => choices()[1].startsWith("[ ]") && choices()[2].startsWith("[+]"))
+  key("return")
+  await until(() => frame().includes("Pruning applied"))
+  assert.equal(readPolicy(data.session).cursor, 1)
+  assert.equal(data.jobs, 0)
+  assert.equal((screen.renderer.root.findDescendantById("cm-range-stats-0") as TextRenderable).plainText, "pruned:1 · no reason")
+  assert.match((screen.renderer.root.findDescendantById("cm-range-title-0") as TextRenderable).plainText, /USER/)
+  await type("c")
+  key(KeyCodes.HOME)
+  for (let n = 0; n < 3; n++) key(KeyCodes.ARROW_DOWN)
+  await type(" ")
+  key(KeyCodes.HOME)
+  await type(" ")
+  await until(() => choices()[0].startsWith("[+]") && choices()[3].startsWith("[+]"))
+  esc()
+  await until(() => !frame().includes("Compaction configuration"))
+  assert.equal(readPolicy(data.session).cursor, 1, "Cancel must not run pruning")
+  await type("c")
+  key("return")
+  await until(() => frame().includes("Pruning applied") && readPolicy(data.session).cursor === 2)
+  assert.equal((screen.renderer.root.findDescendantById("cm-range-stats-0") as TextRenderable).plainText, "tools:0 · no tools · no reason")
+  assert.deepEqual((await controller.load()).blocks[1].messages, data.messages.slice(2, 4))
+})
+
+test("configuration picker consumes model keys, keeps selection and fits a small terminal", async (t) => {
+  const { data, screen, frame, until, type, key } = await setup(t, 80, 24, ({ data, host }) => {
+    host.models = async () => [data.model, { ...data.model, id: "other", providerID: "alternate", name: "Other", variants: { low: {} } }]
+  })
+  await until(() => frame().includes("Ready."))
+  await type("  c")
+  await until(() => frame().includes("Compaction configuration"))
+  const config = screen.renderer.root.findDescendantById("cm-compaction-config")!
+  const footer = screen.renderer.root.findDescendantById("cm-hotkeys")!
+  assert.ok(config.y + config.height <= footer.y && footer.y + footer.height <= 24)
+  await type("m")
+  await type("alternate")
+  key("return")
+  await until(() => frame().includes("alternate/other"))
+  assert.ok(frame().includes("Compaction configuration"))
+  assert.equal(data.jobs, 0)
+  await type("t")
+  await type("low")
+  key("return")
+  await until(() => frame().includes("Effort: low"))
+  screen.renderer.resize(80, 18)
+  await until(() => footer.y + footer.height <= 18)
+  key(KeyCodes.END)
+  await type(" ")
+  await until(() => frame().includes("[+] Summarize (brief)"))
+  screen.renderer.resize(80, 24)
+  await until(() => frame().includes("Prune reasoning"))
+  key("return")
+  await until(() => frame().includes("Summaries applied automatically"))
+  assert.deepEqual(data.calls[0].choice, { providerID: "alternate", modelID: "other", variant: "low" })
+  assert.equal(data.calls.length, 1)
+  assert.match((screen.renderer.root.findDescendantById("cm-range-title-0") as TextRenderable).plainText, /SUMMARY/)
+})
+
+test("fullscreen summary is read-only until manual edit; save appends a revision without undo", async (t) => {
+  const { data, controller, frame, until, type, key, esc, compact } = await setup(t)
+  await until(() => frame().includes("Ready."))
+  await type("  ")
+  await compact(5)
   await until(() => frame().includes("Summaries applied automatically"))
   key("return")
   await until(() => frame().includes("Summary reader"))
@@ -95,17 +183,18 @@ test("fullscreen summary is read-only until manual edit, save is undoable", asyn
   esc()
   await until(() => frame().includes("Ready."))
   await type("u")
-  await until(() => readPolicy(data.session).cursor === 1 && frame().includes("Ready."))
-  assert.doesNotMatch((await controller.summary(id)).text, /MANUAL_KEEP/)
+  assert.equal(readPolicy(data.session).cursor, 2)
+  assert.match((await controller.summary(id)).text, /MANUAL_KEEP/)
 })
 
 test("model edits use fresh summary-only dialogue, review/revise before apply, then dispose", async (t) => {
-  const { data, frame, until, type, key, esc } = await setup(t, 150, 42, ({ data, host }) => {
+  const { data, frame, until, type, key, esc, compact } = await setup(t, 150, 42, ({ data, host }) => {
     host.models = async () => [data.model, { ...data.model, providerID: "alternate", id: "other", name: "Alternate", variants: { low: {} } }]
     data.responses = ["APPLIED_ONLY", "FIRST_PROPOSAL", "SECOND_PROPOSAL"]
   })
   await until(() => frame().includes("Ready."))
-  await type("  b")
+  await type("  ")
+  await compact(5)
   await until(() => frame().includes("Summaries applied automatically"))
   key("return")
   await until(() => frame().includes("Summary reader"))
@@ -192,7 +281,7 @@ test("reader separators frame scrolling content and keep footer reserved at narr
 })
 
 test("multi-range statistics stay visible and failed batches autoapply only after retry", async (t) => {
-  const { data, controller, frame, until, type, key } = await setup(t, 160, 44, ({ host }) => {
+  const { data, controller, frame, until, type, key, compact } = await setup(t, 160, 44, ({ host }) => {
     const generate = host.generate
     let failed = false
     host.generate = async (...args) => {
@@ -212,7 +301,7 @@ test("multi-range statistics stay visible and failed batches autoapply only afte
   await until(() => frame().includes("SELECTED RANGES (2)"))
   assert.ok(frame().includes(`≈${distribution(blocks).total.toLocaleString()} tokens`))
   assert.ok(frame().includes(`≈${distribution([blocks[0], blocks[2]]).total.toLocaleString()} tokens`))
-  await type("b")
+  await compact(5)
   await until(() => frame().includes("Fixture range failed") && frame().includes("Batch incomplete"))
   assert.equal(readPolicy(data.session).cursor, 0)
   assert.ok(!frame().includes("APPLIED_ONLY"))
@@ -225,15 +314,16 @@ test("multi-range statistics stay visible and failed batches autoapply only afte
 })
 
 test("range restore confirmation and contextual help do not overlap the content", async (t) => {
-  const { data, screen, frame, until, type, key, esc } = await setup(t, 120, 32)
+  const { data, screen, frame, until, type, key, esc, compact } = await setup(t, 120, 32)
   await until(() => frame().includes("Ready."))
   await type("?")
   await until(() => frame().includes("RANGE MENU HOTKEYS"))
   esc()
   await until(() => !frame().includes("RANGE MENU HOTKEYS"))
-  await type("  p")
-  await until(() => readPolicy(data.session).cursor === 1 && frame().includes("Ready."))
-  key("u", { ctrl: true })
+  await type("  ")
+  await compact(5)
+  await until(() => frame().includes("Summaries applied automatically"))
+  key("e", { ctrl: true })
   await until(() => frame().includes("Restore preview"))
   assert.ok(frame().includes("Ctrl+S confirm restore"))
   assert.ok(frame().includes("WHOLE EFFECTIVE CONTEXT"))
@@ -243,15 +333,15 @@ test("range restore confirmation and contextual help do not overlap the content"
   assert.ok(footer.y + footer.height <= 32)
 })
 
-test("secondary undo remains usable when projection fails before rows load", async (t) => {
+test("failed projection reports source mismatch without advertising removed recovery actions", async (t) => {
   const { data, frame, until, type } = await setup(t, 140, 35, ({ data }) => {
     const op = operation("tool-prune", select(turns(data.messages), 0, 0), pruneRule())
     data.session.metadata![KEY] = append(emptyPolicy(data.session.id), { ...op, beforeHash: "invalid" })
   })
   await until(() => frame().includes("Saved range content changed"))
-  assert.ok(frame().includes("Undo latest action"))
-  await type("u")
-  await until(() => readPolicy(data.session).cursor === 0 && frame().includes("Ready."))
+  assert.ok(!frame().includes("Undo latest action"))
+  await type("ur")
+  assert.equal(readPolicy(data.session).cursor, 1)
 })
 
 test("hotkey keys use the theme primary color while labels, separators and notes stay muted", async () => {
@@ -259,21 +349,21 @@ test("hotkey keys use the theme primary color while labels, separators and notes
   const muted = "#8899aa"
   const api = { theme: { current: { primary, textMuted: muted } } } as unknown as TuiPluginApi
   const screen = await testRender(() => <Hotkeys api={api} lines={[
-    [{ key: "p", label: "prune" }, { key: "Ctrl+U", label: "unprune" }, "read-only note"],
+    [{ key: "c", label: "configure" }, { key: "Ctrl+E", label: "expand" }, "read-only note"],
   ]} />, { width: 80, height: 6 })
   try {
     await screen.renderOnce()
     const footer = screen.renderer.root.findDescendantById("cm-hotkeys")!
     const line = footer.getChildren()[0] as TextRenderable
-    assert.equal(line.plainText, "p prune · Ctrl+U unprune · read-only note")
+    assert.equal(line.plainText, "c configure · Ctrl+E expand · read-only note")
     const chunks = line.textNode.toChunks()
-    for (const key of ["p", "Ctrl+U"]) {
+    for (const key of ["c", "Ctrl+E"]) {
       const chunk = chunks.find((chunk) => chunk.text === key)
       assert.ok(chunk, `Missing styled key: ${key}`)
       assert.ok(chunk.fg?.equals(RGBA.fromHex(primary)), `Wrong key color: ${key}`)
     }
-    for (const text of ["prune", " · ", "read-only note"]) {
-      const chunk = chunks.find((chunk) => chunk.text.includes(text) && chunk.text !== "p" && chunk.text !== "Ctrl+U")
+    for (const text of ["configure", " · ", "read-only note"]) {
+      const chunk = chunks.find((chunk) => chunk.text.includes(text) && chunk.text !== "c" && chunk.text !== "Ctrl+E")
       assert.ok(chunk)
       assert.ok((chunk.fg ?? line.fg).equals(RGBA.fromHex(muted)))
     }
@@ -282,7 +372,7 @@ test("hotkey keys use the theme primary color while labels, separators and notes
 })
 
 test("Enter on an ordinary turn opens user/final response fullscreen and preserves cursor and open selection", async (t) => {
-  const { data, screen, frame, until, type, key, esc } = await setup(t, 120, 32)
+  const { data, screen, frame, until, type, key, esc, compact } = await setup(t, 120, 32)
   const original = structuredClone(data.messages)
   await until(() => frame().includes("Ready."))
   key(KeyCodes.ARROW_DOWN)
@@ -302,8 +392,9 @@ test("Enter on an ordinary turn opens user/final response fullscreen and preserv
   assert.deepEqual(data.messages, original)
   esc()
   await until(() => frame().includes("SELECTED RANGES (0 + open)"))
-  await type(" p")
-  await until(() => readPolicy(data.session).cursor === 1 && frame().includes("Ready."))
+  await type(" ")
+  await compact(1)
+  await until(() => readPolicy(data.session).cursor === 1 && frame().includes("Pruning applied"))
   assert.deepEqual(readPolicy(data.session).operations[0].sourceIDs, original.slice(2).map((message) => message.info.id))
 })
 
@@ -370,13 +461,13 @@ test("rows use the default four-line maximum, uppercase kinds and sparse stats",
   assert.equal(next.y - summary.y, 4)
   assert.equal(next.height, 3, "A short USER entry must not be padded to the maximum")
   assert.equal(find("cm-range-stats-0").y, first.y + 1)
-  assert.equal((find("cm-range-stats-0") as TextRenderable).plainText, "tools:1 · eligible:1")
+  assert.equal((find("cm-range-stats-0") as TextRenderable).plainText, "tools:1 · large:1")
   assert.equal(find("cm-range-preview-0").y, first.y + 2)
   assert.equal(find("cm-range-preview-0").height, 2)
   assert.equal(find("cm-range-preview-1").y, summary.y + 1)
   assert.equal(screen.renderer.root.findDescendantById("cm-range-stats-1"), undefined)
   assert.match((find("cm-range-title-0") as TextRenderable).plainText, /^\[ \] Turn 1 · USER · ≈/)
-  assert.match((find("cm-range-title-1") as TextRenderable).plainText, / · COMPACT · /)
+  assert.match((find("cm-range-title-1") as TextRenderable).plainText, / · SUMMARY · /)
   assert.ok(!frame().includes("USER_THIRD") && frame().includes("SUMMARY_THIRD"))
   assert.ok(!frame().includes("USER_FOURTH_HIDDEN") && !frame().includes("SUMMARY_FOURTH_HIDDEN"))
   assert.ok(!frame().includes("Earlier conversation range") && !frame().includes("expand one layer"))
@@ -386,7 +477,7 @@ test("rows use the default four-line maximum, uppercase kinds and sparse stats",
 })
 
 test("content-sized list keeps wrapping previews clipped and distant cursor visible across readers", async (t) => {
-  const { data, screen, frame, until, type, key, esc } = await setup(t, 80, 24, ({ data }) => {
+  const { data, screen, frame, until, type, key, esc, compact } = await setup(t, 80, 24, ({ data }) => {
     data.messages = messages(data.session.id, 20)
     const part = data.messages[0].parts[0]
     if (part.type === "text") part.text = "WRAPPED_PREVIEW ".repeat(100)
@@ -422,8 +513,9 @@ test("content-sized list keeps wrapping previews clipped and distant cursor visi
   await until(() => frame().includes("Turn 20"))
   await type(" ")
   key(KeyCodes.ARROW_UP)
-  await type(" p")
-  await until(() => readPolicy(data.session).cursor === 1 && frame().includes("Ready."))
+  await type(" ")
+  await compact(1)
+  await until(() => readPolicy(data.session).cursor === 1 && frame().includes("Pruning applied"))
   assert.deepEqual(readPolicy(data.session).operations[0].sourceIDs, data.messages.slice(-4).map((message) => message.info.id))
   assert.equal(data.jobs, 0)
 })
@@ -443,11 +535,11 @@ for (const limit of [3, 6]) test(`configured ${limit}-line rows shrink to conten
   assert.equal(summary.height, 2)
   assert.equal(summary.y, row.y + row.height)
   assert.equal(next.y, summary.y + summary.height)
-  assert.match((screen.renderer.root.findDescendantById("cm-range-title-1") as TextRenderable).plainText, / · BRIEF · /)
+  assert.match((screen.renderer.root.findDescendantById("cm-range-title-1") as TextRenderable).plainText, / · SUMMARY · /)
 })
 
 test("R labels identify closed/open ranges and unfinished endpoints remain selectable while busy", async (t) => {
-  const { data, screen, frame, until, type, key } = await setup(t, 180, 48, ({ data }) => {
+  const { data, screen, frame, until, type, key, compact } = await setup(t, 180, 48, ({ data }) => {
     const first = data.messages[1].info
     if (first.role === "assistant") { first.finish = "tool-calls"; first.time.completed = undefined }
     data.messages.pop()
@@ -468,11 +560,11 @@ test("R labels identify closed/open ranges and unfinished endpoints remain selec
   await until(() => title(1).includes("R2 ·") && title(2).includes("R2 ·"))
   assert.ok(title(1).includes("R2 ·") && title(2).includes("R2 ·"))
   assert.equal((screen.renderer.root.findDescendantById("cm-range-stats-2") as TextRenderable).plainText, "tools:0")
-  await type("b")
+  await compact(5)
   await until(() => frame().includes("Wait for the main session to become idle"))
   assert.equal(data.calls.length, 0)
   data.idle = true
-  await type("b")
+  await compact(5)
   await until(() => frame().includes("Summaries applied automatically"))
   assert.equal(readPolicy(data.session).cursor, 2)
 })

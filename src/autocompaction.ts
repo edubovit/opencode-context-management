@@ -241,10 +241,10 @@ export class Autocompaction implements AutoControl {
 
 function changedOperations(before: Policy, next: Policy) {
   if (next.sessionID !== before.sessionID) throw new Error("Invalid maintenance policy identity")
-  if (hash(before.operations) === hash(next.operations) && Math.abs(next.cursor - before.cursor) === 1 && next.revision === before.revision + 1)
-    return before.operations.slice(Math.min(next.cursor, before.cursor), Math.max(next.cursor, before.cursor))
   const added = next.cursor - before.cursor
   if (added < 1 || next.operations.length !== next.cursor || next.revision !== before.revision + added ||
-      hash(before.operations.slice(0, before.cursor)) !== hash(next.operations.slice(0, before.cursor))) throw new Error("Maintenance must append operations or move undo/redo by one; existing history cannot be rewritten")
-  return next.operations.slice(before.cursor)
+      hash(before.operations.slice(0, before.cursor)) !== hash(next.operations.slice(0, before.cursor))) throw new Error("Maintenance must append operations; existing history cannot be rewritten")
+  const operations = next.operations.slice(before.cursor)
+  if (operations.some((op) => op.mode === "unprune")) throw new Error("Pruning is final; unprune is no longer supported")
+  return operations
 }

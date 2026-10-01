@@ -7,20 +7,23 @@ import { FALLBACK_BASIS, isEncoding, TOKENIZER_ID, type TokenBasis } from "./tok
 export { toolText } from "./text.ts"
 
 export type Envelope = { info: Message; parts: Part[] }
-export type Mode = "tool-prune" | "compact" | "brief"
-export type RestoreMode = "unprune" | "expand"
+export type Mode = "tool-prune" | "tool-prune-all" | "tool-delete" | "prune-reason" | "compact" | "brief"
+export type RestoreMode = "expand"
 export type Block = {
   kind: "turn" | "compact" | "brief"
   sourceIDs: string[]
   messages: Envelope[]
   closed: boolean
   pruned?: Record<string, string>
+  reasonPruned?: boolean
+  toolsDeleted?: boolean
+  allToolsPruned?: boolean
   summaryID?: string
   previous?: Block[]
 }
 export type Operation = {
   id: string
-  mode: Mode | RestoreMode | "revise"
+  mode: Mode | RestoreMode | "revise" | "unprune"
   sourceIDs: string[]
   beforeHash: string
   beforeChars: number
@@ -31,11 +34,12 @@ export type Operation = {
   rule?: PruneRule
   summaryIDs?: string[]
   targetID?: string
+  pruneReason?: true
 }
-export type Policy = { version: 1 | 2 | 3 | 4 | 5; sessionID: string; revision: number; cursor: number; operations: Operation[] }
+export type Policy = { version: 1 | 2 | 3 | 4 | 5 | 6; sessionID: string; revision: number; cursor: number; operations: Operation[] }
 
 export function emptyPolicy(sessionID: string): Policy {
-  return { version: 5, sessionID, revision: 0, cursor: 0, operations: [] }
+  return { version: 6, sessionID, revision: 0, cursor: 0, operations: [] }
 }
 
 export function readPolicy(session: Pick<Session, "id" | "metadata">): Policy {
@@ -44,13 +48,18 @@ export function readPolicy(session: Pick<Session, "id" | "metadata">): Policy {
   if (!value || typeof value !== "object") throw new Error("Invalid context-manager state")
   const policy = value as Policy
   if (policy.sessionID !== session.id) return emptyPolicy(session.id)
-  if (![1, 2, 3, 4, 5].includes(policy.version) || !Array.isArray(policy.operations) || !Number.isSafeInteger(policy.revision) ||
+  if (![1, 2, 3, 4, 5, 6].includes(policy.version) || !Array.isArray(policy.operations) || !Number.isSafeInteger(policy.revision) ||
       !Number.isInteger(policy.cursor) || policy.cursor < 0 || policy.cursor > policy.operations.length)
     throw new Error("Unsupported or damaged context-manager state")
   for (const op of policy.operations) {
-    if (!op || typeof op.id !== "string" || !["tool-prune", "compact", "brief", "unprune", "expand", "revise"].includes(op.mode) || !Array.isArray(op.sourceIDs) ||
+    if (!op || typeof op.id !== "string" || !["tool-prune", "tool-prune-all", "tool-delete", "prune-reason", "compact", "brief", "unprune", "expand", "revise"].includes(op.mode) || !Array.isArray(op.sourceIDs) ||
         !op.sourceIDs.length || !op.sourceIDs.every((id) => typeof id === "string") || typeof op.beforeHash !== "string")
       throw new Error("Invalid context-manager operation")
+    if ((["tool-prune-all", "tool-delete", "prune-reason"].includes(op.mode) || op.pruneReason !== undefined) && policy.version < 6)
+      throw new Error("Pruning modes require policy version 6")
+    if (op.pruneReason !== undefined && (op.pruneReason !== true || !["tool-prune", "tool-prune-all", "tool-delete"].includes(op.mode)))
+      throw new Error("Invalid reasoning pruning combination")
+    if (op.mode === "tool-delete" && op.pruneReason !== true) throw new Error("Deleting tools requires pruning reasoning")
     if (op.mode === "tool-prune" && (!op.rule || ![op.rule.threshold, op.rule.head, op.rule.tail].every(Number.isSafeInteger)))
       throw new Error("Invalid saved pruning rule")
     if (op.rule && op.rule.unit !== undefined && op.rule.unit !== "tokens") throw new Error("Unknown saved pruning units")
@@ -221,12 +230,12 @@ export function project(active: Envelope[], policy: Policy): Block[] {
   for (const op of policy.operations.slice(0, policy.cursor)) {
     const start = blocks.findIndex((b) => b.sourceIDs[0] === op.sourceIDs[0])
     const end = blocks.findIndex((b) => b.sourceIDs.at(-1) === op.sourceIDs.at(-1))
-    if (start < 0 || end < start) throw new Error("Saved range no longer exists. Undo context operations before using reverted/compacted history.")
+    if (start < 0 || end < start) throw new Error("Saved range no longer exists. Restore the original host history before continuing.")
     const selected = blocks.slice(start, end + 1)
     const selectedMessages = blockMessages(selected)
     if (hash(selected.flatMap((b) => b.sourceIDs)) !== hash(op.sourceIDs) ||
         (historyHash(selectedMessages) !== op.beforeHash && (pruned.size === 0 || legacyPrunedHash(selectedMessages, pruned) !== op.beforeHash)))
-      throw new Error("Saved range content changed. Restore history or undo the affected context operation.")
+      throw new Error("Saved range content changed. Restore the original host history before continuing.")
     if (op.mode === "revise") {
       const block = selected[0]
       if (selected.length !== 1 || block.kind === "turn" || !block.summaryID || block.summaryID !== op.targetID)
@@ -234,9 +243,35 @@ export function project(active: Envelope[], policy: Policy): Block[] {
       blocks[start] = { ...block, messages: replacement({ ...op, id: block.summaryID, mode: block.kind }, selected).messages }
       continue
     }
-    if (op.mode === "tool-prune") {
-      for (const b of selected) for (const m of b.messages) for (const p of m.parts) {
-        if (p.type === "tool") prunePart(p, op.rule!, pruned)
+    if (["tool-prune", "tool-prune-all", "tool-delete", "prune-reason"].includes(op.mode)) {
+      for (const b of selected) {
+        if (b.kind !== "turn") continue
+        if (op.pruneReason || op.mode === "prune-reason") {
+          for (const m of b.messages) m.parts = m.parts.filter((p) => p.type !== "reasoning")
+          b.reasonPruned = true
+        }
+        if (op.mode === "tool-delete") {
+          for (const m of b.messages) m.parts = m.parts.filter((p) => {
+            if (p.type !== "tool") return true
+            pruned.delete(p.id)
+            return false
+          })
+          b.toolsDeleted = true
+          delete b.allToolsPruned
+        }
+        if (op.mode === "tool-prune-all") {
+          for (const m of b.messages) for (const p of m.parts) {
+            if (p.type !== "tool" || (p.state.status !== "completed" && p.state.status !== "error")) continue
+            setToolText(p, TOOL_OUTPUT_PRUNED)
+            if (p.state.status === "completed") p.state.attachments = []
+            else p.state.error = TOOL_OUTPUT_PRUNED
+            pruned.set(p.id, "all")
+          }
+          if (!b.toolsDeleted) b.allToolsPruned = true
+        }
+        if (op.mode === "tool-prune") for (const m of b.messages) for (const p of m.parts) {
+          if (p.type === "tool" && pruned.get(p.id) !== "all") prunePart(p, op.rule!, pruned)
+        }
       }
       continue
     }
@@ -320,11 +355,7 @@ function legacyPrunedHash(messages: Envelope[], pruned: Map<string, string>) {
 }
 
 export function append(policy: Policy, op: Operation): Policy {
-  return { ...policy, version: 5, revision: policy.revision + 1, cursor: policy.cursor + 1, operations: [...policy.operations.slice(0, policy.cursor), op] }
+  return { ...policy, version: 6, revision: policy.revision + 1, cursor: policy.cursor + 1, operations: [...policy.operations.slice(0, policy.cursor), op] }
 }
 
-export function moveCursor(policy: Policy, delta: -1 | 1): Policy {
-  const cursor = policy.cursor + delta
-  if (cursor < 0 || cursor > policy.operations.length) throw new Error(delta < 0 ? "Nothing to undo" : "Nothing to redo")
-  return { ...policy, revision: policy.revision + 1, cursor }
-}
+export const TOOL_OUTPUT_PRUNED = "[Tool output pruned]"
