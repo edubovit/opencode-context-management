@@ -1,408 +1,308 @@
-import { createServer } from "node:http"
-import { spawn } from "node:child_process"
-import { mkdir, writeFile, readFile, open } from "node:fs/promises"
-import path from "node:path"
-import { pathToFileURL } from "node:url"
-import { randomUUID } from "node:crypto"
 import assert from "node:assert/strict"
-import { createOpencodeClient } from "@opencode-ai/sdk/v2"
+import { mkdir, readFile, writeFile } from "node:fs/promises"
+import path from "node:path"
 import { Controller } from "../src/controller.ts"
-import { sdkHost } from "../src/sdk-host.ts"
-import { settings } from "../src/config.ts"
-import { Storage } from "../src/storage.ts"
-import { tokenCount } from "../src/tokens.ts"
-import { readPolicy } from "../src/context.ts"
 import { SummaryBatch } from "../src/batch.ts"
 import { SummaryEditor } from "../src/summary-editor.ts"
-import { AUTO_KEY, type Strategy } from "../src/auto-state.ts"
-import { controlClient } from "../src/control.ts"
+import { remoteHost } from "../src/control.ts"
+import { settings, KEY, VERSION } from "../src/config.ts"
+import { fixture } from "./host-fixture.ts"
+import { ContextManager } from "../src/rpc.ts"
+import { verifyInspector } from "./host-tui.ts"
 
-const [executable, root] = process.argv.slice(2)
-if (!executable || !root) throw new Error("Usage: host-smoke.ts <absolute opencode executable> <isolated temporary root>")
-const project = path.join(root, "project")
-for (const dir of [project, "home", "config", "data", "cache", "state"].map((p) => path.isAbsolute(p) ? p : path.join(root, p))) await mkdir(dir, { recursive: true })
-const requests: Record<string, unknown>[] = []
-let parallelGate: Promise<void> | undefined
-let releaseParallel: (() => void) | undefined
-let parallelArrivals = 0
-let concurrent = false
-const provider = createServer(async (req, res) => {
-  let body = ""
-  for await (const chunk of req) body += chunk
-  const input = JSON.parse(body)
-  requests.push(input)
-  const serialized = JSON.stringify(input.messages)
-  const last = input.messages.at(-1)
-  const summarize = serialized.includes("<selected_range_")
-  const editing = serialized.includes("Only the supplied summary and this editing dialogue are available")
-  if (summarize && parallelGate) {
-    const gate = parallelGate
-    if (++parallelArrivals === 2) { concurrent = true; parallelGate = undefined; releaseParallel!() }
-    await gate
-  }
-  const lastUser = input.messages.findLast((message: { role: string }) => message.role === "user")
-  const revise = summarize && JSON.stringify(lastUser).includes("Requested changes:")
-  const tool = !summarize && last?.role === "user" && JSON.stringify(last).includes("EXERCISE_TOOL")
-  const text = editing ? (serialized.includes("FRESH_EDIT_ONE") ? "FRESH_EDIT_TWO: corrected summary" : "FRESH_EDIT_ONE: clarified summary") : revise ? "Revised retained facts: ROOT_FACT; MANUAL_KEEP; next step is to validate the fixture." : summarize ? "Detailed retained facts: ROOT_FACT; fixture tool produced HEAD_FIXTURE and TAIL_FIXTURE. Work remains understood." : "Fixture assistant response; ROOT_FACT retained."
-  const delta = tool ? { reasoning_content: "REASONING_FIXTURE", tool_calls: [{ index: 0, id: "call_fixture", type: "function", function: { name: "fixture_large", arguments: "{}" } }] } : { content: text }
-  res.writeHead(200, { "content-type": "text/event-stream" })
-  for (const choice of [{ index: 0, delta, finish_reason: null }, { index: 0, delta: {}, finish_reason: tool ? "tool_calls" : "stop" }])
-    res.write(`data: ${JSON.stringify({ id: "chatcmpl_fixture", object: "chat.completion.chunk", created: 1, model: input.model, choices: [choice] })}\n\n`)
-  res.end("data: [DONE]\n\n")
-})
-await new Promise<void>((resolve) => provider.listen(0, "127.0.0.1", resolve))
-const address = provider.address()
-if (!address || typeof address === "string") throw new Error("No fixture provider address")
-const password = randomUUID()
-const options = { prune: { threshold: 5000, head: 1000, tail: 1000 }, ui: { maxLinesPerTurn: 7 } }
-const config = {
-  "$schema": "https://opencode.ai/config.json", autoupdate: false, snapshot: false, share: "disabled", lsp: false, formatter: false,
-  enabled_providers: ["fixture"], model: "fixture/fixture-model", permission: "allow",
-  plugin: [[pathToFileURL(path.resolve("test/pause-fixture.ts")).href, { root }], [pathToFileURL(path.resolve("src/server.ts")).href, options], pathToFileURL(path.resolve("test/spill-fixture.ts")).href],
-  provider: { fixture: {
-    name: "Local test fixture", npm: "@ai-sdk/openai-compatible", options: { apiKey: "fixture-not-a-secret", baseURL: `http://127.0.0.1:${address.port}/v1` },
-    models: {
-      "fixture-model": { name: "Fixture", limit: { context: 200000, output: 32000 }, variants: { high: { temperature: 0.2 } } },
-      "fixture-other": { name: "Other fixture", limit: { context: 200000, output: 32000 }, variants: { fast: { temperature: 0.1 } } },
-      "fixture-gate": { name: "Autocompaction fixture", limit: { context: 50000, input: 30000, output: 20000 } },
-    },
-  } },
+const arguments_ = process.argv.slice(2).filter((value) => !value.startsWith("--"))
+const test = await fixture(arguments_[0], arguments_[1])
+const checks: string[] = []
+const sessions: string[] = []
+let passed = false
+const make = async () => {
+  const session = await test.client.session.create({ location: { directory: test.project }, model: { providerID: "fixture", id: "fixture" }, title: "Context manager production smoke", metadata: { unrelated: "keep" } })
+  sessions.push(session.id)
+  const remote = remoteHost(test.client, session.id)
+  const loaded = await remote.load()
+  assert.equal(loaded.version, VERSION)
+  return new Controller(remote.host, session.id, settings(loaded.settings), remote.artifacts)
 }
-const log = await open(path.join(root, "host.log"), "a")
-const child = spawn(executable, ["--print-logs", "--log-level", "DEBUG", "serve", "--hostname", "127.0.0.1", "--port", "41973"], {
-  cwd: project, stdio: ["ignore", log.fd, log.fd], windowsHide: true,
-  env: {
-    ...process.env, HOME: path.join(root, "home"), USERPROFILE: path.join(root, "home"),
-    XDG_CONFIG_HOME: path.join(root, "config"), XDG_DATA_HOME: path.join(root, "data"), XDG_CACHE_HOME: path.join(root, "cache"), XDG_STATE_HOME: path.join(root, "state"),
-    OPENCODE_CONFIG_DIR: path.join(root, "config", "opencode"), OPENCODE_CONFIG: "", OPENCODE_CONFIG_CONTENT: JSON.stringify(config),
-    OPENCODE_DISABLE_PROJECT_CONFIG: "1", OPENCODE_DISABLE_DEFAULT_PLUGINS: "1", OPENCODE_DISABLE_EXTERNAL_SKILLS: "1", OPENCODE_DISABLE_MODELS_FETCH: "1",
-    OPENCODE_SERVER_USERNAME: "fixture", OPENCODE_SERVER_PASSWORD: password,
-  },
-})
-child.on("error", (error) => console.error(error))
-const headers = { authorization: `Basic ${Buffer.from(`fixture:${password}`).toString("base64")}` }
-let completed = false
+const send = async (controller: Controller, text: string) => {
+  await test.client.session.prompt({ sessionID: controller.sessionID, text })
+  await test.client.session.wait({ sessionID: controller.sessionID })
+  const info = await test.client.session.get({ sessionID: controller.sessionID })
+  assert.equal(info.outcome, "succeeded", JSON.stringify(await test.client.session.context({ sessionID: controller.sessionID })))
+}
 try {
-  let ready = false
-  for (let i = 0; i < 120; i++) {
-    if (child.exitCode !== null) throw new Error(`OpenCode exited ${child.exitCode}`)
-    try { ready = (await fetch("http://127.0.0.1:41973/global/health", { headers, signal: AbortSignal.timeout(1000) })).ok } catch {}
-    if (ready) break
-    await new Promise((resolve) => setTimeout(resolve, 500))
+  await test.until(async () => {
+    const list = await test.client.plugin.list({ location: { directory: test.project } })
+    const item = list.data.find((item) => item.id === "context-manager")
+    if (item?.state.status === "failed") throw new Error(item.state.error)
+    return item?.state.status === "active" && item.features.tui
+  }, "production plugin loading")
+  checks.push("production V2 server and automatic TUI discovery")
+  for (const options of [{ reasoning: true }, { reasoning: false, tools: "large" as const }, { reasoning: true, tools: "large" as const }, { reasoning: false, tools: "all" as const }, { reasoning: true, tools: "all" as const }, { reasoning: true, tools: "delete" as const }]) {
+    const controller = await make()
+    await send(controller, "ROOT_FACT EXERCISE_TOOL")
+    const original = await test.client.session.context({ sessionID: controller.sessionID })
+    const loaded = await controller.load()
+    assert.ok(loaded.runtime?.tools?.some((tool) => tool.id === "fixture_tool"))
+    assert.ok(JSON.stringify(loaded.raw).includes("HEAD_FIXTURE") && JSON.stringify(loaded.raw).includes("TAIL_FIXTURE"))
+    await controller.prune(loaded.blocks[0].sourceIDs, options)
+    assert.equal((await controller.load()).policy.version, 7)
+    await send(controller, "Immediate next request after context edit")
+    const request = JSON.stringify(test.requests.at(-1)?.messages)
+    assert.equal(request.includes("REASONING_FIXTURE"), !options.reasoning)
+    if (options.tools === "large") assert.match(request, /HEAD_FIXTURE[\s\S]*middle omitted[\s\S]*TAIL_FIXTURE/)
+    if (options.tools === "all") { assert.match(request, /Tool output pruned/); assert.ok(!request.includes("HEAD_FIXTURE")) }
+    if (options.tools === "delete") { assert.ok(!request.includes("HEAD_FIXTURE")); assert.ok(!request.includes("call_fixture")) }
+    const stored = await test.client.session.context({ sessionID: controller.sessionID })
+    assert.deepEqual(stored.filter((message) => original.some((before) => before.id === message.id)), original)
+    assert.equal((await test.client.session.get({ sessionID: controller.sessionID })).metadata?.unrelated, "keep")
+    checks.push(`actual RPC/controller ${JSON.stringify(options)}; unchanged stored transcript`)
   }
-  assert.ok(ready, "Isolated OpenCode did not start")
-  const client = createOpencodeClient({
-    baseUrl: "http://127.0.0.1:41973", directory: project, headers,
-    fetch: (input, init) => {
-      const signal = init?.signal ?? (input instanceof Request ? input.signal : undefined)
-      const timeout = AbortSignal.timeout(45000)
-      return fetch(input, { ...init, signal: signal ? AbortSignal.any([signal, timeout]) : timeout })
-    },
-  })
-  const host = sdkHost(client)
-  const created = (await client.session.create({ title: "Context manager isolated smoke" }, { throwOnError: true })).data!
-  const send = async (text: string) => {
-    const result = (await client.session.prompt({ sessionID: created.id, model: { providerID: "fixture", modelID: "fixture-model" }, parts: [{ type: "text", text }] }, { throwOnError: true, signal: AbortSignal.timeout(45000) })).data!
-    assert.ok(!result.info.error, JSON.stringify(result.info.error))
-    return result
-  }
-  await send("ROOT_FACT " + "Useful information. ".repeat(500) + " EXERCISE_TOOL")
-  const stored = await host.messages(created.id)
-  assert.ok(stored.some((message) => message.parts.some((part) => part.type === "reasoning" && part.text.includes("REASONING_FIXTURE"))))
-  const tool = stored.flatMap((m) => m.parts).find((p) => p.type === "tool")
-  assert.ok(tool?.type === "tool" && tool.state.status === "completed", JSON.stringify(stored))
-  assert.ok(tool.state.output.includes("HEAD_FIXTURE") && tool.state.output.includes("TAIL_FIXTURE"), "head/tail spill preview failed")
-  const storage = new Storage(project, path.join(root, "home", ".local", "state", "opencode-context-manager"))
-  const published = await storage.config()
-  assert.equal(published?.settings.ui.maxLinesPerTurn, 7)
-  assert.deepEqual(published?.settings.prune, options.prune, "Server must publish token-only options unchanged")
-  const controller = new Controller(host, created.id, settings(published!.settings), storage)
-  const loaded = await controller.load()
-  assert.ok(loaded.runtime?.system?.length, "System capture unavailable in isolated plugin storage")
-  assert.ok(loaded.runtime?.tools?.some((tool) => tool.id === "fixture_large"), "Fixture tool not present in captured catalog")
-  const ids = loaded.blocks[0].sourceIDs
-  await controller.prune(ids)
-  const savedPrune = readPolicy(await host.session(created.id)).operations.at(-1)!.rule
-  assert.ok(savedPrune?.unit === "tokens")
-  assert.equal(savedPrune.threshold, 5000)
-  assert.equal(savedPrune.head, 1000)
-  assert.equal(savedPrune.tail, 1000)
-  assert.ok(JSON.stringify((await controller.load()).blocks).includes("middle omitted"))
-  const beforePrunedRequest = requests.length
-  await send("Continue immediately after tool-prune only")
-  assert.ok(requests.length > beforePrunedRequest, "Post-pruning prompt did not reach the provider")
-  const prunedRequest = JSON.stringify(requests.at(-1)!.messages)
-  assert.ok(prunedRequest.includes("middle omitted"), "Provider did not receive the pruned tool result")
-  assert.ok(prunedRequest.includes("HEAD_FIXTURE") && prunedRequest.includes("TAIL_FIXTURE"))
-  const toolResults = (requests.at(-1)!.messages as { role: string; content: string }[]).filter((message) => message.role === "tool")
-  const prunedTool = toolResults.find((message) => message.content.includes("HEAD_FIXTURE"))
-  assert.ok(prunedTool && tokenCount(prunedTool.content, savedPrune.encoding) < savedPrune.threshold, "Provider did not receive a token-budgeted result")
-  assert.ok(!prunedTool.content.includes(tool.state.output), "Unpruned tool output leaked into the request")
-  await send("Continue after retaining selected tool pruning")
-  assert.ok(JSON.stringify(requests.at(-1)!.messages).includes("middle omitted"))
-  const beforeSummary = requests.length
-  const draft = await controller.summarize("compact", ids, { providerID: "fixture", modelID: "fixture-model", variant: "high" })
-  assert.equal(draft.attempts, 2, "Overshort compact draft must receive one expansion request")
-  const initialSummaryRequest = requests[beforeSummary]
-  const expansionRequest = requests[beforeSummary + 1]
-  assert.equal(requests.length, beforeSummary + 2, "There must be exactly one automatic retry")
-  const expansionPrompt = JSON.stringify((expansionRequest.messages as { role: string }[]).findLast((message) => message.role === "user"))
-  assert.ok(expansionPrompt.includes(`Initial selected range size: ${draft.operation.beforeTokens} tokens`))
-  assert.ok(expansionPrompt.includes("Your complete replacement size:") && expansionPrompt.includes("Reduction: x"))
-  assert.ok(expansionPrompt.includes("too short") && expansionPrompt.includes("not targets or requirements"))
-  assert.ok(expansionPrompt.includes("no useful information"), "Sparse-source exception is missing")
-  assert.equal(initialSummaryRequest.max_tokens, 32000, "Plugin must not lower the host/provider output cap")
-  assert.equal(expansionRequest.max_tokens, 32000)
-  assert.ok(!JSON.stringify(initialSummaryRequest.messages).includes("CRITICAL - MAXIMUM STEPS REACHED"), "Summarizer request was overridden by OpenCode's generic max-steps work recap")
-  assert.ok(!Array.isArray(initialSummaryRequest.tools) || initialSummaryRequest.tools.length === 0, "Summarizer must remain tool-disabled")
-  const helperBefore = await host.messages(draft.jobID)
-  assert.ok(helperBefore[0].parts.some((p) => p.type === "text" && p.text.includes("<selected_range_")), "First helper prompt lost original context")
-  const revised = await controller.refine(draft, draft.operation.summary + "\nMANUAL_KEEP", "Include next steps.", { providerID: "fixture", modelID: "fixture-other", variant: "fast" })
-  assert.equal(revised.jobID, draft.jobID)
-  const helperAfter = await host.messages(draft.jobID)
-  assert.deepEqual(helperAfter[0], helperBefore[0])
-  const helperUsers = helperAfter.filter((m) => m.info.role === "user")
-  assert.equal(helperUsers.length, 3)
-  const latestUser = helperUsers.at(-1)!
-  assert.ok(latestUser.info.role === "user" && latestUser.info.model.variant === "fast")
-  assert.ok(latestUser.parts.some((p) => p.type === "text" && p.text.includes("MANUAL_KEEP")))
-  const revisionRequest = requests.at(-1)!
-  assert.equal(revisionRequest.model, "fixture-other")
-  assert.equal(revisionRequest.max_tokens, 32000)
-  const revisionHistory = JSON.stringify(revisionRequest.messages)
-  assert.ok(revisionHistory.includes("<selected_range_") && revisionHistory.includes("Include next steps."), "Provider request did not retain compaction conversation")
-  assert.ok(!revisionHistory.includes("CRITICAL - MAXIMUM STEPS REACHED"), "Revision request got the host's generic work recap")
-  await controller.apply(revised, revised.operation.summary!)
-  await assert.rejects(host.session(draft.jobID), "Applied summary helper must be deleted")
-  const beforeRequest = requests.length
-  await send("Continue after selected-range summary")
-  assert.ok(requests.length > beforeRequest)
-  const final = JSON.stringify(requests.at(-1))
-  assert.ok(final.includes("Context manager compact summary"), "Provider did not receive summary projection")
-  assert.ok(!final.includes("Useful information. Useful information."), "Original selected range leaked into effective context")
-  const beforeExpand = requests.length
-  const expand = await controller.prepareRestore("expand", ids)
-  assert.equal(expand.summaries, 1)
-  await controller.applyRestore(expand)
-  assert.equal(requests.length, beforeExpand, "Expansion must not invoke a model")
-  await send("Continue after expanding the selected summary")
-  const expandedRequest = JSON.stringify(requests.at(-1)!.messages)
-  assert.ok(expandedRequest.includes("middle omitted"), "Expansion must retain pre-summary pruning")
-  assert.ok(!expandedRequest.includes("Context manager compact summary"), "Expanded summary still in effective context")
-  let beforePruning = requests.length
-  await controller.prune(ids, { reasoning: true })
-  assert.equal(requests.length, beforePruning, "Reasoning removal must not invoke a model")
-  await send("Continue immediately after reasoning removal")
-  const withoutReasoning = JSON.stringify(requests.at(-1)!.messages)
-  assert.ok(!withoutReasoning.includes("REASONING_FIXTURE"))
-  assert.ok(withoutReasoning.includes("fixture_large") && withoutReasoning.includes("middle omitted"))
-  beforePruning = requests.length
-  await controller.prune(ids, { reasoning: false, tools: "all" })
-  assert.equal(requests.length, beforePruning)
-  await send("Continue immediately after all-output pruning")
-  const withoutOutputs = JSON.stringify(requests.at(-1)!.messages)
-  assert.ok(withoutOutputs.includes("[Tool output pruned]") && withoutOutputs.includes("fixture_large"))
-  assert.ok(!withoutOutputs.includes("HEAD_FIXTURE") && !withoutOutputs.includes("TAIL_FIXTURE"))
-  beforePruning = requests.length
-  await controller.prune(ids, { reasoning: true, tools: "delete" })
-  assert.equal(requests.length, beforePruning)
-  await send("Continue immediately after whole-tool deletion")
-  const withoutTools = JSON.stringify(requests.at(-1)!.messages)
-  assert.ok(!withoutTools.includes("fixture_large") && !withoutTools.includes("call_fixture") && !withoutTools.includes("Tool output pruned"))
-  assert.ok(withoutTools.includes("Useful information.") && withoutTools.includes("Fixture assistant response"))
-  await controller.dump("1.18.34")
-  assert.equal((await controller.load()).blocks[0].kind, "turn")
-  const restored = await host.messages(created.id)
-  assert.deepEqual(restored.slice(0, stored.length), stored)
+  const controller = await make()
+  await send(controller, "ROOT_FACT " + "Selected information. ".repeat(400) + " EXERCISE_TOOL")
+  await send(controller, "SECOND_FACT " + "Independent information. ".repeat(400))
+  await send(controller, "THIRD_FACT " + "More independent information. ".repeat(400))
+  let loaded = await controller.load()
+  await controller.prune(loaded.blocks[0].sourceIDs)
+  loaded = await controller.load()
+  const before = structuredClone(loaded.blocks[0])
+  const draft = await controller.summarize("compact", loaded.blocks[0].sourceIDs)
+  assert.ok(draft.attempts >= 1 && draft.attempts <= 2)
+  await controller.apply(draft, draft.operation.summary!)
+  await send(controller, "Observe compact summary now")
+  assert.match(JSON.stringify(test.requests.at(-1)?.messages), /Context manager compact summary/)
+  const summary = (await controller.load()).blocks[0]
+  const view = await controller.summary(summary.summaryID!)
+  await controller.editSummary(view, "MANUAL_KEEP ROOT_FACT")
+  await send(controller, "Observe edited summary now")
+  assert.match(JSON.stringify(test.requests.at(-1)?.messages), /MANUAL_KEEP/)
+  await controller.applyRestore(await controller.prepareRestore("expand", summary.sourceIDs))
+  assert.deepEqual((await controller.load()).blocks[0], before)
+  await send(controller, "Observe expanded previously pruned context")
+  assert.match(JSON.stringify(test.requests.at(-1)?.messages), /middle omitted/)
+  checks.push("summary, revision, exact expansion with prior pruning; immediate provider requests")
+
+  loaded = await controller.load()
   const batch = new SummaryBatch(controller)
-  const beforeBatch = await controller.load()
-  const batchRanges = [beforeBatch.blocks[0].sourceIDs, beforeBatch.blocks[2].sourceIDs]
-  await batch.start("brief", batchRanges)
-  parallelGate = new Promise<void>((resolve) => { releaseParallel = resolve })
-  const timeout = setTimeout(() => { parallelGate = undefined; releaseParallel!() }, 10000)
-  const firstParallelRequest = requests.length
-  try { await batch.generate() } finally { clearTimeout(timeout) }
-  assert.ok(concurrent, "The host must reach both provider requests before either response completes")
-  assert.equal(batch.entries.filter((entry) => entry.status === "ready").length, 2)
-  assert.equal(requests.length, firstParallelRequest + 2)
-  for (const request of requests.slice(firstParallelRequest)) {
-    const body = JSON.stringify(request.messages)
-    assert.ok(body.includes("Continue immediately after tool-prune only"))
-    assert.ok(body.includes("Continue after retaining selected tool pruning"))
-    assert.ok(body.includes("Continue after expanding the selected summary"))
-    assert.ok(!body.includes("PARALLEL_SUMMARY_"), "A sibling result leaked into frozen background")
+  await batch.start("brief", [loaded.blocks[0].sourceIDs, loaded.blocks[2].sourceIDs])
+  const batchStart = test.requests.length
+  const barrier = test.parallel(2)
+  await batch.generate()
+  assert.ok(batch.ready, JSON.stringify(batch.entries.map((entry) => entry.error)))
+  assert.equal(barrier.count(), 2)
+  for (const request of test.requests.slice(batchStart)) {
+    const text = JSON.stringify(request.messages)
+    for (const fact of ["ROOT_FACT", "SECOND_FACT", "THIRD_FACT"]) assert.ok(text.includes(fact))
+    assert.ok(!text.includes("Retained selected facts:"), "A sibling summary leaked into an initial frozen request")
   }
-  const jobIDs = batch.entries.map((entry) => entry.draft!.jobID)
-  assert.equal(new Set(jobIDs).size, 2)
-  const update = host.update
-  let writes = 0
-  host.update = async (...args) => { writes++; await update(...args) }
-  batch.entries[0].text = "PARALLEL_SUMMARY_ONE: retained ROOT_FACT"
-  batch.entries[1].text = "PARALLEL_SUMMARY_TWO: retained second selected range"
+  barrier.release()
+  const revision = (await controller.load()).policy.revision
   await batch.apply()
-  assert.equal(writes, 1)
-  host.update = update
-  for (const id of jobIDs) await assert.rejects(host.session(id), "Batch helper must be deleted after application")
-  await send("Continue after applying the parallel batch")
-  const batchRequest = JSON.stringify(requests.at(-1)!.messages)
-  assert.ok(batchRequest.includes("PARALLEL_SUMMARY_ONE") && batchRequest.includes("PARALLEL_SUMMARY_TWO"))
-  assert.ok(batchRequest.includes("Continue immediately after tool-prune only"), "Unselected gap was altered")
-  await batch.dispose()
-  const summaryID = readPolicy(await host.session(created.id)).operations.find((op) => op.summary?.includes("PARALLEL_SUMMARY_ONE"))!.id
-  const editor = new SummaryEditor(controller, await controller.summary(summaryID))
-  const createJob = host.createJob
-  const editJobs: string[] = []
-  host.createJob = async (purpose) => { const id = await createJob(purpose); if (purpose === "edit") editJobs.push(id); return id }
-  const editChoice = { providerID: "fixture", modelID: "fixture-model", variant: "high" }
-  await editor.request("Clarify this summary", editChoice)
-  const editFirst = requests.at(-1)!
-  const editBody = JSON.stringify(editFirst.messages)
-  assert.ok(editBody.includes("PARALLEL_SUMMARY_ONE"))
-  assert.ok(!editBody.includes("PARALLEL_SUMMARY_TWO") && !editBody.includes("Continue immediately after tool-prune only") && !editBody.includes("<selected_range_"), "Edit dialogue must not receive original session background")
-  assert.ok(!Array.isArray(editFirst.tools) || editFirst.tools.length === 0, "Summary editor must be tool-disabled")
-  assert.equal(editFirst.max_tokens, 32000)
-  assert.equal((await controller.summary(summaryID)).text, "PARALLEL_SUMMARY_ONE: retained ROOT_FACT")
-  const firstEditMessage = (await host.messages(editJobs[0]))[0]
-  await editor.request("Make another correction", editChoice)
-  assert.equal(editJobs.length, 1)
-  assert.deepEqual((await host.messages(editJobs[0]))[0], firstEditMessage)
-  assert.ok(JSON.stringify(requests.at(-1)!.messages).includes("FRESH_EDIT_ONE"))
+  assert.equal((await controller.load()).policy.revision, revision + 2)
+  checks.push("parallel helpers see frozen background; complete batch applies")
+  await send(controller, "Observe parallel summaries")
+  assert.equal((JSON.stringify(test.requests.at(-1)?.messages).match(/Context manager brief summary/g) ?? []).length, 2)
+  const editor = new SummaryEditor(controller, await controller.summary((await controller.load()).blocks[0].summaryID!))
+  const count = test.requests.length
+  await editor.request("Clarify this saved summary", { providerID: "fixture", modelID: "fixture" })
+  assert.equal(editor.draft, "EDIT_ONE: clarified saved summary")
+  const editing = JSON.stringify(test.requests[count])
+  assert.ok(!editing.includes("SECOND_FACT") && !editing.includes("EXERCISE_TOOL"))
+  await editor.request("Correct the proposal", { providerID: "fixture", modelID: "fixture", variant: "high" })
   await editor.apply()
-  assert.equal((await controller.summary(summaryID)).text, "FRESH_EDIT_TWO: corrected summary")
-  await assert.rejects(host.session(editJobs[0]), "Applied edit dialogue must be disposed")
-  await send("Continue after editing a saved summary")
-  const editedRequest = JSON.stringify(requests.at(-1)!.messages)
-  assert.ok(editedRequest.includes("FRESH_EDIT_TWO") && editedRequest.includes("PARALLEL_SUMMARY_TWO"))
-  assert.equal((await controller.summary(summaryID)).text, "FRESH_EDIT_TWO: corrected summary")
+  assert.match((await controller.load()).blocks[0].messages.map((message) => JSON.stringify(message.parts)).join(""), /EDIT_TWO/)
   await editor.dispose()
-  host.createJob = createJob
-  const beforeNoReply = requests.length
-  await client.session.prompt({ sessionID: created.id, model: editChoice, noReply: true, parts: [{ type: "text", text: "USER_ONLY_CANARY: this request has no assistant response yet" }] }, { throwOnError: true })
-  assert.equal(requests.length, beforeNoReply)
-  const pendingTurn = (await controller.load()).blocks.at(-1)!
-  assert.equal(pendingTurn.closed, false)
-  assert.equal(pendingTurn.messages.length, 1)
-  const originalPending = structuredClone(pendingTurn.messages)
-  const pendingDraft = await controller.summarize("brief", pendingTurn.sourceIDs)
-  assert.ok(JSON.stringify(requests.at(-1)!.messages).includes("unfinished snapshot"))
-  await controller.apply(pendingDraft, "UNFINISHED_SUMMARY: the user asked a question; no response was recorded.")
-  const appliedPending = (await controller.load()).blocks.at(-1)!
-  assert.deepEqual(appliedPending.messages.map((message) => message.info.role), ["user", "assistant"])
-  assert.notEqual(appliedPending.messages[0].info.id, appliedPending.messages[1].info.id)
-  await send("Continue after summarizing a user-only turn")
-  const pendingRequest = JSON.stringify(requests.at(-1)!.messages)
-  assert.ok(pendingRequest.includes("UNFINISHED_SUMMARY") && !pendingRequest.includes("USER_ONLY_CANARY"))
-  const pendingRestore = await controller.prepareRestore("expand", pendingTurn.sourceIDs)
-  await controller.applyRestore(pendingRestore)
-  assert.deepEqual((await controller.load()).blocks.find((block) => block.sourceIDs[0] === pendingTurn.sourceIDs[0])!.messages, originalPending)
-  await send("Continue after expanding the user-only turn")
-  assert.ok(JSON.stringify(requests.at(-1)!.messages).includes("USER_ONLY_CANARY"))
-  const waitForPause = async () => {
-    for (let index = 0; index < 400; index++) {
-      const raw = await host.messages(created.id)
-      const user = raw.findLast((message) => message.info.role === "user")!
-      const file = path.join(root, `pause-${user.info.id}.json`)
-      const state = await readFile(file, "utf8").then(JSON.parse).catch(() => undefined)
-      if (state?.status === "paused") return { file, users: raw.filter((message) => message.info.role === "user").length }
-      await new Promise((resolve) => setTimeout(resolve, 25))
+  checks.push("summary-only editing, continued proposal, variant switch, explicit apply")
+  const dump = JSON.parse(await readFile(await controller.dump("2.0.24"), "utf8"))
+  assert.equal(dump.pluginVersion, VERSION)
+  assert.equal(dump.schemaVersion, 3)
+  assert.ok(!JSON.stringify(dump.blocks).includes('"previous"'))
+  checks.push("server-owned effective export excludes expansion layers")
+
+  for (const strategy of ["MANUAL", "AUTO_PER_TURN", "AUTO_SESSION"] as const) {
+    const auto = await make()
+    await send(auto, "EARLIER_ROOT " + "Useful previous facts. ".repeat(4500))
+    await send(auto, "EARLIER_SECOND " + "Other previous facts. ".repeat(1000))
+    await auto.host.auto!.command(auto.sessionID, { action: "strategy", strategy })
+    await test.client.session.switchModel({ sessionID: auto.sessionID, model: { providerID: "fixture", id: "small" } })
+    const beforeUsers = (await test.client.session.context({ sessionID: auto.sessionID })).filter((message) => message.type === "user").length
+    await test.client.session.prompt({ sessionID: auto.sessionID, text: "ACTIVE_PROTECTED follow up" })
+    if (strategy === "MANUAL") {
+      const state = await test.until(async () => (await auto.host.auto!.state(auto.sessionID)).pause, "MANUAL suspension")
+      const current = await auto.load()
+      await assert.rejects(auto.prune(current.blocks.at(-1)!.sourceIDs, { reasoning: true, tools: "delete" }), /protected/)
+      const next = await auto.summarize("brief", current.blocks[0].sourceIDs)
+      await auto.apply(next, next.operation.summary!)
+      await auto.host.auto!.command(auto.sessionID, { action: "resume", pauseID: state.id })
     }
-    throw new Error("Pause probe did not reach the gate")
+    await test.client.session.wait({ sessionID: auto.sessionID })
+    assert.equal((await test.client.session.get({ sessionID: auto.sessionID })).outcome, "succeeded")
+    assert.equal((await test.client.session.context({ sessionID: auto.sessionID })).filter((message) => message.type === "user").length, beforeUsers + 1)
+    assert.ok((await auto.load()).policy.cursor > 0)
+    checks.push(`${strategy} actual near-limit reduction and same-loop resume`)
   }
-  const pending = send("PAUSE_PROBE EXERCISE_TOOL")
-  const paused = await waitForPause()
-  assert.equal(await host.idle(created.id), false)
-  const requestsAtPause = requests.length
-  await new Promise((resolve) => setTimeout(resolve, 100))
-  assert.equal(requests.length, requestsAtPause, "No provider request may pass the suspended hook")
-  const maintenance = new Controller({ ...host, idle: async (id) => id === created.id || host.idle(id) }, created.id, settings(published!.settings), storage)
-  const oldBlock = (await maintenance.load()).blocks[0]
-  const pausedDraft = await maintenance.summarize("brief", oldBlock.sourceIDs)
-  await maintenance.apply(pausedDraft, "PAUSE_CHANGED: earlier context replaced while the main loop was suspended.")
-  await writeFile(paused.file, JSON.stringify({ action: "resume" }))
-  await pending
-  assert.ok(JSON.stringify(requests.at(-1)!.messages).includes("PAUSE_CHANGED"))
-  assert.equal((await host.messages(created.id)).filter((message) => message.info.role === "user").length, paused.users, "Resume must not create a user message")
-  const cancelled = send("PAUSE_PROBE EXERCISE_TOOL").catch(() => undefined)
-  const stopped = await waitForPause()
-  await host.abort(created.id)
-  await cancelled
-  assert.equal(await host.idle(created.id), true)
-  for (let i = 0; i < 100 && JSON.parse(await readFile(stopped.file, "utf8")).status !== "aborted"; i++) await new Promise((resolve) => setTimeout(resolve, 25))
-  assert.equal(JSON.parse(await readFile(stopped.file, "utf8")).status, "aborted")
-  await maintenance.dispose()
-  assert.ok(published?.control)
-  const control = controlClient(published.control)
-  const controlledHost = sdkHost(client, control)
-  const gateModel = { providerID: "fixture", modelID: "fixture-gate" }
-  const pauseFor = async (id: string) => {
-    for (let i = 0; i < 600; i++) {
-      const state = await control.state(id)
-      if (state.pause?.phase === "manual") return state.pause
-      await new Promise((resolve) => setTimeout(resolve, 25))
-    }
-    throw new Error("Production context gate was not reached")
+  const broken = await make()
+  await test.client.session.update({ sessionID: broken.sessionID, metadata: { [KEY]: { version: 6, operations: [] }, unrelated: "keep" } })
+  await assert.rejects(broken.load(), /V1 or inherited/)
+  checks.push("legacy ledger blocked without mutation")
+  const rpc = test.client.rpc(ContextManager)
+  const first = await make()
+  const second = await make()
+  const job = await rpc.createJob({ sessionID: first.sessionID, purpose: "summary" }, { location: { directory: test.project } })
+  await assert.rejects(rpc.removeJob({ sessionID: second.sessionID, jobID: job }, { location: { directory: test.project } }))
+  await rpc.removeJob({ sessionID: first.sessionID, jobID: job }, { location: { directory: test.project } })
+  checks.push("helper ownership enforced by server RPC")
+
+  const partial = await make()
+  await send(partial, "SUCCESS_RANGE synthetic source")
+  await send(partial, "FAIL_RANGE synthetic source")
+  const partialBatch = new SummaryBatch(partial)
+  const partialSource = await partial.load()
+  await partialBatch.start("brief", partialSource.blocks.map((block) => block.sourceIDs))
+  let failed = false
+  test.respond((wire) => {
+    const message = wire.messages.findLast((message) => message.role === "user")
+    const text = typeof message?.content === "string" ? message.content : JSON.stringify(message?.content)
+    const selected = /<selected_range_[^>]+>([\s\S]*?)<\/selected_range_[^>]+>/.exec(text)?.[1]
+    if (!failed && selected?.includes("FAIL_RANGE")) { failed = true; return { text: "Truncated and invalid", finish: "length" } }
+    return undefined
+  })
+  await partialBatch.generate()
+  assert.equal(partialBatch.ready, false)
+  assert.equal(partialBatch.entries.filter((entry) => entry.status === "ready").length, 1)
+  assert.equal((await partial.load()).policy.cursor, 0)
+  await assert.rejects(partialBatch.apply(), /Every range/)
+  const readyJob = partialBatch.entries.find((entry) => entry.status === "ready")!.draft!.jobID
+  const retryStart = test.requests.length
+  await partialBatch.generate()
+  assert.equal(test.requests.length, retryStart + 1)
+  assert.ok(partialBatch.entries.some((entry) => entry.draft?.jobID === readyJob))
+  await partialBatch.apply()
+  test.respond(() => undefined)
+  assert.equal((await partial.load()).policy.cursor, 2)
+  checks.push("truncated sibling blocks partial application; retry only failed helper, one complete batch")
+
+  const cancelEditor = new SummaryEditor(partial, await partial.summary((await partial.load()).blocks[0].summaryID!))
+  const release = test.hold()
+  const cancelRevision = (await partial.load()).policy.revision
+  const cancelStart = test.requests.length
+  const cancelled = cancelEditor.request("HOLD_FIXTURE do not apply a late answer", { providerID: "fixture", modelID: "fixture" }).catch((error: unknown) => error)
+  await test.until(() => test.requests.length > cancelStart, "pending edit provider request")
+  await cancelEditor.cancel()
+  assert.ok(await cancelled instanceof Error)
+  release()
+  await cancelEditor.dispose()
+  assert.equal((await partial.load()).policy.revision, cancelRevision)
+  assert.equal((await test.client.session.list({ parentID: partial.sessionID })).data.length, 0)
+  checks.push("cancelled editor cannot apply late output; owned helpers removed")
+
+  const queued = await make()
+  await send(queued, "EARLIER_CONTEXT " + "Earlier useful facts. ".repeat(4500))
+  await test.client.session.switchModel({ sessionID: queued.sessionID, model: { providerID: "fixture", id: "small" } })
+  await test.client.session.prompt({ sessionID: queued.sessionID, text: "ACTIVE_BEFORE_STEER" })
+  const queuePause = await test.until(async () => (await queued.host.auto!.state(queued.sessionID)).pause, "pause before steering")
+  await test.client.session.prompt({ sessionID: queued.sessionID, text: "STEER_WHILE_PAUSED", delivery: "steer" })
+  await test.client.session.prompt({ sessionID: queued.sessionID, text: "QUEUE_WHILE_PAUSED", delivery: "queue" })
+  const queueView = await queued.load()
+  const queueDraft = await queued.summarize("brief", queueView.blocks[0].sourceIDs)
+  await queued.apply(queueDraft, queueDraft.operation.summary!)
+  await queued.host.auto!.command(queued.sessionID, { action: "resume", pauseID: queuePause.id })
+  await test.client.session.wait({ sessionID: queued.sessionID })
+  const queueHistory = await test.client.session.context({ sessionID: queued.sessionID })
+  for (const text of ["ACTIVE_BEFORE_STEER", "STEER_WHILE_PAUSED", "QUEUE_WHILE_PAUSED"]) assert.equal(queueHistory.filter((message) => message.type === "user" && message.text === text).length, 1)
+  assert.equal(queueHistory.filter((message) => message.type === "user").length, 4)
+  checks.push("steered/queued inputs during pause delivered exactly once; no fabricated continuation")
+
+  const stopped = await make()
+  await send(stopped, "OVER_BUDGET " + "Earlier useful facts. ".repeat(4500))
+  await test.client.session.switchModel({ sessionID: stopped.sessionID, model: { providerID: "fixture", id: "small" } })
+  let stopCalls = test.requests.length
+  await test.client.session.prompt({ sessionID: stopped.sessionID, text: "NATIVE_STOP" })
+  await test.until(async () => (await stopped.host.auto!.state(stopped.sessionID)).pause, "native stop gate")
+  await test.client.session.interrupt({ sessionID: stopped.sessionID, resume: false })
+  await test.client.session.wait({ sessionID: stopped.sessionID })
+  await test.until(async () => !(await stopped.host.auto!.state(stopped.sessionID)).pause, "native stop release")
+  assert.equal(test.requests.length, stopCalls)
+  await test.client.session.prompt({ sessionID: stopped.sessionID, text: "RPC_ABORT" })
+  const abortPause = await test.until(async () => (await stopped.host.auto!.state(stopped.sessionID)).pause, "RPC abort gate")
+  await stopped.host.auto!.command(stopped.sessionID, { action: "abort", pauseID: abortPause.id })
+  await test.client.session.wait({ sessionID: stopped.sessionID })
+  assert.equal(test.requests.length, stopCalls)
+  checks.push("native Stop and RPC abort revoke actual autocompaction gates without dispatch")
+  await test.client.session.switchModel({ sessionID: stopped.sessionID, model: { providerID: "fixture", id: "fixture" } })
+  const unfinished = (await stopped.load()).blocks.find((block) => block.messages[0].parts.some((part) => part.type === "text" && part.text === "NATIVE_STOP"))!
+  assert.equal(unfinished.closed, false)
+  const unfinishedDraft = await stopped.summarize("brief", unfinished.sourceIDs)
+  await stopped.apply(unfinishedDraft, unfinishedDraft.operation.summary!)
+  await send(stopped, "Observe user-only summary after an interrupted turn")
+  assert.match(JSON.stringify(test.requests.at(-1)?.messages), /Context manager brief summary/)
+  await stopped.applyRestore(await stopped.prepareRestore("expand", unfinished.sourceIDs))
+  checks.push("interrupted user-only turn summarizes with valid distinct assistant and expands")
+  await test.client.session.switchModel({ sessionID: stopped.sessionID, model: { providerID: "fixture", id: "small" } })
+
+  const moved = await make()
+  await send(moved, "MOVE_ROOT EXERCISE_TOOL")
+  await moved.prune((await moved.load()).blocks[0].sourceIDs, { reasoning: true })
+  const orphanCandidate = await rpc.createJob({ sessionID: moved.sessionID, purpose: "summary" }, { location: { directory: test.project } })
+  const destination = path.join(test.root, "moved")
+  await mkdir(destination)
+  await test.client.session.move({ sessionID: moved.sessionID, directory: destination })
+  await test.client.session.wait({ sessionID: moved.sessionID })
+  await test.until(async () => (await test.client.session.get({ sessionID: moved.sessionID })).location.directory === destination, "session move")
+  await test.until(async () => !(await test.client.session.list({ parentID: moved.sessionID })).data.some((session) => session.id === orphanCandidate), "moved helper cleanup")
+  await send(moved, "Request after moving the session")
+  assert.ok(!JSON.stringify(test.requests.at(-1)?.messages).includes("REASONING_FIXTURE"))
+  checks.push("session movement preserves policy, routes RPC by session location and cleans old helpers")
+
+  await test.client.session.prompt({ sessionID: stopped.sessionID, text: "RELOAD_WHILE_PAUSED" })
+  const oldPause = await test.until(async () => (await stopped.host.auto!.state(stopped.sessionID)).pause, "reload gate")
+  stopCalls = test.requests.length
+  const altered = { ...test.config, plugins: ["-opencode.provider.*", { package: path.join(test.repo, "src"), options: { autocompaction: { headroom: 2001 }, summarizer: { providerID: "fixture", modelID: "fixture" } } }, path.join(test.repo, "test/host-fixture")] }
+  await writeFile(test.configPath, JSON.stringify(altered))
+  await test.until(async () => { try { return (await rpc.inspect({ sessionID: stopped.sessionID }, { location: { directory: test.project } })).settings.autocompaction.headroom === 2001 } catch { return false } }, "production plugin reload")
+  await test.client.session.wait({ sessionID: stopped.sessionID })
+  assert.equal((await stopped.host.auto!.state(stopped.sessionID)).pause, undefined)
+  await assert.rejects(stopped.host.auto!.command(stopped.sessionID, { action: "resume", pauseID: oldPause.id }), /no longer active/)
+  assert.equal(test.requests.length, stopCalls)
+  await writeFile(test.configPath, JSON.stringify(test.config))
+  await test.until(async () => { try { return (await rpc.inspect({ sessionID: stopped.sessionID }, { location: { directory: test.project } })).settings.autocompaction.headroom === 2000 } catch { return false } }, "original options restored")
+  checks.push("production reload cancels a suspended request; stale persisted notice never grants resume")
+  const unauthorized = await fetch(`${test.url}/api/rpc/context-manager/inspect`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ input: { sessionID: first.sessionID } }) })
+  assert.equal(unauthorized.status, 401)
+  checks.push("native RPC authentication rejects unauthenticated control")
+  const synthetic = await make()
+  await test.client.session.switchModel({ sessionID: synthetic.sessionID, model: { providerID: "fixture", id: "small" } })
+  const syntheticCalls = test.requests.length
+  await test.client.session.synthetic({ sessionID: synthetic.sessionID, text: "Synthetic-only large context. ".repeat(5000) })
+  await test.client.session.wait({ sessionID: synthetic.sessionID })
+  assert.equal(test.requests.length, syntheticCalls)
+  assert.equal((await test.client.session.get({ sessionID: synthetic.sessionID })).outcome, "failed")
+  checks.push("oversized synthetic-only context fails safely instead of bypassing the budget gate")
+  if (process.argv.includes("--tui")) {
+    const ui = await make()
+    await send(ui, "ROOT_FACT EXERCISE_TOOL")
+    await send(ui, "Second UI turn")
+    await verifyInspector(test, ui, arguments_[0] ?? "opencode")
+    checks.push("real production inspector: ranges, pruning, native dialog focus, readers, summarization, model editing/apply, expansion and resize")
   }
-  const seed = async (mode: Strategy, parts: string[]) => {
-    const session = (await client.session.create({ title: `Isolated ${mode} gate` }, { throwOnError: true })).data!
-    await control.command(session.id, { action: "strategy", strategy: mode })
-    for (const text of parts) await client.session.prompt({ sessionID: session.id, model: gateModel, noReply: true, parts: [{ type: "text", text }] }, { throwOnError: true })
-    return session.id
-  }
-  const startGated = (id: string, text: string) => client.session.prompt({ sessionID: id, model: gateModel, parts: [{ type: "text", text }] }, { throwOnError: true })
-  const manualID = await seed("MANUAL", ["OLD_GATE_CONTEXT " + "value ".repeat(14000)])
-  const manualPending = startGated(manualID, "Protected request; manual gate fixture")
-  const manualPause = await pauseFor(manualID)
-  assert.equal(manualPause.threshold, 10000)
-  assert.equal(manualPause.derived, false)
-  assert.equal(await host.idle(manualID), false, "Host must still own the suspended loop")
-  assert.equal(await controlledHost.idle(manualID), true, "Only the live control gate grants maintenance")
-  const gatedController = new Controller(controlledHost, manualID, settings(published.settings), storage)
-  const gatedLoaded = await gatedController.load()
-  const protectedIDs = gatedLoaded.blocks.at(-1)!.sourceIDs
-  await assert.rejects(gatedController.prune(protectedIDs), /protected/)
-  await assert.rejects(control.command(manualID, { action: "resume", pauseID: manualPause.id }), /Resume blocked/)
-  const manualDraft = await gatedController.summarize("brief", gatedLoaded.blocks[0].sourceIDs)
-  await gatedController.apply(manualDraft, "MANUAL_GATE_REPLACEMENT: older context reduced while suspended.")
-  await control.command(manualID, { action: "resume", pauseID: manualPause.id })
-  const resumed = (await manualPending).data!
-  assert.ok(!resumed.info.error, JSON.stringify(resumed.info.error))
-  assert.ok(JSON.stringify(requests.at(-1)!.messages).includes("MANUAL_GATE_REPLACEMENT"))
-  assert.ok(!JSON.stringify(requests.at(-1)!.messages).includes("OLD_GATE_CONTEXT"))
-  assert.equal((await host.messages(manualID)).filter((message) => message.info.role === "user").length, 2)
-  await gatedController.dispose()
-  for (const mode of ["AUTO_SESSION", "AUTO_PER_TURN"] as const) {
-    const id = await seed(mode, mode === "AUTO_SESSION" ? ["value ".repeat(14000)] : ["value ".repeat(6000), "value ".repeat(6000)])
-    const reply = (await startGated(id, mode === "AUTO_SESSION" ? "Protected AUTO_SESSION request" : "p ".repeat(8000))).data!
-    assert.ok(!reply.info.error, JSON.stringify(reply.info.error))
-    const policy = readPolicy(await host.session(id))
-    assert.equal(policy.cursor, mode === "AUTO_SESSION" ? 1 : 2)
-    const latest = (await host.messages(id)).findLast((message) => message.info.role === "user")!
-    assert.ok(policy.operations.every((op) => !op.sourceIDs.includes(latest.info.id)))
-    assert.equal((await control.state(id)).pause, undefined)
-    assert.equal((await host.session(id)).metadata?.[AUTO_KEY] && (await control.state(id)).strategy, mode)
-  }
-  const toolGateID = await seed("MANUAL", [])
-  const toolPending = startGated(toolGateID, "EXERCISE_TOOL").catch(() => undefined)
-  const toolPause = await pauseFor(toolGateID)
-  const toolHistory = await host.messages(toolGateID)
-  assert.ok(toolHistory.some((message) => message.parts.some((part) => part.type === "tool" && part.state.status === "completed")), "Tool result must be saved before the production gate")
-  const callsBeforeStop = requests.length
-  await new Promise((resolve) => setTimeout(resolve, 100))
-  assert.equal(requests.length, callsBeforeStop)
-  await control.command(toolGateID, { action: "abort", pauseID: toolPause.id })
-  await toolPending
-  assert.equal(await host.idle(toolGateID), true)
-  assert.equal((await control.state(toolGateID)).pause, undefined)
-  completed = true
-  console.log("PASS: stock OpenCode; manual/AUTO context gates, same-loop resume with no user prompt, protected tail, after-tool persistence, abort, all prior context workflows. Local fake provider only.")
+  await batch.dispose()
+  await controller.dispose()
+  await test.client.session.prompt({ sessionID: stopped.sessionID, text: "SERVER_RESTART_WHILE_PAUSED" })
+  const restartPause = await test.until(async () => (await stopped.host.auto!.state(stopped.sessionID)).pause, "server restart gate")
+  const restartCalls = test.requests.length
+  await test.restart()
+  const fresh = remoteHost(test.client, stopped.sessionID)
+  await test.until(async () => { try { return await fresh.load() } catch { return undefined } }, "plugin after server restart")
+  await assert.rejects(fresh.host.auto!.command(stopped.sessionID, { action: "resume", pauseID: restartPause.id }), /no longer active/)
+  if (!(await fresh.host.auto!.state(stopped.sessionID)).pause) await test.client.session.prompt({ sessionID: stopped.sessionID, text: "Explicit new input after restart" })
+  const newPause = await test.until(async () => (await fresh.host.auto!.state(stopped.sessionID)).pause, "new live pause after restart")
+  assert.notEqual(newPause.id, restartPause.id)
+  assert.equal(test.requests.length, restartCalls)
+  await fresh.host.auto!.command(stopped.sessionID, { action: "abort", pauseID: newPause.id })
+  await test.client.session.wait({ sessionID: stopped.sessionID })
+  checks.push("real server restart preserves ledger/strategy but replaces pause authority; no raw-context dispatch")
+  passed = true
 } finally {
-  await writeFile(path.join(root, "result.json"), JSON.stringify({ passed: completed, providerRequests: requests.length }, null, 2))
-  provider.closeAllConnections()
-  await new Promise<void>((resolve) => provider.close(() => resolve()))
-  if (child.exitCode === null) {
-    const stopped = new Promise<void>((resolve) => child.once("exit", () => resolve()))
-    child.kill()
-    await stopped
-  }
-  await log.close()
+  for (const sessionID of sessions) await test.client.session.remove({ sessionID }).catch(() => {})
+  await test.close({ passed, checks })
+  console.log(JSON.stringify({ root: test.root, passed, checks: checks.length }))
 }

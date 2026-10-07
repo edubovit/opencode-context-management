@@ -1,12 +1,12 @@
 /** @jsxImportSource @opentui/solid */
-import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
+import type { InspectorUI } from "./ui.ts"
 import type { ScrollBoxRenderable } from "@opentui/core"
 import { useKeyboard } from "@opentui/solid"
 import type { Block } from "./context.ts"
 import { turnView } from "./turn-view.ts"
 import { Hotkeys } from "./tui-help.tsx"
 
-export function TurnReader(props: { api: TuiPluginApi; block: Block; label: string; close: () => void }) {
+export function TurnReader(props: { api: InspectorUI; block: Block; label: string; close: () => void }) {
   const content = turnView(props.block)
   const color = () => props.api.theme.current.textMuted ?? "#8daecc"
   let scroll: ScrollBoxRenderable | undefined

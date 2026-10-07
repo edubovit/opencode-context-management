@@ -9,7 +9,6 @@ import { settings, KEY } from "../src/config.ts"
 import { Controller } from "../src/controller.ts"
 import { append, historyHash, operation, readPolicy, turns } from "../src/context.ts"
 import { Storage } from "../src/storage.ts"
-import { controlClient, controlServer } from "../src/control.ts"
 import { fixtureHost, pruneRule } from "./fixtures.ts"
 import { contentTokens } from "../src/metrics.ts"
 
@@ -116,30 +115,22 @@ test("external source changes block resume; explicit abort cancels the gate with
   assert.deepEqual(data.aborted, [data.session.id])
 })
 
-test("helpers are excluded and the local control API rejects unauthenticated requests", async (t) => {
+test("helpers are excluded from the main-session input gate", async (t) => {
   const { data, auto } = await setup(t)
   for (const message of data.messages) message.info.agent = "context-manager-summarizer"
   await auto.beforeRequest(data.messages)
   assert.equal((await auto.state(data.session.id)).pause, undefined)
-  const server = await controlServer(auto)
-  t.after(async () => { server.close() })
-  const response = await fetch(server.address.url, { method: "POST", body: "{}" })
-  assert.equal(response.status, 403)
-  assert.equal((await controlClient(server.address).state(data.session.id)).strategy, "MANUAL")
-  assert.throws(() => controlClient({ url: "http://example.com/", token: "irrelevant" }), /loopback/)
   assert.equal(turns(data.messages).length, 3)
 })
 
-test("control transport preserves large Unicode summaries across request chunks", async (t) => {
+test("checked metadata writes preserve large Unicode summaries", async (t) => {
   const text = "🧭漢字 café ".repeat(30000)
-  let received: unknown
-  const server = await controlServer({
-    state: async () => ({ strategy: "MANUAL" }), command: async () => ({ strategy: "MANUAL" }),
-    commit: async (_id, metadata) => { received = metadata.summary },
-  })
-  t.after(async () => { server.close() })
-  await controlClient(server.address).commit("ses_fixture", { summary: text }, { revision: 0, fingerprint: "fixture" })
-  assert.equal(received, text)
+  const { data, auto } = await setup(t)
+  data.idle = true
+  const policy = readPolicy(data.session)
+  const op = { ...operation("compact", [turns(data.messages)[0]], undefined), summary: text }
+  await auto.commit(data.session.id, { [KEY]: append(policy, op) }, { revision: policy.revision, fingerprint: historyHash(data.messages) })
+  assert.equal(readPolicy(data.session).operations[0].summary, text)
 })
 
 test("exactly at threshold does not pause; unknown or stale owner state grants no maintenance", async (t) => {
@@ -207,4 +198,32 @@ test("failed AUTO requests stay paused in the manual inspector without applying 
   assert.equal(readPolicy(data.session).cursor, 0)
   auto.cancel(data.session.id)
   await waiting
+})
+
+test("Stop while preparing a suspension cannot publish an orphaned live gate", async (t) => {
+  const { data, host, auto } = await setup(t)
+  let release!: () => void
+  const barrier = new Promise<void>((resolve) => { release = resolve })
+  let reading = false
+  const messages = host.messages
+  host.messages = async (id) => { reading = true; await barrier; return messages(id) }
+  const pending = auto.beforeRequest(data.messages).catch((error: unknown) => error)
+  await until(() => reading)
+  data.idle = true
+  auto.cancel(data.session.id)
+  release()
+  const result = await pending
+  assert.ok(result instanceof Error)
+  assert.match(result.message, /stopped before context suspension/)
+  assert.equal((await auto.state(data.session.id)).pause, undefined)
+  assert.equal(data.jobs, 0)
+})
+
+test("oversized synthetic-only context cannot bypass the pre-request budget guard", async (t) => {
+  const { data, auto } = await setup(t)
+  await assert.rejects(auto.beforeRequest(data.messages.filter((message) => message.info.role !== "user"), {
+    model: { providerID: "test", modelID: "model" }, protectedIDs: [], estimate: () => 200000,
+  }), /no USER turn/)
+  assert.equal((await auto.state(data.session.id)).pause, undefined)
+  assert.equal(data.jobs, 0)
 })

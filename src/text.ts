@@ -1,5 +1,5 @@
 import type { Settings } from "./config.ts"
-import type { ToolPart } from "@opencode-ai/sdk/v2"
+import type { ToolPart } from "./model.ts"
 import { TOKENIZER_ID, tokenCount, tokenEdges, type Encoding, type TokenBasis } from "./tokens.ts"
 
 export type LegacyPruneRule = { threshold: number; head: number; tail: number; unit?: undefined }
@@ -43,6 +43,7 @@ export function pruneText(value: string, rule: PruneRule, outputPath?: string) {
 export function toolText(part: ToolPart) {
   if (part.state.status === "completed") return part.state.output
   if (part.state.status === "error") {
+    if (part.nativeVersion === 2) return part.state.error
     const metadata = part.state.metadata
     return metadata?.interrupted === true && typeof metadata.output === "string" ? metadata.output : part.state.error
   }

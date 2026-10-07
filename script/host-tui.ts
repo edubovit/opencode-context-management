@@ -1,0 +1,78 @@
+import assert from "node:assert/strict"
+import { spawn } from "node:child_process"
+import { once } from "node:events"
+import { readFile } from "node:fs/promises"
+import path from "node:path"
+import type { fixture } from "./host-fixture.ts"
+import type { Controller } from "../src/controller.ts"
+
+export async function verifyInspector(test: Awaited<ReturnType<typeof fixture>>, controller: Controller, executable: string) {
+  if (process.platform !== "linux") throw new Error("Real inspector PTY verification currently requires Linux/Python 3")
+  const output = path.join(test.root, "inspector-tui.log")
+  const child = spawn("python3", [path.join(test.repo, "script/v2-tui-driver.py"), executable, test.url, test.project, output, controller.sessionID], { env: test.env, stdio: ["pipe", "inherit", "inherit"] })
+  const exited = once(child, "exit")
+  const sleep = () => new Promise((resolve) => setTimeout(resolve, 250))
+  const keys = async (keys: string) => { child.stdin.write(JSON.stringify({ keys }) + "\n"); await sleep() }
+  const screen = async () => await readFile(output + ".screen.txt", "utf8").catch(() => "")
+  const seen = (text: string) => test.until(async () => (await screen()).includes(text), `inspector UI: ${text}`)
+  try {
+    await seen("Context manager production sm")
+    const before = test.requests.length
+    await keys("/context-manager")
+    await keys("\r")
+    await seen("WHOLE EFFECTIVE CONTEXT")
+    await seen("Ready.")
+    assert.equal(test.requests.length, before)
+    await keys(" ")
+    await keys(" ")
+    await keys("c")
+    await seen("Compaction configuration")
+    await keys("\x1b[H")
+    await keys(" ")
+    await keys("\r")
+    await test.until(async () => (await controller.load()).policy.operations.at(-1)?.mode === "prune-reason", "UI reasoning prune")
+    const revision = (await controller.load()).policy.revision
+    await keys("\x10")
+    await keys("c")
+    await keys("\x1b")
+    assert.equal((await controller.load()).policy.revision, revision)
+    await keys("\r")
+    await seen("Turn reader")
+    await keys("\x1b")
+    await keys("c")
+    await keys("\x1b[H")
+    for (let n = 0; n < 4; n++) await keys("\x1b[B")
+    await keys(" ")
+    await keys("\r")
+    await test.until(async () => (await controller.load()).policy.operations.at(-1)?.mode === "compact", "UI summary application")
+    await seen("Summaries applied automatically")
+    await keys("\r")
+    await seen("Summary reader")
+    await keys("r")
+    await keys("Clarify the saved summary")
+    const beforeEdit = (await controller.load()).policy.revision
+    await keys("\x13")
+    await seen("EDIT_ONE")
+    assert.equal((await controller.load()).policy.revision, beforeEdit)
+    await keys("\x13")
+    await test.until(async () => (await controller.load()).policy.operations.at(-1)?.mode === "revise", "UI explicit summary revision")
+    await keys("\x1b")
+    await keys("\x05")
+    await seen("Restore preview")
+    await keys("\x13")
+    await test.until(async () => (await controller.load()).policy.operations.at(-1)?.mode === "expand", "UI summary expansion")
+    const loaded = await controller.load()
+    assert.equal(loaded.blocks[0].reasonPruned, true)
+    child.stdin.write(JSON.stringify({ resize: [100, 30] }) + "\n")
+    await sleep()
+    child.stdin.write(JSON.stringify({ resize: [80, 24] }) + "\n")
+    await sleep()
+    await keys("\x1b")
+    child.stdin.write(JSON.stringify({ exit: true }) + "\n")
+    const [code] = await exited
+    assert.equal(code, 0)
+  } finally {
+    child.stdin.end()
+    await exited
+  }
+}

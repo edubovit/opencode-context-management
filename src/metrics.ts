@@ -14,11 +14,12 @@ export function distribution(blocks: Block[], runtime?: RuntimeCapture, basis: T
     if (part.type === "text" && !part.ignored) counts[block.kind === "turn" ? message.info.role : "summaries"] += measure(part.text)
     if (part.type === "reasoning") counts.reasoning += measure(part.text)
     if (part.type === "file") attachments++
+    if (part.type === "context") counts[part.category === "skill" ? "loadedSkills" : part.category === "system" ? "systemPrompts" : "assistant"] += measure(part.text)
     if (part.type !== "tool") continue
     counts.toolInputs += measure(JSON.stringify(part.state.input))
     if (part.state.status === "completed" || part.state.status === "error")
       counts[part.tool === "skill" ? "loadedSkills" : "toolOutputs"] += measure(toolText(part))
-    if (part.state.status === "completed") attachments += part.state.attachments?.length ?? 0
+    if (part.state.status === "completed" || part.state.status === "error") attachments += part.state.attachments?.length ?? 0
   }
   for (const system of runtime?.system ?? []) {
     for (const segment of system.split(/(<available_skills>[\s\S]*?<\/available_skills>)/g))

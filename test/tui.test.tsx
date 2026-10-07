@@ -7,7 +7,7 @@ import path from "node:path"
 import { testRender } from "@opentui/solid"
 import { KeyCodes } from "@opentui/core/testing"
 import { RGBA, type ScrollBoxRenderable, type SelectRenderable, type TextRenderable } from "@opentui/core"
-import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
+import type { InspectorUI } from "../src/ui.ts"
 import { Inspector, watchSuspensions } from "../src/tui.tsx"
 import { Controller } from "../src/controller.ts"
 import { Storage } from "../src/storage.ts"
@@ -26,9 +26,9 @@ async function setup(t: { after(fn: () => Promise<void>): void }, width = 140, h
   const controller = new Controller(host, data.session.id, settings(options), new Storage(dir, dir))
   const navigations: string[] = []
   const api = {
-    app: { version: "1.18.33" }, mode: { push: () => () => {} }, route: { navigate: (name: string) => { navigations.push(name) } },
+    app: { version: "2.0.24" }, mode: { push: () => () => {} }, route: { navigate: (name: string) => { navigations.push(name) } },
     theme: { current: { primary: "#aaccff", textMuted: "#8899aa" } }, ui: { toast: () => {} },
-  } as unknown as TuiPluginApi
+  } as unknown as InspectorUI
   const screen = await testRender(() => <Inspector api={api} controller={controller} sessionID={data.session.id} />, { width, height })
   t.after(async () => { screen.renderer.destroy(); await controller.dispose(); await rm(dir, { recursive: true, force: true }) })
   const frame = () => screen.captureCharFrame()
@@ -347,7 +347,7 @@ test("failed projection reports source mismatch without advertising removed reco
 test("hotkey keys use the theme primary color while labels, separators and notes stay muted", async () => {
   const primary = "#aaccff"
   const muted = "#8899aa"
-  const api = { theme: { current: { primary, textMuted: muted } } } as unknown as TuiPluginApi
+  const api = { theme: { current: { primary, textMuted: muted } } } as unknown as InspectorUI
   const screen = await testRender(() => <Hotkeys api={api} lines={[
     [{ key: "c", label: "configure" }, { key: "Ctrl+E", label: "expand" }, "read-only note"],
   ]} />, { width: 80, height: 6 })
@@ -671,20 +671,20 @@ test("paused exit can abort instead of resuming above threshold", async (t) => {
 test("automatic inspector opening verifies a live gate and ignores stale metadata", async () => {
   const { state, control } = pausedControl()
   const opened: string[] = []
-  let handler: ((event: { type: "session.updated"; properties: { info: { id: string; metadata: Record<string, unknown> } } }) => void) | undefined
+  let handler: ((event: { id: string; metadata: Record<string, unknown> }) => void) | undefined
   const api = {
-    event: { on: (_type: string, fn: typeof handler) => { handler = fn; return () => { handler = undefined } } },
+    event: { on: (fn: typeof handler) => { handler = fn; return () => { handler = undefined } } },
     route: { current: { name: "session", params: { sessionID: "ses_test" } }, navigate: (name: string) => { opened.push(name) } },
     ui: { dialog: { open: false }, toast: () => {} },
-  } as unknown as TuiPluginApi
+  } as unknown as InspectorUI
   const off = watchSuspensions(api, async () => control)
   const metadata = { [AUTO_KEY]: structuredClone(state) }
   state.pause = undefined
-  handler!({ type: "session.updated", properties: { info: { id: "ses_test", metadata } } })
+  handler!({ id: "ses_test", metadata })
   await new Promise((resolve) => setTimeout(resolve, 10))
   assert.equal(opened.length, 0)
   state.pause = pausedControl().state.pause
-  handler!({ type: "session.updated", properties: { info: { id: "ses_test", metadata } } })
+  handler!({ id: "ses_test", metadata })
   await new Promise((resolve) => setTimeout(resolve, 10))
   assert.deepEqual(opened, ["context-manager"])
   off()

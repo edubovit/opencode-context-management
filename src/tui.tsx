@@ -1,6 +1,7 @@
 /** @jsxImportSource @opentui/solid */
-import type { TuiPluginApi, TuiPluginModule } from "@opencode-ai/plugin/tui"
-import type { Model } from "@opencode-ai/sdk/v2"
+import { Plugin } from "@opencode/plugin/tui"
+import { inspectorUI, type InspectorUI } from "./ui.ts"
+import type { Model } from "./model.ts"
 import { createMemo, createSignal, onCleanup, onMount, Show } from "solid-js"
 import { useKeyboard, useTerminalDimensions } from "@opentui/solid"
 import { Controller, type Loaded, type ModelChoice, type MultiRestorePreview } from "./controller.ts"
@@ -17,15 +18,13 @@ import { Hotkeys, type HotkeyLine } from "./tui-help.tsx"
 import { anchorRanges, pressSpace, rangeIDs, rangeTag, selectedBlocks, visibleRanges, type Selection } from "./ranges.ts"
 import { bindPruneRule } from "./text.ts"
 import { distribution } from "./snapshot.ts"
-import { sdkHost } from "./sdk-host.ts"
-import { Storage } from "./storage.ts"
 import { settings, VERSION } from "./config.ts"
 import { operationLabel, rangeLabel, toolStatus, turnIndex } from "./status.ts"
 import { FALLBACK_BASIS, tokenLabel } from "./tokens.ts"
 import { AUTO_KEY, STRATEGIES, type AutoState, type AutoControl } from "./auto-state.ts"
-import { controlClient } from "./control.ts"
+import { remoteHost } from "./control.ts"
 
-export function Inspector(props: { api: TuiPluginApi; sessionID: string; controller: Controller }) {
+export function Inspector(props: { api: InspectorUI; sessionID: string; controller: Controller }) {
   const api = props.api
   const dimensions = useTerminalDimensions()
   const [loaded, setLoaded] = createSignal<Loaded>()
@@ -33,7 +32,7 @@ export function Inspector(props: { api: TuiPluginApi; sessionID: string; control
   const [selection, setSelection] = createSignal<Selection>({ ranges: [] })
   const [busy, setBusy] = createSignal(false)
   const [pane, setPane] = createSignal<"list" | "content">("list")
-  const [notice, setNotice] = createSignal("Loading full session history…")
+  const [notice, setNotice] = createSignal("Loading active session context…")
   const [view, setView] = createSignal<"distribution" | "content" | "runtime">("distribution")
   const summaries = new SummaryBatch(props.controller)
   const [runningBatch, setRunningBatch] = createSignal(false)
@@ -115,7 +114,7 @@ export function Inspector(props: { api: TuiPluginApi; sessionID: string; control
     if (action !== "run") { setExitDialog(false); api.route.navigate("session", { sessionID: props.sessionID }) }
   }
   const openStrategy = () => {
-    if (!props.controller.host.auto) { setNotice("Restart both entrypoints to enable autocompaction controls"); return }
+    if (!props.controller.host.auto) { setNotice("Context controls unavailable; reload the plugin and reconnect"); return }
     setStrategyIndex(STRATEGIES.indexOf(auto().strategy))
     setStrategyPicker(true)
   }
@@ -217,7 +216,7 @@ export function Inspector(props: { api: TuiPluginApi; sessionID: string; control
     setPicker(undefined)
   }
   useKeyboard((key) => {
-    if (api.ui?.dialog?.open) return
+    if (key.defaultPrevented || api.ui?.dialog?.open) return
     if (exitDialog()) {
       key.preventDefault()
       if (busy()) return
@@ -307,7 +306,7 @@ export function Inspector(props: { api: TuiPluginApi; sessionID: string; control
     const tag = rangeTag(selection(), cursor(), index)
     const status = toolStatus([block], rule(), basis())
     return {
-      title: `${selected ? "[+]" : "[ ]"} ${tag ? `${tag} · ` : ""}${rangeLabel(block.sourceIDs, sourceTurns())} · ${block.kind === "turn" ? "USER" : "SUMMARY"} · ${size(distribution([block], undefined, basis(), unit()).total)}${block.closed ? "" : " · unfinished"}${auto().pause && block.sourceIDs.includes(auto().pause!.userID) ? " · PROTECTED" : ""}`,
+      title: `${selected ? "[+]" : "[ ]"} ${tag ? `${tag} · ` : ""}${rangeLabel(block.sourceIDs, sourceTurns())} · ${block.kind === "turn" ? block.messages[0]?.info.role === "user" ? "USER" : "HOST CONTEXT" : "SUMMARY"} · ${size(distribution([block], undefined, basis(), unit()).total)}${block.closed ? "" : " · unfinished"}${auto().pause && block.sourceIDs.some((id) => (auto().pause!.protectedIDs ?? [auto().pause!.userID]).includes(id)) ? " · PROTECTED" : ""}`,
       stats: block.kind === "turn" ? rangeToolStats(status) : undefined,
       preview: rangePreview(block, loaded()!.policy),
     }
@@ -435,34 +434,41 @@ function limited(text: string) {
   return text.length > 120000 ? `${text.slice(0, 120000)}\n[Display limited to 120,000 UTF-16 units. Select a smaller range or export the full effective snapshot.]` : text
 }
 
-const plugin: TuiPluginModule = {
+const plugin = Plugin.define({
   id: "context-manager",
-  tui: async (api) => {
-    api.route.register([{
+  setup: (ctx) => {
+    const api = inspectorUI(ctx)
+    const remotes = new Set<ReturnType<typeof remoteHost>>()
+    const unregister = ctx.ui.router.register({
       name: "context-manager",
-      render: ({ params }) => {
+      render: ({ data: params }) => {
         const sessionID = typeof params?.sessionID === "string" ? params.sessionID : ""
         const [controller, setController] = createSignal<Controller>()
         const [error, setError] = createSignal("")
+        let closed = false
+        let remote: ReturnType<typeof remoteHost> | undefined
+        onCleanup(() => {
+          closed = true
+          if (remote) { const current = remote; void current.close().catch((error) => api.ui.toast({ message: String(error), variant: "warning" })).finally(() => remotes.delete(current)) }
+        })
         onMount(async () => {
           try {
             if (!sessionID) throw new Error("Open a session first")
-            const storage = new Storage(api.state.path.directory)
-            const published = await storage.config()
-            if (!published) throw new Error("Server plugin runtime not found. Enable both entrypoints locally, restart, and open a session.")
+            remote = remoteHost(ctx.client, sessionID)
+            remotes.add(remote)
+            const published = await remote.load()
             if (published.version !== VERSION) throw new Error("Server/TUI plugin versions differ. Fully restart OpenCode before changing context.")
-            if (!published.control) throw new Error("Server control unavailable. Restart both entrypoints.")
-            setController(new Controller(sdkHost(api.client, controlClient(published.control)), sessionID, settings(published.settings), storage))
+            if (!closed) setController(new Controller(remote.host, sessionID, settings(published.settings), remote.artifacts))
           } catch (e) { setError(e instanceof Error ? e.message : String(e)) }
         })
-        useKeyboard((key) => { if (!controller() && key.name === "escape") api.route.navigate("session", { sessionID }) })
+        useKeyboard((key) => { if (!key.defaultPrevented && !api.ui.dialog.open && !controller() && key.name === "escape") api.route.navigate("session", { sessionID }) })
         return <Show when={controller()} keyed fallback={<text>{error() || "Loading context manager…"} · Esc back</text>}>
           {(value) => <Inspector api={api} sessionID={sessionID} controller={value} />}
         </Show>
       },
-    }])
-    api.keymap.registerLayer({ commands: [{
-      name: "context-manager.open", title: "Context manager", namespace: "palette", category: "Session", slashName: "context-manager",
+    })
+    ctx.keymap.layer(() => ({ mode: "global", commands: [{
+      id: "context-manager.open", title: "Context manager", group: "Session", palette: true, slash: { name: "context-manager" },
       run: () => {
         const current = api.route.current
         const sessionID = "params" in current ? current.params?.sessionID : undefined
@@ -473,24 +479,20 @@ const plugin: TuiPluginModule = {
         api.ui.dialog.clear()
         api.route.navigate("context-manager", { sessionID })
       },
-    }] })
-    const unsubscribe = watchSuspensions(api, async () => {
-      const published = await new Storage(api.state.path.directory).config()
-      return published?.control && published.version === VERSION ? controlClient(published.control) : undefined
-    })
-    api.lifecycle.onDispose(unsubscribe)
+    }] }))
+    const unsubscribe = watchSuspensions(api, async (id) => remoteHost(ctx.client, id).host.auto)
+    return async () => { unregister(); unsubscribe(); await Promise.allSettled([...remotes].map((remote) => remote.close())); remotes.clear() }
   },
-}
+})
 
-export function watchSuspensions(api: TuiPluginApi, control: () => Promise<AutoControl | undefined>) {
+export function watchSuspensions(api: InspectorUI, control: (sessionID: string) => Promise<AutoControl | undefined>) {
     const seen = new Map<string, string>()
-    return api.event.on("session.updated", (event) => {
-      const info = event.properties.info
+    return api.event.on((info) => {
       const notice = (info.metadata?.[AUTO_KEY] as AutoState | undefined)?.pause
       if (!notice) { seen.delete(info.id); return }
       if (!["manual", "invalid"].includes(notice.phase) || seen.get(info.id) === notice.id) return
       void (async () => {
-        const state = await (await control())?.state(info.id)
+        const state = await (await control(info.id))?.state(info.id)
         if (state?.pause?.id !== notice.id || !["manual", "invalid"].includes(state.pause.phase)) return
         if (seen.get(info.id) === notice.id) return
         seen.set(info.id, notice.id)

@@ -1,5 +1,5 @@
 /** @jsxImportSource @opentui/solid */
-import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
+import type { InspectorUI } from "./ui.ts"
 import type { ScrollBoxRenderable, TextareaRenderable } from "@opentui/core"
 import { createSignal, onCleanup, Show } from "solid-js"
 import { useKeyboard } from "@opentui/solid"
@@ -9,7 +9,7 @@ import { tokenCount } from "./tokens.ts"
 import { Hotkeys, type HotkeyLine } from "./tui-help.tsx"
 
 export function SummaryReader(props: {
-  api: TuiPluginApi; editor: SummaryEditor; choice: () => ModelChoice | undefined
+  api: InspectorUI; editor: SummaryEditor; choice: () => ModelChoice | undefined
   modalOpen: () => boolean; pick: (kind: "model" | "effort") => void; close: () => Promise<void>
 }) {
   const [mode, setMode] = createSignal<"read" | "edit" | "request">("read")
@@ -35,7 +35,7 @@ export function SummaryReader(props: {
     setEpoch((value) => value + 1)
     setMode("read")
     scroll?.scrollTo(0)
-    setNotice(warning ?? "Summary updated. The editing dialogue was disposed. Undo is available in the range menu.")
+    setNotice(warning ?? "Summary updated. The editing dialogue was disposed. Saved changes have no Undo.")
   }
   useKeyboard((key) => {
     if (key.defaultPrevented || props.api.ui?.dialog?.open || props.modalOpen()) return

@@ -11,7 +11,7 @@ export function messageText(message: Envelope) {
 export function turnView(block: Block) {
   if (block.kind !== "turn") throw new Error("Use the summary reader for compacted blocks")
   const first = block.messages[0]
-  const last = block.messages.at(-1)
+  const last = block.messages.findLast((message) => !message.info.kind || ["user", "assistant"].includes(message.info.kind))
   const user = first?.info.role === "user" ? messageText(first) || "[No user text recorded.]" : "[No user message in this turn.]"
   if (last?.info.role === "assistant" && last.info.error)
     return { user, assistant: "[No successful final response: the assistant ended with an error.]" }

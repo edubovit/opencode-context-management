@@ -1,4 +1,4 @@
-import type { Model, Session, ToolPart } from "@opencode-ai/sdk/v2"
+import type { Model, Session, ToolPart } from "../src/model.ts"
 import type { Envelope, Policy } from "../src/context.ts"
 import type { Host, ModelChoice } from "../src/controller.ts"
 import { settings } from "../src/config.ts"

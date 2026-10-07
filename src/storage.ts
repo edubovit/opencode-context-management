@@ -3,8 +3,6 @@ import { homedir } from "node:os"
 import path from "node:path"
 import { randomUUID } from "node:crypto"
 import { hash } from "./context.ts"
-import type { Settings } from "./config.ts"
-import type { ControlAddress } from "./auto-state.ts"
 
 export type RuntimeCapture = {
   time: number
@@ -17,6 +15,8 @@ export type RuntimeCapture = {
   tools?: { id: string; description: string; parameters: unknown }[]
   warnings: string[]
 }
+
+export type Artifacts = Pick<Storage, "capture" | "write">
 
 export class Storage {
   readonly root: string
@@ -40,7 +40,6 @@ export class Storage {
   }
   capture(sessionID: string) { return this.read<RuntimeCapture>(`capture-${hash(sessionID)}.json`) }
   saveCapture(value: RuntimeCapture) { return this.write(`capture-${hash(value.sessionID)}.json`, value) }
-  config() { return this.read<{ settings: Settings; version: string; control?: ControlAddress }>("runtime.json") }
   async spill(text: string) {
     await mkdir(this.root, { recursive: true })
     const target = path.join(this.root, `output-${randomUUID()}.txt`)

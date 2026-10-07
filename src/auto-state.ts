@@ -1,4 +1,4 @@
-import type { Model, Session } from "@opencode-ai/sdk/v2"
+import type { Model, Session } from "./model.ts"
 import type { ModelChoice } from "./controller.ts"
 
 export const AUTO_KEY = "opencode_context_autocompaction"
@@ -8,6 +8,7 @@ export type Expected = { revision: number; fingerprint: string }
 export type Pause = {
   id: string; userID: string; phase: "manual" | "auto" | "resuming" | "aborting" | "invalid"
   tokens: number; threshold: number; inputLimit: number; derived: boolean; message: string
+  protectedIDs?: string[]
 }
 export type AutoState = { strategy: Strategy; pause?: Pause }
 export type AutoCommand = { action: "strategy"; strategy: Strategy } | { action: "run" | "resume" | "abort"; pauseID: string; model?: ModelChoice }
@@ -16,7 +17,6 @@ export type AutoControl = {
   command(sessionID: string, command: AutoCommand): Promise<AutoState>
   commit(sessionID: string, metadata: Record<string, unknown>, expected: Expected): Promise<void>
 }
-export type ControlAddress = { url: string; token: string }
 
 export function strategy(session: Pick<Session, "metadata">): Strategy {
   const state = session.metadata?.[AUTO_KEY] as AutoState | undefined

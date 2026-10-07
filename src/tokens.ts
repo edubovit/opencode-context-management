@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto"
 import { createRequire } from "node:module"
-import type { Model } from "@opencode-ai/sdk/v2"
+import type { Model } from "./model.ts"
 
 export const TOKENIZER_ID = "gpt-tokenizer@4.0.0" as const
 export type Encoding = "o200k_base" | "cl100k_base"
@@ -72,7 +72,7 @@ export function tokenBasis(choice: { providerID: string; modelID: string } | und
   const override = choice && options.overrides[`${choice.providerID}/${choice.modelID}`]
   if (override) return { ...identity, encoding: override, library: TOKENIZER_ID, source: "configured override" }
   const id = model?.api.id ?? choice?.modelID ?? ""
-  const openai = choice?.providerID === "openai" || choice?.providerID.includes("github-copilot") || model?.api.npm === "@ai-sdk/azure"
+  const openai = choice?.providerID === "openai" || choice?.providerID === "azure" || choice?.providerID.includes("github-copilot") || model?.api.npm === "@ai-sdk/azure" || model?.api.npm === "@opencode/ai/providers/azure"
   if (openai && /^(gpt-5(?:[.-]|$)|gpt-4o(?:-|$)|chatgpt-4o-|gpt-4\.[15](?:-|$)|o[13](?:-|$)|o4-mini(?:-|$))/.test(id))
     return { ...identity, encoding: "o200k_base", library: TOKENIZER_ID, source: "model-name mapping" }
   if (openai && /^(gpt-4(?:-|$)|gpt-3\.5(?:-|$)|gpt-35-turbo(?:-|$))/.test(id))

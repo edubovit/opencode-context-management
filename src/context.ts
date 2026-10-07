@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto"
-import type { Message, Part, Session, ToolPart } from "@opencode-ai/sdk/v2"
+import type { Message, Part, Session, ToolPart } from "./model.ts"
 import { KEY } from "./config.ts"
 import { chars, pruneText, toolText, type PruneRule } from "./text.ts"
 import { contentTokens } from "./metrics.ts"
@@ -36,25 +36,31 @@ export type Operation = {
   targetID?: string
   pruneReason?: true
 }
-export type Policy = { version: 1 | 2 | 3 | 4 | 5 | 6; sessionID: string; revision: number; cursor: number; operations: Operation[] }
+export type Policy = { version: 1 | 2 | 3 | 4 | 5 | 6 | 7; sessionID: string; revision: number; cursor: number; operations: Operation[] }
 
 export function emptyPolicy(sessionID: string): Policy {
-  return { version: 6, sessionID, revision: 0, cursor: 0, operations: [] }
+  return { version: 7, sessionID, revision: 0, cursor: 0, operations: [] }
 }
 
-export function readPolicy(session: Pick<Session, "id" | "metadata">): Policy {
+export function readPolicy(session: Pick<Session, "id" | "metadata" | "nativeVersion">): Policy {
   const value = session.metadata?.[KEY]
   if (value === undefined) return emptyPolicy(session.id)
   if (!value || typeof value !== "object") throw new Error("Invalid context-manager state")
   const policy = value as Policy
+  if (session.nativeVersion === 2 && (policy.version !== 7 || policy.sessionID !== session.id))
+    throw new Error("This session has a V1 or inherited context-manager ledger. Its original data is preserved. Use the V1 checkout to export it; automatic V2 migration is unsafe.")
   if (policy.sessionID !== session.id) return emptyPolicy(session.id)
-  if (![1, 2, 3, 4, 5, 6].includes(policy.version) || !Array.isArray(policy.operations) || !Number.isSafeInteger(policy.revision) ||
+  if (![1, 2, 3, 4, 5, 6, 7].includes(policy.version) || !Array.isArray(policy.operations) || !Number.isSafeInteger(policy.revision) || policy.revision < 0 ||
       !Number.isInteger(policy.cursor) || policy.cursor < 0 || policy.cursor > policy.operations.length)
     throw new Error("Unsupported or damaged context-manager state")
+  const ids = new Set<string>()
   for (const op of policy.operations) {
     if (!op || typeof op.id !== "string" || !["tool-prune", "tool-prune-all", "tool-delete", "prune-reason", "compact", "brief", "unprune", "expand", "revise"].includes(op.mode) || !Array.isArray(op.sourceIDs) ||
         !op.sourceIDs.length || !op.sourceIDs.every((id) => typeof id === "string") || typeof op.beforeHash !== "string")
       throw new Error("Invalid context-manager operation")
+    if (policy.version === 7 && (ids.has(op.id) || new Set(op.sourceIDs).size !== op.sourceIDs.length || !Number.isSafeInteger(op.created) || op.created < 0 || !Number.isSafeInteger(op.beforeChars) || op.beforeChars < 0))
+      throw new Error("Invalid operation identity or accounting")
+    ids.add(op.id)
     if ((["tool-prune-all", "tool-delete", "prune-reason"].includes(op.mode) || op.pruneReason !== undefined) && policy.version < 6)
       throw new Error("Pruning modes require policy version 6")
     if (op.pruneReason !== undefined && (op.pruneReason !== true || !["tool-prune", "tool-prune-all", "tool-delete"].includes(op.mode)))
@@ -69,7 +75,7 @@ export function readPolicy(session: Pick<Session, "id" | "metadata">): Policy {
     if ((op.tokenizer !== undefined || op.beforeTokens !== undefined) &&
         (!op.tokenizer || !isEncoding(op.tokenizer.encoding) || op.tokenizer.library !== TOKENIZER_ID || !Number.isSafeInteger(op.beforeTokens) || op.beforeTokens! < 0))
       throw new Error("Unsupported saved token accounting")
-    if ((op.mode === "compact" || op.mode === "brief") && typeof op.summary !== "string") throw new Error("Missing saved summary")
+    if ((op.mode === "compact" || op.mode === "brief") && (typeof op.summary !== "string" || !op.summary.trim())) throw new Error("Missing saved summary")
     if (op.mode === "revise" && (policy.version < 4 || typeof op.targetID !== "string" || typeof op.summary !== "string" || !op.summary.trim()))
       throw new Error("Invalid saved summary revision")
     if (policy.version === 1 && (op.mode === "unprune" || op.mode === "expand")) throw new Error("Restore actions require policy version 2")
@@ -86,11 +92,11 @@ export function hash(value: unknown) {
 }
 
 export function historyHash(messages: Envelope[]) {
-  return hash(messages.map(({ info, parts }) => ({ id: info.id, role: info.role, parts })))
+  return hash(messages.map(({ info, parts }) => ({ id: info.id, role: info.role, parts, ...(info.sourceHash ? { sourceHash: info.sourceHash } : {}) })))
 }
 
 export function nativeActive(messages: Envelope[], revert?: Session["revert"]) {
-  let visible = structuredClone(messages)
+  let visible = structuredClone(messages).filter((message) => !["idle", "system", "model-switched", "agent-switched", "location-switched"].includes(message.info.kind ?? ""))
   if (revert) {
     const index = visible.findIndex((m) => m.info.id === revert.messageID)
     if (index >= 0) {
@@ -134,7 +140,7 @@ export function turns(messages: Envelope[]): Block[] {
     block.sourceIDs.push(message.info.id)
   }
   for (const block of result) {
-    const last = block.messages.at(-1)!.info
+    const last = block.messages.findLast((message) => !message.info.kind || ["user", "assistant"].includes(message.info.kind))?.info ?? block.messages.at(-1)!.info
     block.closed = block.messages[0].info.role === "user" && last.role === "assistant" &&
       !!last.time.completed && !!last.finish && !["tool-calls", "unknown"].includes(last.finish) &&
       !block.messages.some((m) => m.parts.some((p) => p.type === "tool" && ["pending", "running"].includes(p.state.status)))
@@ -150,12 +156,13 @@ export function serialize(messages: Envelope[]) {
       if (part.type === "reasoning") return [`[Visible reasoning]\n${part.text}`]
       if (part.type === "file") return [`[Attachment ${part.mime}: ${part.filename ?? part.id}]`]
       if (part.type === "compaction") return ["[Native compaction checkpoint]"]
+      if (part.type === "context") return [`[${part.category} context]\n${part.text}`]
       if (part.type !== "tool") return []
       const output = toolText(part)
       return [
         `[Tool call ${part.callID}: ${part.tool}]\n${JSON.stringify(part.state.input)}`,
         `[Tool result]\n${output}`,
-        ...(part.state.status === "completed" ? (part.state.attachments ?? []).map((a) => `[Attachment ${a.mime}: ${a.filename ?? a.id}]`) : []),
+        ...(part.state.status === "completed" || part.state.status === "error" ? (part.state.attachments ?? []).map((a) => `[Attachment ${a.mime}: ${a.filename ?? a.id}]`) : []),
       ]
     }),
   ].join("\n")).join("\n\n")
@@ -223,7 +230,7 @@ export function replacementTokens(op: Operation, selected: Block[]) {
   return contentTokens(replacement(op, selected).messages, op.tokenizer ?? FALLBACK_BASIS)
 }
 
-export function project(active: Envelope[], policy: Policy): Block[] {
+export function project(active: Envelope[], policy: Policy, observe?: (op: Operation, selected: Block[]) => void): Block[] {
   let blocks = turns(structuredClone(active))
   const pruned = new Map<string, string>()
   const originals = new Map(active.flatMap((message) => message.parts.flatMap((part) => part.type === "tool" ? [[part.id, part] as const] : [])))
@@ -236,6 +243,7 @@ export function project(active: Envelope[], policy: Policy): Block[] {
     if (hash(selected.flatMap((b) => b.sourceIDs)) !== hash(op.sourceIDs) ||
         (historyHash(selectedMessages) !== op.beforeHash && (pruned.size === 0 || legacyPrunedHash(selectedMessages, pruned) !== op.beforeHash)))
       throw new Error("Saved range content changed. Restore the original host history before continuing.")
+    observe?.(op, selected)
     if (op.mode === "revise") {
       const block = selected[0]
       if (selected.length !== 1 || block.kind === "turn" || !block.summaryID || block.summaryID !== op.targetID)
@@ -263,8 +271,8 @@ export function project(active: Envelope[], policy: Policy): Block[] {
           for (const m of b.messages) for (const p of m.parts) {
             if (p.type !== "tool" || (p.state.status !== "completed" && p.state.status !== "error")) continue
             setToolText(p, TOOL_OUTPUT_PRUNED)
-            if (p.state.status === "completed") p.state.attachments = []
-            else p.state.error = TOOL_OUTPUT_PRUNED
+            p.state.attachments = []
+            if (p.state.status === "error") p.state.error = TOOL_OUTPUT_PRUNED
             pruned.set(p.id, "all")
           }
           if (!b.toolsDeleted) b.allToolsPruned = true
@@ -340,6 +348,11 @@ function prunePart(part: ToolPart, rule: PruneRule, pruned: Map<string, string>)
 function setToolText(part: ToolPart, text: string) {
   if (part.state.status === "completed") part.state.output = text
   else if (part.state.status === "error") {
+    if (part.nativeVersion === 2) {
+      part.state.error = text
+      if (typeof part.state.metadata?.output === "string") part.state.metadata.output = text
+      return
+    }
     if (part.state.metadata?.interrupted === true && typeof part.state.metadata.output === "string") part.state.metadata.output = text
     else part.state.error = text
   }
@@ -355,7 +368,7 @@ function legacyPrunedHash(messages: Envelope[], pruned: Map<string, string>) {
 }
 
 export function append(policy: Policy, op: Operation): Policy {
-  return { ...policy, version: 6, revision: policy.revision + 1, cursor: policy.cursor + 1, operations: [...policy.operations.slice(0, policy.cursor), op] }
+  return { ...policy, version: 7, revision: policy.revision + 1, cursor: policy.cursor + 1, operations: [...policy.operations.slice(0, policy.cursor), op] }
 }
 
 export const TOOL_OUTPUT_PRUNED = "[Tool output pruned]"

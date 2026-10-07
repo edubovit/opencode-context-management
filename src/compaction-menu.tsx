@@ -1,8 +1,8 @@
 /** @jsxImportSource @opentui/solid */
-import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
+import type { InspectorUI } from "./ui.ts"
 import { COMPACTION_MODES, selectedModes, type Compaction } from "./compaction.ts"
 
-export function CompactionMenu(props: { api: TuiPluginApi; value: Compaction; index: number; toggle: (index: number) => void }) {
+export function CompactionMenu(props: { api: InspectorUI; value: Compaction; index: number; toggle: (index: number) => void }) {
   return <box id="cm-compaction-config" flexDirection="column" flexGrow={1} minHeight={0} overflow="hidden">
     <text height={1} flexShrink={0} fg={props.api.theme.current.primary}>Compaction configuration</text>
     <select id="cm-compaction-modes" options={COMPACTION_MODES.map((mode, index) => ({

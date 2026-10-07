@@ -1,162 +1,158 @@
-import type { Hooks, Plugin, PluginInput } from "@opencode-ai/plugin"
-import type { Config, Session } from "@opencode-ai/sdk/v2"
-import { readFile, realpath } from "node:fs/promises"
-import path from "node:path"
-import { homedir } from "node:os"
-import { AGENT, EDIT_AGENT, VERSION, settings } from "./config.ts"
-import { blockMessages, historyHash, nativeActive, project, readPolicy, type Envelope } from "./context.ts"
-import { Storage, type RuntimeCapture } from "./storage.ts"
+import { Plugin } from "@opencode/plugin"
+import { AGENT, EDIT_AGENT, KEY, VERSION, settings } from "./config.ts"
+import { blockMessages, historyHash, nativeActive, project, readPolicy } from "./context.ts"
+import { Controller } from "./controller.ts"
+import { Storage } from "./storage.ts"
 import { spills, spillPreview } from "./text.ts"
-import { SUMMARIZER_SYSTEM, SUMMARY_EDIT_SYSTEM } from "./summarize.ts"
+import { inputEstimate, SUMMARIZER_SYSTEM, SUMMARY_EDIT_SYSTEM } from "./summarize.ts"
 import { Autocompaction } from "./autocompaction.ts"
-import { controlServer } from "./control.ts"
-import { legacyHost } from "./legacy-host.ts"
+import { ContextManager, errorMessage } from "./rpc.ts"
+import { pluginHost, type PluginContext } from "./host.ts"
+import { modelView, sessionView, transcriptView } from "./v2/normalize.ts"
+import { protectedMessages } from "./v2/history.ts"
+import { projectRequest, requestTokens } from "./v2/projection.ts"
+import { tokenBasis } from "./tokens.ts"
 
-export async function createHooks(ctx: Pick<PluginInput, "client" | "directory">, options: unknown = {}, store = new Storage(ctx.directory)): Promise<Hooks> {
-  const config = settings(options)
-  const definitions = new Map<string, { id: string; description: string; parameters: unknown }>()
-  const captures = new Map<string, RuntimeCapture>()
-  const getSession = async (sessionID: string) => {
-    const response = await ctx.client.session.get({ path: { id: sessionID }, throwOnError: true })
-    return response.data as unknown as Session
-  }
-  const capture = (sessionID: string) => {
-    let value = captures.get(sessionID)
-    if (!value) {
-      value = { sessionID, time: Date.now(), warnings: ["Tool definitions are project-level observations, not a complete per-request/MCP inventory."] }
-      captures.set(sessionID, value)
-    }
+export async function setupServer(ctx: PluginContext, store = new Storage(ctx.location.directory)) {
+  if (ctx.app.version !== "2.0.24") throw new Error(`Context manager ${VERSION} requires OpenCode 2.0.24; found ${ctx.app.version}`)
+  const config = settings(ctx.options)
+  const adapter = pluginHost(ctx)
+  const host = adapter.host
+  const auto = new Autocompaction(host, config, store)
+  let closed = false
+  const stop = new AbortController()
+  const requireSession = async (sessionID: string) => {
+    if (closed) throw new Error("Context manager was unloaded; reopen the inspector")
+    const value = await adapter.nativeSession(sessionID)
+    readPolicy(sessionView(value))
     return value
   }
-  const flush = async (sessionID: string) => {
-    const value = capture(sessionID)
-    value.time = Date.now()
-    await store.saveCapture(structuredClone(value))
+  const eligible = async (sessionID: string) => {
+    await requireSession(sessionID)
+    const state = await auto.state(sessionID)
+    return state.pause ? state.pause.phase === "manual" : host.idle(sessionID)
   }
-  const auto = new Autocompaction(legacyHost(ctx.client), config, store)
-  const control = await controlServer(auto)
-  try {
-    await store.write("runtime.json", { version: VERSION, settings: config, control: control.address })
-    await store.cleanupOutputs()
-  } catch (error) { control.close(); throw error }
-
-  return {
-    event: async ({ event }) => {
-      if (event.type === "session.status" && event.properties.status.type === "idle") auto.cancel(event.properties.sessionID)
-      if (event.type === "server.instance.disposed" && event.properties.directory === ctx.directory) { auto.close(); control.close() }
-    },
-    config: async (legacy) => {
-      const host = legacy as unknown as Config
-      host.compaction = { ...host.compaction, auto: false, prune: false }
-      host.tool_output = { max_lines: config.spill.maxLines + 20, max_bytes: config.spill.maxBytes + 4096 }
-      host.agent ??= {}
-      host.agent[AGENT] = {
-        description: "Internal context-manager summarizer", mode: "subagent", hidden: true,
-        prompt: SUMMARIZER_SYSTEM, permission: { "*": "deny" },
-      }
-      host.agent[EDIT_AGENT] = {
-        description: "Internal summary editor", mode: "subagent", hidden: true,
-        prompt: SUMMARY_EDIT_SYSTEM, permission: { "*": "deny" },
-      }
-    },
-    "experimental.chat.messages.transform": async (_input, output) => {
-      const messages = output.messages as unknown as Envelope[]
-      const sessionID = messages[0]?.info.sessionID
-      if (!sessionID || [AGENT, EDIT_AGENT].includes(messages.at(-1)?.info.agent ?? "")) return
-      if (messages.some((m) => m.info.sessionID !== sessionID)) throw new Error("Mixed-session context is unsupported")
-      await auto.beforeRequest(messages)
-      const current = await getSession(sessionID)
-      const effective = blockMessages(project(nativeActive(messages), readPolicy(current)))
-      output.messages.splice(0, output.messages.length, ...effective as unknown as typeof output.messages)
-      capture(sessionID).historyHash = historyHash(effective)
-    },
-    "experimental.chat.system.transform": async (input, output) => {
-      if (!input.sessionID) return
-      const session = await getSession(input.sessionID)
-      if (session.metadata?.context_manager_job) {
-        output.system.splice(0, output.system.length, session.metadata.context_manager_edit ? SUMMARY_EDIT_SYSTEM : SUMMARIZER_SYSTEM)
-        return
-      }
-      const value = capture(input.sessionID)
-      value.system = [...output.system]
-      value.model = { providerID: input.model.providerID, modelID: input.model.id }
-      value.tools = [...definitions.values()]
-    },
-    "chat.params": async (input) => {
-      if ([AGENT, EDIT_AGENT, "title", "summary", "compaction"].includes(input.agent)) return
-      const value = capture(input.sessionID)
-      value.agent = input.agent
-      value.variant = (input.message as unknown as { model: { variant?: string } }).model.variant
-      try {
-        const catalog = await ctx.client.tool.list({ query: { provider: input.model.providerID, model: input.model.id }, throwOnError: true })
-        if (!Array.isArray(catalog.data)) throw new Error("Tool catalog unavailable")
-        value.tools = catalog.data
-        value.warnings = ["Tool schemas are the host's model-filtered default-agent catalog, not this request's exact permission-filtered/MCP inventory."]
-      } catch {
-        value.tools = [...definitions.values()]
-        value.warnings = ["Tool catalog unavailable; definitions are partial hook observations. Non-JSON parameter schemas are marked unavailable."]
-      }
-      await flush(input.sessionID)
-    },
-    "tool.definition": async (input, output) => {
-      const jsonSchema = (output as unknown as { jsonSchema?: unknown }).jsonSchema
-      definitions.set(input.toolID, { id: input.toolID, description: output.description, parameters: schemaView(jsonSchema ?? output.parameters) })
-    },
-    "experimental.session.compacting": async (input) => {
-      if (readPolicy(await getSession(input.sessionID)).cursor > 0)
-        throw new Error("Native compaction cannot be mixed with context-manager operations. Use /context-manager instead.")
-    },
-    "tool.execute.after": async (_input, output) => {
-      const result = output as unknown as Record<string, unknown>
-      if (Array.isArray(result.content)) {
-        const content = result.content as Record<string, unknown>[]
-        const text = content.map(mcpText).filter((item): item is string => item !== undefined).join("\n\n")
-        if (!spills(text, config.spill)) return
-        const outputPath = await store.spill(text)
-        result.content = [{ type: "text", text: spillPreview(text, config.spill, outputPath) }, ...content.filter((item) => mcpText(item) === undefined)]
-        result.metadata = { ...(result.metadata && typeof result.metadata === "object" ? result.metadata : {}), outputPath }
-        return
-      }
-      if (typeof result.output !== "string") return
-      const metadata = result.metadata && typeof result.metadata === "object" ? result.metadata as Record<string, unknown> : {}
-      let full = result.output
-      let outputPath = typeof metadata.outputPath === "string" ? metadata.outputPath : undefined
-      if (metadata.truncated && outputPath) {
-        const allowed = path.join(process.env.XDG_DATA_HOME ?? path.join(homedir(), ".local", "share"), "opencode", "tool-output")
-        try {
-          const resolved = await realpath(outputPath)
-          if (path.dirname(resolved) !== await realpath(allowed))
-            throw new Error("Tool spill is outside OpenCode's tool-output directory")
-          full = await readFile(resolved, "utf8")
-        } catch (error) {
-          result.output += `\n[Context manager: unable to rebuild head/tail preview: ${error instanceof Error ? error.message : String(error)}]`
-          return
-        }
-      }
-      if (!spills(full, config.spill)) return
-      outputPath ??= await store.spill(full)
-      result.output = spillPreview(full, config.spill, outputPath)
-      result.metadata = { ...metadata, truncated: true, outputPath }
-    },
+  const ownJob = async (sessionID: string, jobID: string) => {
+    await requireSession(sessionID)
+    if (!adapter.owns(jobID, sessionID)) throw new Error("Helper does not belong to this session or plugin generation")
+  }
+  const attempt = async <T>(reject: (message: string) => unknown, run: () => Promise<T>): Promise<T> => {
+    try { return JSON.parse(JSON.stringify(await run())) as T }
+    catch (error) { throw reject(errorMessage(error)) }
+  }
+  const rpc = await ctx.rpc.register(ContextManager, {
+    inspect: ({ sessionID }, call) => attempt((message) => call.error("rejected", message, null), async () => {
+      await requireSession(sessionID)
+      const [session, messages, models, runtime, state] = await Promise.all([host.session(sessionID), host.messages(sessionID), host.models(), store.capture(sessionID), auto.state(sessionID)])
+      return { version: VERSION, settings: config, session, messages, models, runtime, auto: state }
+    }),
+    idle: ({ sessionID }, call) => attempt((message) => call.error("rejected", message, null), () => eligible(sessionID)),
+    state: ({ sessionID }, call) => attempt((message) => call.error("rejected", message, null), async () => { await requireSession(sessionID); return auto.state(sessionID) }),
+    commit: ({ sessionID, policy, expected }, call) => attempt((message) => call.error("rejected", message, null), async () => {
+      await requireSession(sessionID)
+      call.signal.throwIfAborted()
+      await auto.commit(sessionID, { [KEY]: policy }, expected)
+      await rpc.events.emit("changed", { sessionID })
+      return null
+    }),
+    command: ({ sessionID, command }, call) => attempt((message) => call.error("rejected", message, null), async () => {
+      await requireSession(sessionID)
+      call.signal.throwIfAborted()
+      const state = await auto.command(sessionID, command)
+      await rpc.events.emit("changed", { sessionID })
+      return state
+    }),
+    createJob: ({ sessionID, purpose }, call) => attempt((message) => call.error("rejected", message, null), async () => {
+      if (!await eligible(sessionID)) throw new Error("Wait for the main session or a live manual suspension")
+      call.signal.throwIfAborted()
+      const id = await host.createJob(purpose, sessionID)
+      if (call.signal.aborted || closed) { await host.remove(id); throw new Error("Helper creation cancelled") }
+      return id
+    }),
+    jobHistory: ({ sessionID, jobID }, call) => attempt((message) => call.error("rejected", message, null), async () => { await ownJob(sessionID, jobID); return host.messages(jobID) }),
+    generate: ({ sessionID, jobID, model, text, purpose }, call) => attempt((message) => call.error("rejected", message, null), async () => {
+      await ownJob(sessionID, jobID)
+      if (!await eligible(sessionID)) throw new Error("Main session is no longer available for context maintenance")
+      const selected = (await host.models()).find((entry) => entry.providerID === model.providerID && entry.id === model.modelID)
+      if (!selected) throw new Error("Summary model is unavailable")
+      const estimate = inputEstimate(text, tokenBasis(model, selected, config.tokenizer), await host.messages(jobID), purpose === "edit" ? SUMMARY_EDIT_SYSTEM : SUMMARIZER_SYSTEM)
+      if (estimate > (selected.limit.input || selected.limit.context)) throw new Error("Summary dialogue exceeds the helper input capacity")
+      call.signal.throwIfAborted()
+      const abort = () => { void host.abort(jobID).catch(() => {}) }
+      call.signal.addEventListener("abort", abort, { once: true })
+      try { return await host.generate(jobID, model, text, purpose) }
+      finally { call.signal.removeEventListener("abort", abort); if (call.signal.aborted) await host.remove(jobID).catch(() => {}) }
+    }),
+    abortJob: ({ sessionID, jobID }, call) => attempt((message) => call.error("rejected", message, null), async () => { await ownJob(sessionID, jobID); await host.abort(jobID); return null }),
+    removeJob: ({ sessionID, jobID }, call) => attempt((message) => call.error("rejected", message, null), async () => { await ownJob(sessionID, jobID); await host.remove(jobID); return null }),
+    dump: ({ sessionID }, call) => attempt((message) => call.error("rejected", message, null), async () => { await requireSession(sessionID); return new Controller(host, sessionID, config, store).dump(ctx.app.version) }),
+  })
+  await ctx.agent.transform((agents) => {
+    for (const [id, system] of [[AGENT, SUMMARIZER_SYSTEM], [EDIT_AGENT, SUMMARY_EDIT_SYSTEM]]) agents.update(id, (agent) => {
+      agent.description = "Internal context-manager helper"
+      agent.mode = "subagent"
+      agent.hidden = true
+      agent.system = system
+      agent.permissions = [{ action: "*", resource: "*", effect: "deny" }]
+      delete agent.steps
+    })
+  })
+  const context = async (event: import("@opencode/plugin/promise/session").SessionContext, gate: boolean) => {
+    const current = await requireSession(event.sessionID)
+    if ([AGENT, EDIT_AGENT].includes(event.agent) && current.metadata?.context_manager_job) {
+      event.system = [{ type: "text", text: event.agent === EDIT_AGENT ? SUMMARY_EDIT_SYSTEM : SUMMARIZER_SYSTEM }]
+      event.tools = {}
+      return
+    }
+    const native = await ctx.session.context({ sessionID: event.sessionID })
+    const raw = transcriptView(current, native)
+    const incoming = [...event.messages]
+    const model = (await ctx.model.list()).data.find((entry) => entry.id === event.model.id && entry.providerID === event.model.providerID)
+    const choice = { providerID: event.model.providerID, modelID: event.model.id, variant: event.model.variant }
+    const basis = tokenBasis(choice, model && modelView(model), config.tokenizer)
+    const estimate = (policy: ReturnType<typeof readPolicy>) => requestTokens(projectRequest(native, raw, incoming, policy), event.system, event.tools, basis)
+    const capture = {
+      sessionID: event.sessionID, time: Date.now(), model: choice, variant: event.model.variant, agent: event.agent,
+      historyHash: historyHash(blockMessages(project(nativeActive(raw), readPolicy(sessionView(current))))),
+      system: [...event.system.map((part) => part.text), ...incoming.filter((message) => message.role === "system").map((message) => message.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("\n"))],
+      tools: Object.entries(event.tools).map(([id, tool]) => ({ id, description: tool.description, parameters: tool.input })),
+      warnings: ["Captured at this plugin's context hook; later hooks, provider framing, media and opaque state are not fully counted."],
+    }
+    await store.saveCapture(capture)
+    if (gate) await auto.beforeRequest(raw, { model: choice, protectedIDs: [...protectedMessages(native)], estimate })
+    const policy = readPolicy(sessionView(await requireSession(event.sessionID)))
+    event.messages = projectRequest(native, raw, incoming, policy)
+    capture.historyHash = historyHash(blockMessages(project(nativeActive(raw), policy)))
+    capture.time = Date.now()
+    await store.saveCapture(capture)
+  }
+  await ctx.session.hook("context", (event) => context(event, true))
+  await ctx.session.hook("generate", (event) => context(event, false))
+  await ctx.session.hook("compaction", () => { throw new Error("Context manager owns compaction. Set compaction.auto to false and use /context-manager, not native /compact.") })
+  await ctx.tool.hook("execute.after", async (event) => {
+    if (event.status !== "completed") return
+    const content = typeof event.result.content === "string" ? [{ type: "text" as const, text: event.result.content }] : event.result.content ?? []
+    const text = content.flatMap((part) => part.type === "text" ? [part.text] : []).join("\n\n")
+    if (spills(text, config.spill)) {
+      const outputPath = await store.spill(text)
+      event.result = { ...event.result, content: [{ type: "text", text: spillPreview(text, config.spill, outputPath) }, ...content.filter((part) => part.type !== "text")], metadata: { ...event.result.metadata, truncated: true, outputPath } }
+    } else event.result = { ...event.result, metadata: { truncated: false, ...event.result.metadata } }
+  })
+  await store.cleanupOutputs()
+  const listening = (async () => {
+    for await (const event of ctx.event.subscribe({ signal: stop.signal })) {
+      if (event.type === "session.execution.interrupted" || event.type === "session.execution.failed" || event.type === "session.execution.succeeded") auto.cancel(event.data.sessionID)
+      if (event.type === "session.moved") { auto.cancel(event.data.sessionID); await adapter.moved(event.data.sessionID).catch((error: unknown) => console.error("Context manager moved-session helper cleanup:", errorMessage(error))) }
+      if (event.type === "session.deleted") { auto.cancel(event.data.sessionID); adapter.deleted(event.data.sessionID) }
+    }
+  })().catch((error: unknown) => { if (!stop.signal.aborted) { closed = true; auto.close(); console.error("Context manager event stream stopped; reload required:", errorMessage(error)) } })
+  return async () => {
+    closed = true
+    auto.close()
+    stop.abort()
+    await listening
+    await adapter.close()
   }
 }
 
-function mcpText(item: Record<string, unknown>): string | undefined {
-  if (item.type === "text" && typeof item.text === "string") return item.text
-  if (item.type === "resource" && item.resource && typeof item.resource === "object") {
-    const resource = item.resource as Record<string, unknown>
-    if (typeof resource.text === "string") return `[Resource ${resource.uri ?? ""}]\n${resource.text}`
-  }
-  return undefined
-}
-
-function schemaView(value: unknown): unknown {
-  if (value && typeof value === "object" && ("ast" in value || "_zod" in value || "_def" in value))
-    return { unavailable: "Framework schema; obtain JSON Schema from the host tool catalog" }
-  try {
-    return JSON.parse(JSON.stringify(value, (_key, item) => typeof item === "function" ? "[function unavailable]" : item))
-  } catch { return { unavailable: "Runtime parameter schema is not JSON serializable" } }
-}
-
-const server: Plugin = (ctx, options) => createHooks(ctx, options)
-export default { id: "context-manager", server }
+export default Plugin.define({ id: "context-manager", setup: setupServer })

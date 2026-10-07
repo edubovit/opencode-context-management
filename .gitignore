@@ -6,6 +6,7 @@
 /.local/
 /handoff.md
 /node_modules/
+/test/v2-host/node_modules/
 /coverage/
 /context-dumps/
 .env

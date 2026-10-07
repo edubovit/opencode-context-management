@@ -1,9 +1,9 @@
-import type { Model, Session } from "@opencode-ai/sdk/v2"
+import type { Model, Session } from "./model.ts"
 import { KEY, type Settings } from "./config.ts"
 import { append, hash, historyHash, nativeActive, operation, project, readPolicy, select, serialize, type Block, type Envelope, type Operation, type Policy, type RestoreMode } from "./context.ts"
 import { validatePruning, type Pruning } from "./compaction.ts"
 import { generateSummary, inputEstimate, refinementPrompt, summaryEditPrompt, SUMMARY_EDIT_SYSTEM, SUMMARIZER_SYSTEM } from "./summarize.ts"
-import { Storage, type RuntimeCapture } from "./storage.ts"
+import type { Artifacts, RuntimeCapture } from "./storage.ts"
 import { snapshot } from "./snapshot.ts"
 import { toolStatus } from "./status.ts"
 import { bindPruneRule, chars, type TokenPruneRule } from "./text.ts"
@@ -21,7 +21,7 @@ export interface Host {
   update(id: string, metadata: Record<string, unknown>, expected?: Expected): Promise<void>
   models(): Promise<Model[]>
   configured(): Promise<boolean>
-  createJob(purpose?: "summary" | "edit"): Promise<string>
+  createJob(purpose?: "summary" | "edit", ownerID?: string): Promise<string>
   generate(id: string, model: ModelChoice, text: string, purpose?: "summary" | "edit"): Promise<string>
   abort(id: string): Promise<void>
   remove(id: string): Promise<void>
@@ -51,7 +51,7 @@ export class Controller {
   private cancelled = false
   private working = false
   private disposed = false
-  constructor(readonly host: Host, readonly sessionID: string, readonly config: Settings, readonly storage: Storage, private readonly purpose: "summary" | "edit" = "summary") {}
+  constructor(readonly host: Host, readonly sessionID: string, readonly config: Settings, readonly storage: Artifacts, private readonly purpose: "summary" | "edit" = "summary") {}
 
   async load(): Promise<Loaded> {
     const [session, raw, runtime, models, auto] = await Promise.all([this.host.session(this.sessionID), this.host.messages(this.sessionID), this.storage.capture(this.sessionID), this.host.models(), this.host.auto?.state(this.sessionID)])
@@ -63,7 +63,7 @@ export class Controller {
   }
 
   async requireIdle() {
-    if (!await this.host.configured()) throw new Error("Server plugin is not active. Configure both entrypoints and restart OpenCode.")
+    if (!await this.host.configured()) throw new Error("Server plugin is not active. Enable the plugin directory and reload OpenCode.")
     if (!await this.host.idle(this.sessionID)) throw new Error("Wait for the main session to become idle")
   }
 
@@ -318,7 +318,7 @@ export class Controller {
       throw new Error(`${subject} may not fit summarizer: estimated ${estimate} input tokens, input limit ${limit || "unknown"}. ${advice}`)
     }
     if (this.cancelled) throw new Error("Summary cancelled")
-    this.job ??= await this.host.createJob(this.purpose)
+    this.job ??= await this.host.createJob(this.purpose, this.sessionID)
     if (this.cancelled) throw new Error("Summary cancelled")
     const summary = (await this.host.generate(this.job, choice, text, this.purpose)).trim()
     if (this.cancelled) throw new Error("Summary cancelled")
@@ -359,8 +359,8 @@ export class Controller {
   }
 
   private requireUnprotected(loaded: Loaded, ids: string[]) {
-    const userID = loaded.auto?.pause?.userID
-    if (userID && ids.includes(userID)) throw new Error("The entire active USER turn is protected until this run ends")
+    const pause = loaded.auto?.pause
+    if (pause && ids.some((id) => (pause.protectedIDs ?? [pause.userID]).includes(id))) throw new Error("The entire active USER turn is protected until this run ends")
   }
 
   private async save(before: Policy, next: Policy, fingerprint: string, guard?: () => void) {

@@ -1,12 +1,12 @@
 /** @jsxImportSource @opentui/solid */
-import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
+import type { InspectorUI } from "./ui.ts"
 import type { ScrollBoxRenderable } from "@opentui/core"
 import { createEffect, Index, Show } from "solid-js"
 import { useKeyboard } from "@opentui/solid"
 import type { RangeRow } from "./range-rows.ts"
 
 export function RangeList(props: {
-  api: TuiPluginApi; rows: RangeRow[]; maxLines: number; selectedIndex: number; focused: boolean; onChange: (index: number) => void
+  api: InspectorUI; rows: RangeRow[]; maxLines: number; selectedIndex: number; focused: boolean; onChange: (index: number) => void
 }) {
   let scroll: ScrollBoxRenderable | undefined
   let reveal = true

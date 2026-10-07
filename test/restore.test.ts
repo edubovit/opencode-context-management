@@ -172,14 +172,14 @@ test("legacy saved cursors and unprune operations replay; new edits discard inac
   assert.equal(branch.operations[1].mode, "brief")
 })
 
-test("version-1 histories remain readable and new writes use version 6", () => {
+test("version-1 histories remain readable offline and new writes use version 7", () => {
   const raw = messages()
   const op = operation("tool-prune", select(turns(raw), 0, 0), { threshold: 8000, head: 2000, tail: 2000 })
   const legacy = { ...emptyPolicy("ses_test"), version: 1 as const, revision: 1, cursor: 1, operations: [op] }
   assert.equal(readPolicy({ ...session(), metadata: { [KEY]: legacy } }).version, 1)
   const restore = operation("unprune", select(project(raw, legacy), 0, 0))
   const next = append(legacy, restore)
-  assert.equal(next.version, 6)
+  assert.equal(next.version, 7)
   assert.deepEqual(blockMessages(project(raw, next)), raw)
   assert.throws(() => readPolicy({ ...session(), metadata: { [KEY]: { ...next, version: 1 } } }), /version 2/)
 })

@@ -2,7 +2,7 @@ import { spawn } from "node:child_process"
 import { createRequire } from "node:module"
 const require = createRequire(import.meta.url)
 const platform = process.platform === "win32" ? "windows" : process.platform
-const suffix = process.arch === "x64" ? "-baseline" : ""
+const suffix = process.platform === "linux" && !process.report.getReport().header.glibcVersionRuntime ? "-musl" : ""
 const executable = require.resolve(`@oven/bun-${platform}-${process.arch === "arm64" ? "aarch64" : process.arch}${suffix}/bin/bun${process.platform === "win32" ? ".exe" : ""}`)
 const child = spawn(executable, ["test", "--conditions=browser", "--preload", "@opentui/solid/preload", "./test/tui.test.tsx"], { stdio: "inherit" })
 child.on("error", (error) => { console.error(error); process.exitCode = 1 })
