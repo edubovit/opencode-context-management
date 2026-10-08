@@ -1,6 +1,6 @@
 {
   "name": "opencode-context-manager",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "private": true,
   "type": "module",
   "engines": { "opencode": "2.0.24", "node": ">=22" },
@@ -11,6 +11,7 @@
     "test:tui": "node script/test-tui.mjs",
     "check": "npm run typecheck && npm test && npm run test:tui",
     "test:host": "tsx script/host-smoke.ts",
+    "test:usage": "tsx script/usage-smoke.ts",
     "typecheck:v2-host": "tsc --noEmit -p test/v2-host/tsconfig.json",
     "test:v2-host": "npm run typecheck:v2-host && node script/v2-host-smoke.mjs"
   },

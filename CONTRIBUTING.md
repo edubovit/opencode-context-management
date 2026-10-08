@@ -10,6 +10,7 @@ npm run check
 npm run test:host -- /absolute/path/to/opencode
 # Linux + Python 3: exercise the actual inspector in an 80×24 terminal
 npm run test:host -- /absolute/path/to/opencode --tui
+npm run test:usage -- /absolute/path/to/opencode
 git diff --check
 ```
 
@@ -51,6 +52,7 @@ All default tests use synthetic content. Fake-provider success proves protocol/f
 | Ledger replay, turn grouping, summaries, expansion | `src/context.ts` |
 | Canonical request patching / native validation | `src/v2/projection.ts`, `src/v2/request.ts` |
 | Public idle observation / history utilities | `src/v2/activity.ts`, `src/v2/history.ts` |
+| Provider-anchored guard and request observations | `src/v2/budget.ts` |
 | Controller, parallel batch and saved-summary editor | `src/controller.ts`, `src/batch.ts`, `src/summary-editor.ts` |
 | Budget gate and strategy/ownership state | `src/autocompaction.ts`, `src/auto-state.ts` |
 | Token rules, metrics and display status | `src/text.ts`, `src/tokens.ts`, `src/metrics.ts`, `src/status.ts` |
@@ -110,6 +112,12 @@ Native `session.context` exposes the active window, not arbitrary pre-checkpoint
 
 - Require explicit `compaction.auto: false`; native auto/overflow compaction runs before the context hook. Reject native compaction while the plugin owns this workflow.
 - Check every main request, including tool-driven continuations. Use positive `limit.input`, else `context - output`, minus configured headroom. Equality fits. Invalid budgets fail visibly. Never change host/provider output caps.
+- The guard uses normalized per-response input+cached read/write and visible output+reasoning exactly once, never session-wide accumulated spend. Pair the report with its captured outgoing request using an unchanged native prefix and exact model/agent/configuration/tokenizer scope; helpers are independently scoped. Ignore failed/missing/malformed measurements.
+- Save hashed count units and a policy hash, not prompts/credentials. Pair only the immediately following assistant: interrupted attempts/new input cannot be mistaken for the sampled request. Drain pending accounting writes on unload. Never use transient generation to overwrite primary observations.
+- Recount edits against the same frozen anchor. Charge added units separately from removed units, with growth multiplier at least `max(estimateMultiplier, reportedInput / sampledLocalInput)`; removal credit is unscaled local count. Do not use a permanently unchanged old reported floor, scale removal credit as exact savings, or recalibrate the baseline from each candidate.
+- Bootstrap without a captured request is explicitly unpaired. Reconstruct a historical policy prefix excluding operations created after the response began or selecting that response/future messages. This is not proof of historical request identity; timestamps/configuration can be uncertain. New matched observations supersede it.
+- Native checkpoint/raw-prefix changes and model/provider/variant/agent/tokenizer/route changes invalidate incompatible anchors. Do not immediately bootstrap from the very historical reports just invalidated by a scope change. Live gate validation checks current route/model configuration and capacity before maintenance/resume.
+- Missing usage falls back to a visible configurable local uplift (default 1.3). Unknown overhead remains uncertain; no universal media/opaque-state/provider bound is claimed. Keep local content totals, historical reported usage and the actual guard forecast clearly separate in the UI/export.
 - If oversized context has no USER turn, fail before dispatch instead of skipping the budget guard or inventing a protectable turn.
 - Protect the entire V2 execution span since the last idle boundary, including steered user inputs—not just the last USER row. Queued inputs must be admitted/delivered exactly once.
 - A stored pause notice is not authority. Only the current in-memory owner can maintain/resume; source and protected-span fingerprints must still match.
@@ -148,6 +156,10 @@ For changes:
 Server artifacts are under `~/.local/state/opencode-context-manager/<project-hash>/`. Spill files older than seven days are cleaned on startup; captures/exports remain. Files use restrictive creation modes where supported; review local ACLs separately.
 
 V3 creates no control credential file or custom listener. Native RPC uses host authentication. Historical V1 `runtime.json` artifacts can still contain old credentials; do not commit or share them.
+
+`budget-<session-hash>.json` is a versioned accounting cache of scope/history/content hashes and counts. It is independent of policy format 7 and contains no prompt text or provider credentials. Captures and budget files remain on disk; do not delete accounting state to force a paused request through. The live gate uses its own frozen estimator, and missing files require a conservative bootstrap on subsequent requests.
+
+`script/usage-smoke.ts` emits deliberately mismatched OpenAI-style SSE usage. It verifies provider-triggered MANUAL/AUTO pauses with low local counts, cached/reasoning normalization, summary and large-prune resume, tool-result growth, restart persistence, pre-upgrade edits, model/endpoint invalidation (including a held gate), and isolated helper capacity checks. It uses the same owned private host/fake-provider isolation as the production smoke.
 
 Exports exclude hidden expansion layers, not every possible secret. Original history/spills remain; pruning is not secure erasure and disabling the plugin can restore original context. Keep model/provider errors useful without dumping headers/credentials. Share only synthetic, sanitized reproductions.
 

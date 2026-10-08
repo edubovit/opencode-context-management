@@ -3,6 +3,7 @@ import { homedir } from "node:os"
 import path from "node:path"
 import { randomUUID } from "node:crypto"
 import { hash } from "./context.ts"
+import { budgetStateSchema, type BudgetState, type BudgetReading } from "./v2/budget.ts"
 
 export type RuntimeCapture = {
   time: number
@@ -14,6 +15,7 @@ export type RuntimeCapture = {
   system?: string[]
   tools?: { id: string; description: string; parameters: unknown }[]
   warnings: string[]
+  budget?: BudgetReading
 }
 
 export type Artifacts = Pick<Storage, "capture" | "write">
@@ -40,6 +42,11 @@ export class Storage {
   }
   capture(sessionID: string) { return this.read<RuntimeCapture>(`capture-${hash(sessionID)}.json`) }
   saveCapture(value: RuntimeCapture) { return this.write(`capture-${hash(value.sessionID)}.json`, value) }
+  async budget(sessionID: string): Promise<BudgetState | undefined> {
+    const value = await this.read<unknown>(`budget-${hash(sessionID)}.json`)
+    return value === undefined ? undefined : budgetStateSchema.parse(value)
+  }
+  saveBudget(sessionID: string, value: BudgetState) { return this.write(`budget-${hash(sessionID)}.json`, value) }
   async spill(text: string) {
     await mkdir(this.root, { recursive: true })
     const target = path.join(this.root, `output-${randomUUID()}.txt`)

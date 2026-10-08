@@ -604,6 +604,31 @@ test("paused inspector saves strategy without executing and explicit Run starts 
   assert.deepEqual(calls.map((call) => call.action), ["strategy", "run"])
 })
 
+test("paused inspector distinguishes provider guard, local count, and inclusive reported baseline", async (t) => {
+  const { state, control, calls } = pausedControl()
+  state.pause!.tokens = 670000
+  state.pause!.threshold = 600000
+  state.pause!.accounting = { tokens: 670000, local: 530000, source: "provider-matched", multiplier: 1.3, added: 0, removed: 0, reported: { messageID: "msg_report", input: 660000, output: 10000 } }
+  const { frame, until, esc, type } = await setup(t, 220, 45, ({ host }) => { host.auto = control })
+  await until(() => frame().includes("provider-matched"))
+  assert.ok(frame().includes("Live guard: ≈670,000"))
+  assert.ok(frame().includes("local ≈530,000"))
+  assert.ok(frame().includes("660,000 input + 10,000 output/reasoning"))
+  esc()
+  await until(() => frame().includes("Resume blocked"))
+  await type("r")
+  assert.equal(calls.length, 0)
+})
+
+test("uncalibrated guard is labeled as a padded local fallback, not a provider count", async (t) => {
+  const { state, control } = pausedControl()
+  state.pause!.accounting = { tokens: 130, local: 100, source: "local-fallback", multiplier: 1.3, added: 100, removed: 0 }
+  const { frame, until } = await setup(t, 220, 45, ({ host }) => { host.auto = control })
+  await until(() => frame().includes("local-fallback"))
+  assert.ok(frame().includes("local fallback ×1.3"))
+  assert.ok(frame().includes("not a provider token count"))
+})
+
 test("paused exit requires confirmation, blocks over-budget resume, and stays within 80x24", async (t) => {
   const { state, calls, control } = pausedControl()
   const { frame, screen, until, type, esc, navigations } = await setup(t, 80, 24, ({ host }) => { host.auto = control })

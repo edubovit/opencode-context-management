@@ -40,6 +40,7 @@ export function mockContext() {
       hook: async (name: string, callback: (event: unknown) => Promise<void>) => { hooks.set(name, callback) },
     },
     model: { list: async () => ({ location: { directory: "/fixture" }, data: [{ id: "model", modelID: "api-model", providerID: "fixture", name: "Fixture", package: "@opencode/ai/providers/openai-compatible", variants: [{ id: "high" }], limit: { context: 200000, input: 168000, output: 32000 } }] }) },
+    provider: { get: async () => ({ location: { directory: "/fixture" }, data: { id: "fixture", package: "@opencode/ai/providers/openai-compatible", settings: { baseURL: "http://fixture.invalid/v1" } } }) },
     agent: { transform: async (callback: (editor: { update(id: string, update: (value: Record<string, unknown>) => void): void }) => void) => callback({ update: (id, update) => { const value = {}; update(value); agents.set(id, value) } }) },
     rpc: { register: async () => ({ events: { emit: async () => {} } }) },
     tool: { hook: async (name: string, callback: (event: unknown) => Promise<void>) => { hooks.set(name, callback) } },

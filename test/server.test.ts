@@ -52,7 +52,7 @@ test("V2 summary helpers receive isolated system context and no advertised tools
   const mock = await setup(t)
   mock.sessions.get("ses_native")!.metadata = { context_manager_job: true }
   const options = { maxTokens: 4096 }
-  const event = { sessionID: "ses_native", agent: EDIT_AGENT, system: [{ type: "text", text: "Must not leak global instructions" }], tools: { shell: {} }, options }
+  const event = { sessionID: "ses_native", agent: EDIT_AGENT, model: { providerID: "fixture", id: "model" }, messages: [], system: [{ type: "text", text: "Must not leak global instructions" }], tools: { shell: {} }, options }
   await mock.hooks.get("context")!(event)
   assert.deepEqual(event.system, [{ type: "text", text: SUMMARY_EDIT_SYSTEM }])
   assert.deepEqual(event.tools, {})

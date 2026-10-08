@@ -333,11 +333,14 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
     if (view() === "runtime") return limited(JSON.stringify(loaded()?.runtime ?? { unavailable: "No runtime capture yet. Send a normal session message first." }, null, 2))
     if (view() === "content") return limited(serialize(blockMessages(ranges().length ? inspected() : blocks())))
     const usage = loaded()?.usage
+    const budget = auto().pause?.accounting ?? loaded()?.runtime?.budget
     return [
       `Limits: >${rule().threshold} tokens; retain up to ${rule().head} head + ${rule().tail} tail (notice/link extra).`,
       ...selection().ranges.map((range, index) => `R${index + 1}: ${rangeLabel(blocks().slice(range.start, range.end + 1).flatMap((block) => block.sourceIDs), sourceTurns())}`),
       "Runtime inventory may be stale/incomplete; missing is not zero. Session overhead is not assigned to selected ranges.",
       usage ? `Last reported usage: ${usage.total.toLocaleString()} tokens · ${usage.providerID}/${usage.modelID}` : "Last reported usage: unavailable",
+      ...(budget ? [`${auto().pause ? "Live guard" : "Last request guard"}: ≈${budget.tokens.toLocaleString()} (${budget.source}); local ≈${budget.local.toLocaleString()}`,
+        budget.reported ? `Provider baseline: ${budget.reported.input.toLocaleString()} input + ${budget.reported.output.toLocaleString()} output/reasoning. Removed local text is not exact provider savings.` : `No matching usage; local fallback ×${budget.multiplier}. Still an estimate, not a provider token count.`] : []),
       "Historical usage is not a recount. Large = eligible under current rules; file previews are separate. Pruning is final.",
     ].join("\n")
   })

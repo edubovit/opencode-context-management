@@ -1,5 +1,6 @@
 import type { Model, Session } from "./model.ts"
 import type { ModelChoice } from "./controller.ts"
+import type { BudgetReading } from "./v2/budget.ts"
 
 export const AUTO_KEY = "opencode_context_autocompaction"
 export const STRATEGIES = ["MANUAL", "AUTO_PER_TURN", "AUTO_SESSION"] as const
@@ -9,6 +10,7 @@ export type Pause = {
   id: string; userID: string; phase: "manual" | "auto" | "resuming" | "aborting" | "invalid"
   tokens: number; threshold: number; inputLimit: number; derived: boolean; message: string
   protectedIDs?: string[]
+  accounting?: BudgetReading
 }
 export type AutoState = { strategy: Strategy; pause?: Pause }
 export type AutoCommand = { action: "strategy"; strategy: Strategy } | { action: "run" | "resume" | "abort"; pauseID: string; model?: ModelChoice }

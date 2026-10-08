@@ -7,11 +7,13 @@ import { distribution } from "./metrics.ts"
 import { tokenBasis, type TokenBasis } from "./tokens.ts"
 import { bindPruneRule } from "./text.ts"
 import { Storage } from "./storage.ts"
+import type { BudgetReading } from "./v2/budget.ts"
 
 type Gate = {
   sessionID: string; pause: Pause; fingerprint: string; basis: TokenBasis
   protectedHash: string
-  estimate?: (policy: Policy) => number
+  estimate?: (policy: Policy) => number | BudgetReading
+  valid?: () => Promise<boolean>
   active: boolean; resolve(): void; reject(error: Error): void; worker?: Controller
 }
 
@@ -31,7 +33,7 @@ export class Autocompaction implements AutoControl {
     const gate = this.gates.get(sessionID)
     const session = await this.host.session(sessionID)
     if (gate?.active && ["manual", "auto"].includes(gate.pause.phase)) {
-      const changed = session.revert || await this.host.idle(sessionID) || historyHash(await this.host.messages(sessionID)) !== gate.fingerprint
+      const changed = session.revert || (gate.valid && !await gate.valid()) || await this.host.idle(sessionID) || historyHash(await this.host.messages(sessionID)) !== gate.fingerprint
       if (changed) {
         gate.pause.phase = "invalid"
         gate.pause.message = "The suspended request no longer matches current session state. Abort this run; do not resume it."
@@ -66,6 +68,7 @@ export class Autocompaction implements AutoControl {
 
   private async loaded(gate: Gate): Promise<Loaded> {
     if (!gate.active) throw new Error("Suspended run is no longer active")
+    if (gate.valid && !await gate.valid()) throw new Error("Model/provider configuration changed while paused. Abort this run before continuing.")
     if (await this.host.idle(gate.sessionID)) throw new Error("The host no longer has a suspended run; abort or reopen the inspector")
     const loaded = await new Controller(this.host, gate.sessionID, this.config, this.storage).load()
     if (loaded.session.revert) throw new Error("Session was reverted while suspended. Abort this run before continuing.")
@@ -74,11 +77,13 @@ export class Autocompaction implements AutoControl {
     if (!protectedTurn.length || historyHash(protectedTurn.flatMap((block) => block.messages)) !== gate.protectedHash) throw new Error("The protected active turn changed. Abort this run before continuing.")
     loaded.tokenizer = gate.basis
     loaded.pruneRule = bindPruneRule(this.config.prune, gate.basis)
-    gate.pause.tokens = gate.estimate ? gate.estimate(loaded.policy) : distribution(loaded.blocks, loaded.runtime, gate.basis).total
+    const estimate = gate.estimate ? gate.estimate(loaded.policy) : distribution(loaded.blocks, loaded.runtime, gate.basis).total
+    gate.pause.tokens = typeof estimate === "number" ? estimate : estimate.tokens
+    gate.pause.accounting = typeof estimate === "number" ? undefined : estimate
     return loaded
   }
 
-  async beforeRequest(messages: Envelope[], input?: { model: ModelChoice; protectedIDs: string[]; estimate: (policy: Policy) => number }) {
+  async beforeRequest(messages: Envelope[], input?: { model: ModelChoice; protectedIDs: string[]; estimate: (policy: Policy) => number | BudgetReading; valid?: () => Promise<boolean> }) {
     const user = messages.findLast((message) => message.info.role === "user")?.info
     const sessionID = user?.sessionID ?? messages[0]?.info.sessionID
     if (!sessionID || (user && [AGENT, EDIT_AGENT, "title", "summary", "compaction"].includes(user.agent))) return
@@ -91,7 +96,8 @@ export class Autocompaction implements AutoControl {
     const budget = inputBudget(model, this.config.autocompaction.headroom)
     const basis = tokenBasis(choice, model, this.config.tokenizer)
     const blocks = project(nativeActive(messages), readPolicy(session))
-    const tokens = input ? input.estimate(readPolicy(session)) : distribution(blocks, await this.storage.capture(session.id), basis).total
+    const estimate = input ? input.estimate(readPolicy(session)) : distribution(blocks, await this.storage.capture(session.id), basis).total
+    const tokens = typeof estimate === "number" ? estimate : estimate.tokens
     if (tokens <= budget.threshold) return
     if (!user || user.role !== "user") throw new Error("Context exceeds the budget but has no USER turn to protect. Reduce the synthetic input through its owner or use a fresh session.")
     let resolve!: () => void
@@ -105,8 +111,8 @@ export class Autocompaction implements AutoControl {
     if (await this.host.idle(session.id)) throw new Error("The host stopped before context suspension could be acquired")
     const gate: Gate = {
       sessionID: session.id, active: true, resolve, reject, basis,
-      fingerprint: historyHash(raw), protectedHash: historyHash(protectedTurn.flatMap((block) => block.messages)), estimate: input?.estimate,
-      pause: { id: randomUUID(), userID: protectedTurn[0].sourceIDs[0], protectedIDs: protectedTurn.flatMap((block) => block.sourceIDs), phase: strategy(session) === "MANUAL" ? "manual" : "auto", tokens, ...budget, message: "Context threshold exceeded. Reduce earlier history; the entire active execution turn is protected." },
+      fingerprint: historyHash(raw), protectedHash: historyHash(protectedTurn.flatMap((block) => block.messages)), estimate: input?.estimate, valid: input?.valid,
+      pause: { id: randomUUID(), userID: protectedTurn[0].sourceIDs[0], protectedIDs: protectedTurn.flatMap((block) => block.sourceIDs), phase: strategy(session) === "MANUAL" ? "manual" : "auto", tokens, ...(typeof estimate === "number" ? {} : { accounting: estimate }), ...budget, message: "Context threshold exceeded. Reduce earlier history; the entire active execution turn is protected." },
     }
     if (this.gates.has(session.id)) throw new Error("A context suspension already owns this session")
     this.gates.set(session.id, gate)
@@ -159,7 +165,8 @@ export class Autocompaction implements AutoControl {
         const draft = await worker.summarize("compact", selected.flatMap((block) => block.sourceIDs), choice, loaded)
         if (!gate.active) return
         const candidate = project(nativeActive(loaded.raw, loaded.session.revert), append(loaded.policy, draft.operation))
-        const after = gate.estimate ? gate.estimate(append(loaded.policy, draft.operation)) : distribution(candidate, loaded.runtime, gate.basis).total
+        const estimate = gate.estimate ? gate.estimate(append(loaded.policy, draft.operation)) : distribution(candidate, loaded.runtime, gate.basis).total
+        const after = typeof estimate === "number" ? estimate : estimate.tokens
         if (after < gate.pause.tokens) await worker.applyOperations([draft.operation], draft)
       } finally {
         await worker.dispose()
@@ -229,6 +236,7 @@ export class Autocompaction implements AutoControl {
     const affected = changedOperations(before, next)
     if (gate && affected.some((op) => op.sourceIDs.some((id) => (gate.pause.protectedIDs ?? [gate.pause.userID]).includes(id)))) throw new Error("The entire active USER turn is protected until this run ends")
     if (session.revert) throw new Error("Finish native undo/unrevert before context maintenance")
+    if (gate?.valid && !await gate.valid()) throw new Error("Model/provider configuration changed while paused. Abort this run before continuing.")
     const projected = project(nativeActive(raw), next)
     if (gate && historyHash(protectedBlocks({ blocks: projected }, gate.pause).flatMap((block) => block.messages)) !== gate.protectedHash)
       throw new Error("The protected active turn cannot change")

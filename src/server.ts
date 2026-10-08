@@ -2,7 +2,7 @@ import { Plugin } from "@opencode/plugin"
 import { AGENT, EDIT_AGENT, KEY, VERSION, settings } from "./config.ts"
 import { blockMessages, historyHash, nativeActive, project, readPolicy } from "./context.ts"
 import { Controller } from "./controller.ts"
-import { Storage } from "./storage.ts"
+import { Storage, type RuntimeCapture } from "./storage.ts"
 import { spills, spillPreview } from "./text.ts"
 import { inputEstimate, SUMMARIZER_SYSTEM, SUMMARY_EDIT_SYSTEM } from "./summarize.ts"
 import { Autocompaction } from "./autocompaction.ts"
@@ -10,8 +10,11 @@ import { ContextManager, errorMessage } from "./rpc.ts"
 import { pluginHost, type PluginContext } from "./host.ts"
 import { modelView, sessionView, transcriptView } from "./v2/normalize.ts"
 import { protectedMessages } from "./v2/history.ts"
-import { projectRequest, requestTokens } from "./v2/projection.ts"
+import { projectRequest } from "./v2/projection.ts"
 import { tokenBasis } from "./tokens.ts"
+import { budgetScope, budgetUnits, estimateBudget, prepareBudget, recordRequest } from "./v2/budget.ts"
+import { hash } from "./context.ts"
+import { inputBudget } from "./auto-state.ts"
 
 export async function setupServer(ctx: PluginContext, store = new Storage(ctx.location.directory)) {
   if (ctx.app.version !== "2.0.24") throw new Error(`Context manager ${VERSION} requires OpenCode 2.0.24; found ${ctx.app.version}`)
@@ -20,6 +23,13 @@ export async function setupServer(ctx: PluginContext, store = new Storage(ctx.lo
   const host = adapter.host
   const auto = new Autocompaction(host, config, store)
   let closed = false
+  const budgetWrites = new Set<Promise<unknown>>()
+  const saveBudget = async (id: string, state: Parameters<Storage["saveBudget"]>[1]) => {
+    if (closed) throw new Error("Context manager unloaded before budget accounting completed")
+    const write = store.saveBudget(id, state)
+    budgetWrites.add(write)
+    try { await write } finally { budgetWrites.delete(write) }
+  }
   const stop = new AbortController()
   const requireSession = async (sessionID: string) => {
     if (closed) throw new Error("Context manager was unloaded; reopen the inspector")
@@ -99,10 +109,10 @@ export async function setupServer(ctx: PluginContext, store = new Storage(ctx.lo
   })
   const context = async (event: import("@opencode/plugin/promise/session").SessionContext, gate: boolean) => {
     const current = await requireSession(event.sessionID)
-    if ([AGENT, EDIT_AGENT].includes(event.agent) && current.metadata?.context_manager_job) {
+    const helper = [AGENT, EDIT_AGENT].includes(event.agent) && current.metadata?.context_manager_job === true
+    if (helper) {
       event.system = [{ type: "text", text: event.agent === EDIT_AGENT ? SUMMARY_EDIT_SYSTEM : SUMMARIZER_SYSTEM }]
       event.tools = {}
-      return
     }
     const native = await ctx.session.context({ sessionID: event.sessionID })
     const raw = transcriptView(current, native)
@@ -110,21 +120,61 @@ export async function setupServer(ctx: PluginContext, store = new Storage(ctx.lo
     const model = (await ctx.model.list()).data.find((entry) => entry.id === event.model.id && entry.providerID === event.model.providerID)
     const choice = { providerID: event.model.providerID, modelID: event.model.id, variant: event.model.variant }
     const basis = tokenBasis(choice, model && modelView(model), config.tokenizer)
-    const estimate = (policy: ReturnType<typeof readPolicy>) => requestTokens(projectRequest(native, raw, incoming, policy), event.system, event.tools, basis)
-    const capture = {
+    if (!gate) {
+      event.messages = projectRequest(native, raw, incoming, readPolicy(sessionView(current)))
+      return
+    }
+    const provider = (await ctx.provider.get({ providerID: event.model.providerID })).data
+    const definition = (value: { package?: string; settings?: unknown; headers?: unknown; body?: unknown } | undefined) => value && ({ package: value.package, settings: value.settings, headers: value.headers, body: value.body })
+    const requestScope = (selected: typeof model, configured: typeof provider) => budgetScope({ model: event.model, agent: event.agent }, basis, {
+      provider: { ...definition(configured), integrationID: configured.integrationID }, model: { ...definition(selected), modelID: selected?.modelID, variant: selected?.variants.find((variant) => variant.id === event.model.variant) },
+      overrides: Object.fromEntries(Object.entries(event.options).filter(([key]) => key !== "maxTokens")),
+    })
+    const scope = requestScope(model, provider)
+    const valid = async () => {
+      const selected = (await ctx.model.list()).data.find((entry) => entry.id === event.model.id && entry.providerID === event.model.providerID)
+      const configured = (await ctx.provider.get({ providerID: event.model.providerID })).data
+      return requestScope(selected, configured) === scope && hash(selected?.limit) === hash(model?.limit)
+    }
+    const previous = await store.budget(event.sessionID)
+    const currentPolicy = readPolicy(sessionView(current))
+    const state = prepareBudget({ scope, model: event.model, agent: event.agent }, native, projectRequest(native, raw, incoming, currentPolicy), event.system, event.tools, basis, hash(currentPolicy), previous, (response) => {
+      const position = native.findIndex((message) => message.id === response.id)
+      const future = new Set(native.slice(position).map((message) => message.id))
+      const changed = currentPolicy.operations.slice(0, currentPolicy.cursor).findIndex((op) => op.created >= response.time.created || op.sourceIDs.some((id) => future.has(id)))
+      const historical = changed < 0 ? currentPolicy : { ...currentPolicy, cursor: changed }
+      return { messages: projectRequest(native, raw, incoming, historical), policy: hash(historical) }
+    })
+    await saveBudget(event.sessionID, state)
+    const units = (policy: ReturnType<typeof readPolicy>) => budgetUnits(projectRequest(native, raw, incoming, policy), event.system, event.tools, basis)
+    const estimate = (policy: ReturnType<typeof readPolicy>) => estimateBudget(units(policy), state, config.autocompaction.estimateMultiplier)
+    const capture: RuntimeCapture = {
       sessionID: event.sessionID, time: Date.now(), model: choice, variant: event.model.variant, agent: event.agent,
       historyHash: historyHash(blockMessages(project(nativeActive(raw), readPolicy(sessionView(current))))),
       system: [...event.system.map((part) => part.text), ...incoming.filter((message) => message.role === "system").map((message) => message.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("\n"))],
       tools: Object.entries(event.tools).map(([id, tool]) => ({ id, description: tool.description, parameters: tool.input })),
       warnings: ["Captured at this plugin's context hook; later hooks, provider framing, media and opaque state are not fully counted."],
+      budget: estimate(currentPolicy),
     }
-    await store.saveCapture(capture)
-    if (gate) await auto.beforeRequest(raw, { model: choice, protectedIDs: [...protectedMessages(native)], estimate })
+    if (helper) {
+      if (!model) throw new Error("Summary model limits are unavailable")
+      const budget = inputBudget(modelView(model), 0)
+      if (capture.budget!.tokens > budget.inputLimit) {
+        const message = `Summary request budget ${capture.budget!.tokens} exceeds helper input capacity ${budget.inputLimit}; choose a larger model or prune first`
+        adapter.budgetFailure(event.sessionID, message)
+        throw new Error(message)
+      }
+    } else {
+      await store.saveCapture(capture)
+      await auto.beforeRequest(raw, { model: choice, protectedIDs: [...protectedMessages(native)], estimate, valid })
+    }
     const policy = readPolicy(sessionView(await requireSession(event.sessionID)))
     event.messages = projectRequest(native, raw, incoming, policy)
     capture.historyHash = historyHash(blockMessages(project(nativeActive(raw), policy)))
     capture.time = Date.now()
-    await store.saveCapture(capture)
+    capture.budget = estimate(policy)
+    await saveBudget(event.sessionID, recordRequest(state, native, units(policy), hash(policy)))
+    if (!helper) await store.saveCapture(capture)
   }
   await ctx.session.hook("context", (event) => context(event, true))
   await ctx.session.hook("generate", (event) => context(event, false))
@@ -151,6 +201,7 @@ export async function setupServer(ctx: PluginContext, store = new Storage(ctx.lo
     auto.close()
     stop.abort()
     await listening
+    await Promise.allSettled([...budgetWrites])
     await adapter.close()
   }
 }

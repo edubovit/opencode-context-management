@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url"
 import { OpenCode } from "@opencode/client"
 
 export type Wire = { model: string; messages: { role: string; content?: unknown; tool_calls?: unknown }[]; [key: string]: unknown }
+export type FakeUsage = { input: number; cached?: number; written?: number; output: number; reasoning?: number }
 
 export async function fixture(executable = "opencode", destination?: string) {
   const version = spawnSync(executable, ["--version"], { encoding: "utf8" })
@@ -19,6 +20,7 @@ export async function fixture(executable = "opencode", destination?: string) {
   if (destination) await mkdir(root)
   const requests: Wire[] = []
   let respond: (wire: Wire) => string | { text: string; finish: "stop" | "length" } | undefined = () => undefined
+  let usage: (wire: Wire) => FakeUsage | undefined = () => undefined
   let barrier: { arrivals: number; expected: number; promise: Promise<void>; release(): void } | undefined
   let hold: { promise: Promise<void>; release(): void } | undefined
   const provider = createServer(async (req, res) => {
@@ -44,10 +46,15 @@ export async function fixture(executable = "opencode", destination?: string) {
     const text = (typeof custom === "object" ? custom.text : custom) ?? (editing ? (serialized.includes("EDIT_ONE") ? "EDIT_TWO: corrected saved summary" : "EDIT_ONE: clarified saved summary")
       : summary ? "Retained selected facts: ROOT_FACT; HEAD_FIXTURE and TAIL_FIXTURE were observed. Follow up with validation of the synthetic change."
       : "Fixture final response. ROOT_FACT retained.")
-    const delta = tool ? { reasoning_content: "REASONING_FIXTURE", tool_calls: [{ index: 0, id: `call_fixture_${requests.length}`, type: "function", function: { name: "fixture_tool", arguments: "{}" } }] } : { content: text }
+    const delta = tool ? { reasoning_content: "REASONING_FIXTURE", tool_calls: [{ index: 0, id: `call_fixture_${requests.length}`, type: "function", function: { name: "fixture_tool", arguments: lastText.includes("USAGE_TOOL") ? '{"small":true}' : "{}" } }] } : { content: text }
     res.writeHead(200, { "content-type": "text/event-stream" })
     for (const choice of [{ index: 0, delta, finish_reason: null }, { index: 0, delta: {}, finish_reason: tool ? "tool_calls" : typeof custom === "object" ? custom.finish : lastText.includes("TRUNCATE_FIXTURE") ? "length" : "stop" }])
       res.write(`data: ${JSON.stringify({ id: "chatcmpl_fixture", object: "chat.completion.chunk", created: 1, model: input.model, choices: [choice] })}\n\n`)
+    const report = usage(input)
+    if (report) res.write(`data: ${JSON.stringify({ id: "chatcmpl_fixture", object: "chat.completion.chunk", created: 1, model: input.model, choices: [], usage: {
+      prompt_tokens: report.input, completion_tokens: report.output, total_tokens: report.input + report.output,
+      prompt_tokens_details: { cached_tokens: report.cached ?? 0, cache_write_tokens: report.written ?? 0 }, completion_tokens_details: { reasoning_tokens: report.reasoning ?? 0 },
+    } })}\n\n`)
     res.end("data: [DONE]\n\n")
   })
   provider.listen(0, "127.0.0.1")
@@ -124,6 +131,7 @@ export async function fixture(executable = "opencode", destination?: string) {
       client = connect()
     },
     respond: (callback: typeof respond) => { respond = callback },
+    usage: (callback: typeof usage) => { usage = callback },
     parallel: (expected: number) => {
       let release!: () => void
       const promise = new Promise<void>((resolve) => { release = resolve })

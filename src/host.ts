@@ -11,7 +11,7 @@ export type PluginContext = Parameters<Plugin.Plugin["setup"]>[0]
 
 export function pluginHost(ctx: PluginContext) {
   const activity = new Activity((sessionID) => ctx.session.wait({ sessionID }))
-  const jobs = new Map<string, { owner: string; purpose: "summary" | "edit"; running: boolean; cancelled: boolean }>()
+  const jobs = new Map<string, { owner: string; purpose: "summary" | "edit"; running: boolean; cancelled: boolean; budgetError?: string }>()
   let closed = false
   const nativeSession = async (sessionID: string): Promise<SessionInfo> => {
     if (closed) throw new Error("Context manager has been unloaded")
@@ -58,6 +58,7 @@ export function pluginHost(ctx: PluginContext) {
       if (job.running) throw new Error("Summary helper already has a pending request")
       job.running = true
       job.cancelled = false
+      job.budgetError = undefined
       try {
         await nativeSession(id)
         await ctx.session.switchModel({ sessionID: id, model: { providerID: choice.providerID, id: choice.modelID, variant: choice.variant ?? "default" } })
@@ -66,6 +67,7 @@ export function pluginHost(ctx: PluginContext) {
         if (closed || !jobs.has(id) || job.cancelled) await ctx.session.interrupt({ sessionID: id, resume: false })
         await ctx.session.wait({ sessionID: id })
         if (closed || !jobs.has(id) || job.cancelled) throw new Error("Summary cancelled")
+        if (job.budgetError) throw new Error(job.budgetError)
         const current = await nativeSession(id)
         const messages = await ctx.session.context({ sessionID: id })
         const start = messages.findIndex((message) => message.id === admitted.id && message.type === "user")
@@ -88,6 +90,7 @@ export function pluginHost(ctx: PluginContext) {
   return {
     host, nativeSession,
     owns: (id: string, owner: string) => jobs.get(id)?.owner === owner,
+    budgetFailure: (id: string, message: string) => { const job = jobs.get(id); if (job) job.budgetError = message },
     moved: async (owner: string) => {
       await Promise.all([...jobs].filter(([, job]) => job.owner === owner).map(async ([id, job]) => { job.cancelled = true; await host.remove(id) }))
     },

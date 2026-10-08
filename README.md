@@ -2,7 +2,7 @@
 
 Choose what stays in your coding session's context. Prune reasoning or tool results, summarize selected turns, and expand summaries later—without deleting the stored conversation.
 
-**Plugin 3.0.0 · OpenCode 2.0.24**. This is the OpenCode V2 port. V1 entrypoints and configuration instructions no longer apply.
+**Plugin 3.1.0 · OpenCode 2.0.24**. This is the OpenCode V2 port. V1 entrypoints and configuration instructions no longer apply.
 
 ## Features
 
@@ -94,7 +94,7 @@ Options belong on the single server plugin entry. Unknown options are rejected. 
     "package": "file:///absolute/path/opencode-context-management/src",
     "options": {
       "ui": { "maxLinesPerTurn": 4 },
-      "autocompaction": { "headroom": 20000 },
+      "autocompaction": { "headroom": 20000, "estimateMultiplier": 1.3 },
       "spill": { "maxLines": 2000, "maxBytes": 51200, "headShare": 0.5 },
       "prune": { "threshold": 5000, "head": 1000, "tail": 1000 },
       "tokenizer": { "fallbackEncoding": "o200k_base", "overrides": {} }
@@ -107,6 +107,7 @@ Options belong on the single server plugin entry. Unknown options are rejected. 
 | --- | --- |
 | `ui.maxLinesPerTurn` | Maximum lines per list entry; integer ≥3. Short entries shrink. |
 | `autocompaction.headroom` | Pause above input capacity minus this nonnegative margin. Must leave a positive threshold; never changes output caps. |
+| `autocompaction.estimateMultiplier` | Conservative uplift for unmeasured text: default `1.3`, finite number ≥1. Used for missing-usage fallback and as the minimum multiplier on new content. |
 | `spill.maxLines` / `maxBytes` | Fresh output limits; minimum 2 lines / 8 UTF-8 bytes. Full captured text is saved before previewing. |
 | `spill.headShare` | `0.5` half head/half tail, `1` head only, `0` tail only. Notice/path are extra. |
 | `prune.threshold` | Large mode affects only results strictly larger than this token count. |
@@ -123,6 +124,16 @@ Helpers inherit the main session model/effort unless these optional defaults are
 Set both model fields or neither. Inspector choices override defaults for that inspector, not the main session. Use a helper model large enough for the full background; nothing is silently dropped or switched. There is no `prune.unit`, `outputReserve`, or plugin-imposed output cap.
 
 ### Autocompaction
+
+The safety guard is **provider-aware**, not the inspector's local content total. It uses the latest compatible reported input (including cached input once) and output/reasoning, plus estimated growth since that response. A high reported count can trigger cleanup even when the local tokenizer is below the threshold. The check runs before the next main request, including tool continuations—not in the middle of the response that supplies the usage.
+
+Requests are paired with their reports using model/agent/configuration identity and native history fingerprints. After pruning, summaries or expansion, the guard recounts against that fixed baseline. New content is charged with at least the configured multiplier or the observed input/local ratio; removed content receives only its unscaled local estimate as credit. Unexplained provider overhead is retained, not silently declared freed. The same count governs pause, automatic candidates and resume.
+
+The inspector shows **Live guard** while paused or **Last request guard** otherwise, separately from local categories and historical usage. `provider-matched` means a captured request/report pair; `provider-unpaired` is a conservative reconstruction for an existing session without a sample. Known later ledger edits are excluded from that historical reconstruction. `local-fallback` means no compatible report is available and uses the configured uplift. Helpers have independent accounting and fail before dispatch when their own capacity would be exceeded; they do not compact or pollute the parent's usage baseline.
+
+Accounting survives restart. Model, variant, agent, configured route or tokenizer changes invalidate incompatible measurements; a changed model/provider configuration also prevents resuming a stale live pause. The files contain hashes/counts, not request text or credentials.
+
+**This is still a forecast, not an exact provider count or a hard limit guarantee.** Reports describe earlier requests; changed text, later hooks, media and opaque state can differ. Image/PDF allowances are rough estimates. Unpaired reconstruction assumes normal operation timestamps/history ordering. Unknown residual overhead can keep a run paused after substantial cleanup; abort or use a larger model rather than forcing resume. Keep headroom, and increase `estimateMultiplier` if your unmeasured additions are consistently underestimated.
 
 - **MANUAL** (default): pause for cleanup; resume only when the estimate fits.
 - **AUTO_PER_TURN:** compact earlier USER turns oldest first, then try the earlier prefix once if necessary.
