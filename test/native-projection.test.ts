@@ -94,6 +94,47 @@ test("V2 accepts only native-format ledgers and refuses inherited/V1 state witho
   assert.equal(readPolicy({ ...sessionView(session), metadata: { [KEY]: emptyPolicy(session.id) } }).version, 7)
 })
 
+test("background shell records intentionally omitted by the host do not block saved edits", () => {
+  const { session, native, canonical } = nativeFixture()
+  const shell = { id: "msg_shell", type: "shell" as const, shellID: "sh_fixture", command: "RAW_SHELL_COMMAND", status: "exited" as const, metadata: { background: true }, time: { created: 4, completed: 5 } }
+  const completion = { id: "msg_completion", type: "synthetic" as const, text: "SHELL_COMPLETION", time: { created: 6 } }
+  native.splice(3, 0, shell, completion)
+  canonical.splice(4, 0, Message.make({ id: completion.id, role: "user", content: completion.text }))
+  const raw = transcriptView(session, native)
+  const original = JSON.stringify({ native, raw, canonical })
+  const selected = project(nativeActive(raw), emptyPolicy(session.id)).slice(0, 1)
+  for (const mode of ["prune-reason", "tool-prune", "tool-prune-all", "tool-delete"] as const) {
+    const policy = append(emptyPolicy(session.id), { ...operation(mode, selected, { threshold: 200, head: 10, tail: 10 }), ...(mode === "tool-delete" ? { pruneReason: true as const } : {}) })
+    const result = projectRequest(native, raw, canonical, policy)
+    assert.ok(result.some((message) => message.id === completion.id))
+    assert.ok(!JSON.stringify(result).includes("RAW_SHELL_COMMAND"))
+    assert.ok(!result.some((message) => message.id === shell.id))
+  }
+  let policy = append(emptyPolicy(session.id), { ...operation("brief", selected), summary: "Saved shell completion facts" })
+  const summarized = JSON.stringify(projectRequest(native, raw, canonical, policy))
+  assert.ok(!summarized.includes("SHELL_COMPLETION"))
+  assert.ok(summarized.includes("Saved shell completion facts"))
+  policy = append(policy, operation("expand", project(nativeActive(raw), policy).slice(0, 1)))
+  assert.deepEqual(projectRequest(native, raw, canonical, policy), canonical)
+  assert.equal(JSON.stringify({ native, raw, canonical }), original)
+})
+
+test("missing foreground shells, completion messages, user/assistant messages and tool results still fail closed", () => {
+  const { session, native, canonical } = nativeFixture()
+  const check = (source: typeof native, incoming: typeof canonical) => {
+    const raw = transcriptView(session, source)
+    const policy = append(emptyPolicy(session.id), operation("prune-reason", project(nativeActive(raw), emptyPolicy(session.id)).slice(0, 1)))
+    assert.throws(() => projectRequest(source, raw, incoming, policy), /absent from.*context/)
+  }
+  for (const background of [undefined, false, "true"]) {
+    const shell = { id: "msg_shell", type: "shell" as const, shellID: "sh_fixture", command: "FOREGROUND", status: "exited" as const, ...(background === undefined ? {} : { metadata: { background } }), time: { created: 4 } }
+    check([...native.slice(0, 3), shell, ...native.slice(3)], canonical)
+  }
+  check([...native.slice(0, 3), { id: "msg_completion", type: "synthetic", text: "COMPLETION", time: { created: 4 } }, ...native.slice(3)], canonical)
+  for (const id of ["msg_u0", "msg_a0"]) check(native, canonical.filter((message) => message.id !== id))
+  check(native, canonical.filter((message) => !(message.role === "tool" && message.content.some((part) => part.type === "tool-result" && part.id === "call_0"))))
+})
+
 test("native error attachments and interruption text remain visible until all-output pruning removes them", () => {
   const { session, native } = nativeFixture()
   const assistant = native.find((message) => message.type === "assistant")!

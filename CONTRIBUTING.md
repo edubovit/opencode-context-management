@@ -88,6 +88,7 @@ Native `session.context` exposes the active window, not arbitrary pre-checkpoint
 ### Editing and request projection
 
 - A USER row starts at a user message; following synthetic/skill/shell context belongs to that effective range. Host control/system/idle records are not editable USER text. Unfinished/user-only snapshots must be labeled honestly.
+- Background shell records (`metadata.background === true`) remain in saved source fingerprints but OpenCode deliberately omits their canonical messages; completion arrives separately as synthetic context. Projection must allow that specific omission without reconstructing the shell or suppressing missing-message/tool-pair checks. Production smoke covers all pruning combinations across a real background shell completion.
 - Ranges are inclusive and disjoint; adjacent ranges remain separate. Existing summaries are indivisible until expanded.
 - Never rewrite transcript messages/parts. Operations alter the request projection only; spills are ingestion-time previews with full captured text saved separately.
 - Reasoning removal removes whole reasoning parts, including opaque part metadata, but does not guess that commentary/visible text is reasoning.

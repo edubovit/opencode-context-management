@@ -41,14 +41,23 @@ try {
   for (const options of [{ reasoning: true }, { reasoning: false, tools: "large" as const }, { reasoning: true, tools: "large" as const }, { reasoning: false, tools: "all" as const }, { reasoning: true, tools: "all" as const }, { reasoning: true, tools: "delete" as const }]) {
     const controller = await make()
     await send(controller, "ROOT_FACT EXERCISE_TOOL")
+    await test.client.session.shell({ sessionID: controller.sessionID, command: "printf 'BACKGROUND_SHELL_RESULT'" })
+    await send(controller, "Deliver the background shell completion before editing")
     const original = await test.client.session.context({ sessionID: controller.sessionID })
+    const shell = original.find((message) => message.type === "shell")!
+    assert.equal(shell.metadata?.background, true)
+    assert.ok(original.some((message) => message.type === "synthetic" && message.text.includes("BACKGROUND_SHELL_RESULT")))
     const loaded = await controller.load()
+    assert.ok(loaded.blocks[0].sourceIDs.includes(shell.id))
     assert.ok(loaded.runtime?.tools?.some((tool) => tool.id === "fixture_tool"))
     assert.ok(JSON.stringify(loaded.raw).includes("HEAD_FIXTURE") && JSON.stringify(loaded.raw).includes("TAIL_FIXTURE"))
     await controller.prune(loaded.blocks[0].sourceIDs, options)
     assert.equal((await controller.load()).policy.version, 7)
     await send(controller, "Immediate next request after context edit")
     const request = JSON.stringify(test.requests.at(-1)?.messages)
+    assert.ok(request.includes("BACKGROUND_SHELL_RESULT"))
+    assert.equal((request.match(/The following shell command was executed by the user/g) ?? []).length, 1)
+    assert.ok(!request.includes("\\n\\nCommand:"))
     assert.equal(request.includes("REASONING_FIXTURE"), !options.reasoning)
     if (options.tools === "large") assert.match(request, /HEAD_FIXTURE[\s\S]*middle omitted[\s\S]*TAIL_FIXTURE/)
     if (options.tools === "all") { assert.match(request, /Tool output pruned/); assert.ok(!request.includes("HEAD_FIXTURE")) }
@@ -56,7 +65,7 @@ try {
     const stored = await test.client.session.context({ sessionID: controller.sessionID })
     assert.deepEqual(stored.filter((message) => original.some((before) => before.id === message.id)), original)
     assert.equal((await test.client.session.get({ sessionID: controller.sessionID })).metadata?.unrelated, "keep")
-    checks.push(`actual RPC/controller ${JSON.stringify(options)}; unchanged stored transcript`)
+    checks.push(`actual RPC/controller ${JSON.stringify(options)} with omitted background shell; unchanged stored transcript`)
   }
   const controller = await make()
   await send(controller, "ROOT_FACT " + "Selected information. ".repeat(400) + " EXERCISE_TOOL")

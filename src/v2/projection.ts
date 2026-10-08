@@ -68,8 +68,10 @@ export function projectRequest(native: readonly SessionMessageInfo[], raw: Envel
   project(active, policy, (op, selected) => {
     for (const block of selected) if (block.kind === "turn") {
       for (const message of block.messages) {
-        if (!observed.has(message.info.id) && message.parts.some((part) => (part.type === "text" || part.type === "reasoning") ? !!part.text : part.type === "tool" || part.type === "file" || part.type === "context"))
-          throw new Error("Saved source is absent from this model's context; refusing to resurrect or discard history")
+        const source = originals.get(message.info.id)
+        const omittedShell = source?.type === "shell" && source.metadata?.background === true
+        if (!observed.has(message.info.id) && !omittedShell && message.parts.some((part) => (part.type === "text" || part.type === "reasoning") ? !!part.text : part.type === "tool" || part.type === "file" || part.type === "context"))
+          throw new Error(`Saved source is absent from this model's context; refusing to resurrect or discard history (${message.info.id}, ${source?.type ?? "unknown"}, ${op.mode})`)
         for (const [id, tool] of tools.get(message.info.id) ?? []) {
           const key = `${message.info.id}:${id}`
           if (!seenCalls.has(key) || (["completed", "error"].includes(tool.state.status) && !seenResults.has(key)))
