@@ -21,6 +21,7 @@ const make = async () => {
   const remote = remoteHost(test.client, session.id)
   const loaded = await remote.load()
   assert.equal(loaded.version, VERSION)
+  await remote.host.auto!.command(session.id, { action: "strategy", strategy: "MANUAL" })
   return new Controller(remote.host, session.id, settings(loaded.settings), remote.artifacts)
 }
 const send = async (controller: Controller, text: string) => {

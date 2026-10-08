@@ -2,19 +2,20 @@ import { randomUUID } from "node:crypto"
 import { Controller, type Host, type Loaded, type ModelChoice } from "./controller.ts"
 import { AUTO_KEY, STRATEGIES, inputBudget, strategy, type AutoCommand, type AutoControl, type AutoState, type Expected, type Pause } from "./auto-state.ts"
 import { AGENT, EDIT_AGENT, KEY, type Settings } from "./config.ts"
-import { append, hash, historyHash, nativeActive, project, readPolicy, type Envelope, type Policy } from "./context.ts"
+import { append, blockMessages, hash, historyHash, nativeActive, operation, project, readPolicy, type Envelope, type Policy } from "./context.ts"
 import { distribution } from "./metrics.ts"
 import { tokenBasis, type TokenBasis } from "./tokens.ts"
 import { bindPruneRule } from "./text.ts"
 import { Storage } from "./storage.ts"
 import type { BudgetReading } from "./v2/budget.ts"
+import { LastResort, lastResortRange } from "./last-resort.ts"
 
 type Gate = {
   sessionID: string; pause: Pause; fingerprint: string; basis: TokenBasis
   protectedHash: string
   estimate?: (policy: Policy) => number | BudgetReading
   valid?: () => Promise<boolean>
-  active: boolean; resolve(): void; reject(error: Error): void; worker?: Controller
+  active: boolean; resolve(): void; reject(error: Error): void; worker?: Pick<Controller, "cancel" | "dispose">
 }
 
 export class Autocompaction implements AutoControl {
@@ -35,6 +36,12 @@ export class Autocompaction implements AutoControl {
     if (gate?.active && ["manual", "auto"].includes(gate.pause.phase)) {
       const changed = session.revert || (gate.valid && !await gate.valid()) || await this.host.idle(sessionID) || historyHash(await this.host.messages(sessionID)) !== gate.fingerprint
       if (changed) {
+        if (gate.pause.phase === "auto") {
+          gate.active = false
+          gate.reject(new Error("Automatic compaction cancelled: session or model configuration changed"))
+          void gate.worker?.cancel().catch(() => {})
+          return { strategy: strategy(session) }
+        }
         gate.pause.phase = "invalid"
         gate.pause.message = "The suspended request no longer matches current session state. Abort this run; do not resume it."
         void gate.worker?.cancel().catch(() => {})
@@ -131,11 +138,10 @@ export class Autocompaction implements AutoControl {
 
   private start(gate: Gate, mode: Exclude<AutoState["strategy"], "MANUAL">, choice?: ModelChoice) {
     gate.pause.phase = "auto"
-    void this.automatic(gate, mode, choice).catch(async (error) => {
+    void this.automatic(gate, mode, choice).catch((error) => {
       if (!gate.active) return
-      if (gate.pause.phase !== "invalid") gate.pause.phase = "manual"
-      gate.pause.message = error instanceof Error ? error.message : String(error)
-      await this.publish(gate).catch(() => {})
+      gate.active = false
+      gate.reject(new Error(`Automatic context reduction failed: ${error instanceof Error ? error.message : String(error)}`))
     })
   }
 
@@ -161,6 +167,7 @@ export class Autocompaction implements AutoControl {
       await this.publish(gate)
       const worker = this.controller(gate)
       gate.worker = worker
+      let failed = false
       try {
         const draft = await worker.summarize("compact", selected.flatMap((block) => block.sourceIDs), choice, loaded)
         if (!gate.active) return
@@ -168,15 +175,46 @@ export class Autocompaction implements AutoControl {
         const estimate = gate.estimate ? gate.estimate(append(loaded.policy, draft.operation)) : distribution(candidate, loaded.runtime, gate.basis).total
         const after = typeof estimate === "number" ? estimate : estimate.tokens
         if (after < gate.pause.tokens) await worker.applyOperations([draft.operation], draft)
+      } catch {
+        if (!gate.active) return
+        await this.loaded(gate)
+        failed = true
       } finally {
         await worker.dispose()
         if (gate.worker === worker) gate.worker = undefined
       }
+      if (failed) break
     }
     if (!gate.active) return
-    gate.pause.phase = "manual"
-    gate.pause.message = "Automatic compaction could not free enough space. Resume is blocked; reduce earlier history or abort the run."
+    await this.lastResort(gate, choice)
+  }
+
+  private async lastResort(gate: Gate, choice?: ModelChoice) {
+    const loaded = await this.loaded(gate)
+    if (gate.pause.tokens <= gate.pause.threshold) { await this.locked(gate.sessionID, () => this.resume(gate)); return }
+    const range = lastResortRange(loaded.blocks, this.config.autocompaction.lastResortKeepTokens, gate.basis)
+    const selectedModel = choice ?? this.controller(gate).defaultModel(loaded)
+    if (!selectedModel) throw new Error("Last-resort summary model is unavailable")
+    gate.pause.message = `Last-resort prefix summary; preserving the newest ≈${range.tokens} tokens unchanged.`
     await this.publish(gate)
+    const worker = new LastResort(this.host, gate.sessionID, this.config)
+    gate.worker = worker
+    try {
+      const summary = await worker.summarize(range.selected, selectedModel)
+      const op = { ...operation("compact", range.selected, undefined, gate.basis), checkpoint: true as const, summary }
+      const next = append(loaded.policy, op)
+      const estimate = gate.estimate ? gate.estimate(next) : distribution(project(nativeActive(loaded.raw), next), loaded.runtime, gate.basis).total
+      const tokens = typeof estimate === "number" ? estimate : estimate.tokens
+      if (tokens >= gate.pause.tokens || tokens > gate.pause.threshold) throw new Error("Last-resort summary cannot fit the request while preserving the exempt tail. Use a smaller task, a larger model, or a smaller lastResortKeepTokens setting.")
+      await this.locked(gate.sessionID, async () => {
+        await this.loaded(gate)
+        await this.write(gate.sessionID, { [KEY]: next }, { revision: loaded.policy.revision, fingerprint: loaded.fingerprint }, gate, true)
+        await this.resume(gate)
+      })
+    } finally {
+      await worker.dispose()
+      if (gate.worker === worker) gate.worker = undefined
+    }
   }
 
   private async resume(gate: Gate) {
@@ -194,7 +232,8 @@ export class Autocompaction implements AutoControl {
         if (!STRATEGIES.includes(command.strategy)) throw new Error("Unknown autocompaction strategy")
         if (gate?.pause.phase === "auto") throw new Error("Wait for automatic compaction to finish or abort the run")
         const session = await this.host.session(sessionID)
-        await this.host.update(sessionID, { ...session.metadata, [AUTO_KEY]: { strategy: command.strategy, ...(gate?.active ? { pause: gate.pause } : {}) } })
+        const selected = strategy({ ...session, metadata: { [AUTO_KEY]: { strategy: command.strategy } } })
+        await this.host.update(sessionID, { ...session.metadata, [AUTO_KEY]: { strategy: selected, ...(gate?.active ? { pause: gate.pause } : {}) } })
         return
       }
       if (!gate?.active || gate.pause.id !== command.pauseID) throw new Error("This suspension is no longer active")
@@ -225,7 +264,7 @@ export class Autocompaction implements AutoControl {
     })
   }
 
-  private async write(sessionID: string, metadata: Record<string, unknown>, expected: Expected, gate?: Gate) {
+  private async write(sessionID: string, metadata: Record<string, unknown>, expected: Expected, gate?: Gate, checkpoint = false) {
     if (!gate?.active && !await this.host.idle(sessionID)) throw new Error("Main session is running; no live suspension permits editing")
     const session = await this.host.session(sessionID)
     const raw = await this.host.messages(sessionID)
@@ -234,13 +273,20 @@ export class Autocompaction implements AutoControl {
     if (gate && (!gate.active || !["manual", "auto"].includes(gate.pause.phase) || historyHash(raw) !== gate.fingerprint)) throw new Error("Suspension changed before maintenance commit")
     const next = readPolicy({ id: sessionID, metadata, nativeVersion: session.nativeVersion })
     const affected = changedOperations(before, next)
-    if (gate && affected.some((op) => op.sourceIDs.some((id) => (gate.pause.protectedIDs ?? [gate.pause.userID]).includes(id)))) throw new Error("The entire active USER turn is protected until this run ends")
+    if (affected.some((op) => op.checkpoint) && !checkpoint) throw new Error("Last-resort checkpoints require the live automatic controller")
+    if (!checkpoint && gate && affected.some((op) => op.sourceIDs.some((id) => (gate.pause.protectedIDs ?? [gate.pause.userID]).includes(id)))) throw new Error("The entire active USER turn is protected until this run ends")
     if (session.revert) throw new Error("Finish native undo/unrevert before context maintenance")
     if (gate?.valid && !await gate.valid()) throw new Error("Model/provider configuration changed while paused. Abort this run before continuing.")
     const projected = project(nativeActive(raw), next)
-    if (gate && historyHash(protectedBlocks({ blocks: projected }, gate.pause).flatMap((block) => block.messages)) !== gate.protectedHash)
+    if (checkpoint) {
+      if (!gate?.active || gate.pause.phase !== "auto" || affected.length !== 1 || !affected[0].checkpoint) throw new Error("Invalid last-resort authority")
+      const range = lastResortRange(project(nativeActive(raw), before), this.config.autocompaction.lastResortKeepTokens, gate.basis)
+      if (hash(affected[0].sourceIDs) !== hash(range.selected.flatMap((block) => block.sourceIDs)) || historyHash(blockMessages(projected.slice(1))) !== historyHash(blockMessages(range.tail))) throw new Error("Last-resort range or exempt tail changed")
+    }
+    if (!checkpoint && gate && historyHash(protectedBlocks({ blocks: projected }, gate.pause).flatMap((block) => block.messages)) !== gate.protectedHash)
       throw new Error("The protected active turn cannot change")
-    await this.host.update(sessionID, { ...session.metadata, [KEY]: next, [AUTO_KEY]: session.metadata?.[AUTO_KEY] ?? { strategy: "MANUAL" } })
+    await this.host.update(sessionID, { ...session.metadata, [KEY]: next, [AUTO_KEY]: session.metadata?.[AUTO_KEY] ?? { strategy: strategy(session) } })
+    if (checkpoint && gate) gate.protectedHash = historyHash(blockMessages(protectedBlocks({ blocks: projected }, gate.pause)))
     if (gate) { await this.loaded(gate); await this.publishLocked(gate) }
   }
 

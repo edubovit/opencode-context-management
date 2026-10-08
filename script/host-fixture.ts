@@ -10,8 +10,10 @@ import { OpenCode } from "@opencode/client"
 
 export type Wire = { model: string; messages: { role: string; content?: unknown; tool_calls?: unknown }[]; [key: string]: unknown }
 export type FakeUsage = { input: number; cached?: number; written?: number; output: number; reasoning?: number }
+export type RequestScope = { sessionID: string; parentID?: string }
+type Reply = string | { text: string; finish: "stop" | "length" } | { tool: { name: string; input: Record<string, unknown> } }
 
-export async function fixture(executable = "opencode", destination?: string) {
+export async function fixture(executable = "opencode", destination?: string, options: { subagents?: boolean; keep?: number } = {}) {
   const version = spawnSync(executable, ["--version"], { encoding: "utf8" })
   if (version.status !== 0 || version.stdout.trim() !== "opencode v2.0.24") throw new Error("This smoke test requires OpenCode 2.0.24")
   const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
@@ -19,8 +21,9 @@ export async function fixture(executable = "opencode", destination?: string) {
   const root = destination ? path.resolve(destination) : await mkdtemp(path.join(tmpdir(), "opencode", "context-manager-full-"))
   if (destination) await mkdir(root)
   const requests: Wire[] = []
-  let respond: (wire: Wire) => string | { text: string; finish: "stop" | "length" } | undefined = () => undefined
-  let usage: (wire: Wire) => FakeUsage | undefined = () => undefined
+  let respond: (wire: Wire, scope: RequestScope) => Reply | undefined = () => undefined
+  let usage: (wire: Wire, scope: RequestScope) => FakeUsage | undefined = () => undefined
+  const calls: { wire: Wire; scope: RequestScope }[] = []
   let barrier: { arrivals: number; expected: number; promise: Promise<void>; release(): void } | undefined
   let hold: { promise: Promise<void>; release(): void } | undefined
   const provider = createServer(async (req, res) => {
@@ -28,6 +31,8 @@ export async function fixture(executable = "opencode", destination?: string) {
     for await (const chunk of req) raw += chunk
     const input = JSON.parse(raw) as Wire
     requests.push(input)
+    const scope = { sessionID: String(req.headers["x-opencode-session-id"] ?? ""), ...(req.headers["x-opencode-parent-session-id"] ? { parentID: String(req.headers["x-opencode-parent-session-id"]) } : {}) }
+    calls.push({ wire: input, scope })
     const serialized = JSON.stringify(input.messages)
     const last = input.messages.findLast((message) => message.role === "user")
     const lastText = JSON.stringify(last)
@@ -41,16 +46,17 @@ export async function fixture(executable = "opencode", destination?: string) {
     }
     if (hold && lastText.includes("HOLD_FIXTURE")) await hold.promise
     if (res.destroyed) return
-    const custom = respond(input)
-    const tool = !summary && !editing && lastText.includes("EXERCISE_TOOL") && !input.messages.some((message) => message.role === "tool")
-    const text = (typeof custom === "object" ? custom.text : custom) ?? (editing ? (serialized.includes("EDIT_ONE") ? "EDIT_TWO: corrected saved summary" : "EDIT_ONE: clarified saved summary")
+    const custom = respond(input, scope)
+    const selectedTool = typeof custom === "object" && "tool" in custom ? custom.tool : undefined
+    const tool = selectedTool || (!summary && !editing && lastText.includes("EXERCISE_TOOL") && !input.messages.some((message) => message.role === "tool"))
+    const text = (typeof custom === "object" ? "text" in custom ? custom.text : undefined : custom) ?? (editing ? (serialized.includes("EDIT_ONE") ? "EDIT_TWO: corrected saved summary" : "EDIT_ONE: clarified saved summary")
       : summary ? "Retained selected facts: ROOT_FACT; HEAD_FIXTURE and TAIL_FIXTURE were observed. Follow up with validation of the synthetic change."
       : "Fixture final response. ROOT_FACT retained.")
-    const delta = tool ? { reasoning_content: "REASONING_FIXTURE", tool_calls: [{ index: 0, id: `call_fixture_${requests.length}`, type: "function", function: { name: "fixture_tool", arguments: lastText.includes("USAGE_TOOL") ? '{"small":true}' : "{}" } }] } : { content: text }
+    const delta = tool ? { reasoning_content: "REASONING_FIXTURE", tool_calls: [{ index: 0, id: `call_fixture_${requests.length}`, type: "function", function: { name: selectedTool?.name ?? "fixture_tool", arguments: selectedTool ? JSON.stringify(selectedTool.input) : lastText.includes("USAGE_TOOL") ? '{"small":true}' : "{}" } }] } : { content: text }
     res.writeHead(200, { "content-type": "text/event-stream" })
-    for (const choice of [{ index: 0, delta, finish_reason: null }, { index: 0, delta: {}, finish_reason: tool ? "tool_calls" : typeof custom === "object" ? custom.finish : lastText.includes("TRUNCATE_FIXTURE") ? "length" : "stop" }])
+    for (const choice of [{ index: 0, delta, finish_reason: null }, { index: 0, delta: {}, finish_reason: tool ? "tool_calls" : typeof custom === "object" && "finish" in custom ? custom.finish : lastText.includes("TRUNCATE_FIXTURE") ? "length" : "stop" }])
       res.write(`data: ${JSON.stringify({ id: "chatcmpl_fixture", object: "chat.completion.chunk", created: 1, model: input.model, choices: [choice] })}\n\n`)
-    const report = usage(input)
+    const report = usage(input, scope)
     if (report) res.write(`data: ${JSON.stringify({ id: "chatcmpl_fixture", object: "chat.completion.chunk", created: 1, model: input.model, choices: [], usage: {
       prompt_tokens: report.input, completion_tokens: report.output, total_tokens: report.input + report.output,
       prompt_tokens_details: { cached_tokens: report.cached ?? 0, cache_write_tokens: report.written ?? 0 }, completion_tokens_details: { reasoning_tokens: report.reasoning ?? 0 },
@@ -70,8 +76,9 @@ export async function fixture(executable = "opencode", destination?: string) {
   Object.assign(env, { OPENCODE_CONFIG_DIR: configDir, OPENCODE_PASSWORD: password, OPENCODE_DISABLE_PROJECT_CONFIG: "1", OPENCODE_DISABLE_MODELS_FETCH: "1", OPENCODE_DISABLE_FFF: "1", OPENCODE_LOG_LEVEL: "DEBUG" })
   const config = {
     update: "disable", snapshots: false, compaction: { auto: false }, model: "fixture/fixture",
-    plugins: ["-opencode.provider.*", { package: path.join(repo, "src"), options: { autocompaction: { headroom: 2000 }, prune: { threshold: 300, head: 40, tail: 160 }, summarizer: { providerID: "fixture", modelID: "fixture" } } }, path.join(repo, "test/host-fixture")],
-    permissions: [{ action: "*", resource: "*", effect: "deny" }, { action: "fixture_tool", resource: "*", effect: "allow" }],
+    plugins: ["-opencode.provider.*", { package: path.join(repo, "src"), options: { autocompaction: { headroom: 2000, lastResortKeepTokens: options.keep ?? 20000 }, prune: { threshold: 300, head: 40, tail: 160 }, summarizer: { providerID: "fixture", modelID: "fixture" } } }, path.join(repo, "test/host-fixture")],
+    permissions: [{ action: "*", resource: "*", effect: "deny" }, { action: "fixture_tool", resource: "*", effect: "allow" }, ...(options.subagents ? [{ action: "subagent", resource: "*", effect: "allow" }] : [])],
+    ...(options.subagents ? { experimental: { subagent_depth: 4 }, agents: { "fixture-worker": { mode: "subagent", permissions: [{ action: "*", resource: "*", effect: "deny" }, { action: "fixture_tool", resource: "*", effect: "allow" }, { action: "subagent", resource: "*", effect: "allow" }] } } } : {}),
     providers: { fixture: { package: "@opencode/ai/providers/openai-compatible", settings: { apiKey: "synthetic-not-a-secret", baseURL: `http://127.0.0.1:${address.port}/v1` }, models: {
       fixture: { limit: { context: 200000, input: 168000, output: 32000 }, capabilities: { tools: true, input: ["text"], output: ["text"] }, variants: [{ id: "high", settings: { reasoningEffort: "high" } }] },
       small: { limit: { context: 24000, input: 12000, output: 12000 }, capabilities: { tools: true, input: ["text"], output: ["text"] } },
@@ -121,7 +128,7 @@ export async function fixture(executable = "opencode", destination?: string) {
   const connect = () => OpenCode.make({ baseUrl: url, headers: { authorization: `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}` } })
   let client = connect()
   return {
-    root, repo, project, get client() { return client }, env, get url() { return url }, config, configPath, requests, until, close,
+    root, repo, project, get client() { return client }, env, get url() { return url }, config, configPath, requests, calls, until, close,
     restart: async () => {
       const status = await stop()
       if (!status.cleaned) throw new Error("Owned host did not stop cleanly before restart")

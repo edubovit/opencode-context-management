@@ -2,7 +2,7 @@
 
 Choose what stays in your coding session's context. Prune reasoning or tool results, summarize selected turns, and expand summaries later—without deleting the stored conversation.
 
-**Plugin 3.1.0 · OpenCode 2.0.24**. This is the OpenCode V2 port. V1 entrypoints and configuration instructions no longer apply.
+**Plugin 3.2.0 · OpenCode 2.0.24**. This is the OpenCode V2 port. V1 entrypoints and configuration instructions no longer apply.
 
 ## Features
 
@@ -11,7 +11,7 @@ Choose what stays in your coding session's context. Prune reasoning or tool resu
 - **Expandable summaries:** restore one pre-summary layer, retaining earlier pruning and nested summaries. No Undo, Redo or Unprune.
 - **Fullscreen readers:** read turns and saved summaries. Edit summaries manually or with a model; model edits stay proposals until explicitly applied.
 - **Local statistics:** token estimates, tool status, selected-range totals, and effective-context exports. Counting needs no model call.
-- **Near-limit protection:** suspend before a main model request, reduce earlier history, and resume the same request without adding a user message. Choose MANUAL, AUTO_PER_TURN, or AUTO_SESSION per session.
+- **Near-limit protection:** suspend before a model request and resume the same request after reduction. AUTO_PER_TURN is the default; subagents never require manual recovery. Last resort can summarize an unfinished-turn prefix while retaining the newest 20,000 estimated tokens.
 
 Initial summaries apply automatically; inspect/edit/expand them afterward. Summarization uses your provider and can cost money. Each parallel range sends the full effective background. Token counts are estimates, summaries are lossy, and exports can contain sensitive content.
 
@@ -94,7 +94,7 @@ Options belong on the single server plugin entry. Unknown options are rejected. 
     "package": "file:///absolute/path/opencode-context-management/src",
     "options": {
       "ui": { "maxLinesPerTurn": 4 },
-      "autocompaction": { "headroom": 20000, "estimateMultiplier": 1.3 },
+       "autocompaction": { "headroom": 20000, "estimateMultiplier": 1.3, "lastResortKeepTokens": 20000 },
       "spill": { "maxLines": 2000, "maxBytes": 51200, "headShare": 0.5 },
       "prune": { "threshold": 5000, "head": 1000, "tail": 1000 },
       "tokenizer": { "fallbackEncoding": "o200k_base", "overrides": {} }
@@ -108,6 +108,7 @@ Options belong on the single server plugin entry. Unknown options are rejected. 
 | `ui.maxLinesPerTurn` | Maximum lines per list entry; integer ≥3. Short entries shrink. |
 | `autocompaction.headroom` | Pause above input capacity minus this nonnegative margin. Must leave a positive threshold; never changes output caps. |
 | `autocompaction.estimateMultiplier` | Conservative uplift for unmeasured text: default `1.3`, finite number ≥1. Used for missing-usage fallback and as the minimum multiplier on new content. |
+| `autocompaction.lastResortKeepTokens` | Newest conversation content exempt from last-resort compaction; nonnegative integer, default `20000`. Whole messages/tool pairs and existing summaries stay intact, so the actual retained tail can be larger. `0` permits summarizing the entire effective conversation. |
 | `spill.maxLines` / `maxBytes` | Fresh output limits; minimum 2 lines / 8 UTF-8 bytes. Full captured text is saved before previewing. |
 | `spill.headShare` | `0.5` half head/half tail, `1` head only, `0` tail only. Notice/path are extra. |
 | `prune.threshold` | Large mode affects only results strictly larger than this token count. |
@@ -133,17 +134,23 @@ The inspector shows **Live guard** while paused or **Last request guard** otherw
 
 Accounting survives restart. Model, variant, agent, configured route or tokenizer changes invalidate incompatible measurements; a changed model/provider configuration also prevents resuming a stale live pause. The files contain hashes/counts, not request text or credentials.
 
-**This is still a forecast, not an exact provider count or a hard limit guarantee.** Reports describe earlier requests; changed text, later hooks, media and opaque state can differ. Image/PDF allowances are rough estimates. Unpaired reconstruction assumes normal operation timestamps/history ordering. Unknown residual overhead can keep a run paused after substantial cleanup; abort or use a larger model rather than forcing resume. Keep headroom, and increase `estimateMultiplier` if your unmeasured additions are consistently underestimated.
+**This is still a forecast, not an exact provider count or a hard limit guarantee.** Reports describe earlier requests; changed text, later hooks, media and opaque state can differ. Image/PDF allowances are rough estimates. Unpaired reconstruction assumes normal operation timestamps/history ordering. Unknown residual overhead can prevent release after substantial cleanup; AUTO fails rather than forcing an oversized request through. Keep headroom, and increase `estimateMultiplier` if your unmeasured additions are consistently underestimated.
 
-- **MANUAL** (default): pause for cleanup; resume only when the estimate fits.
-- **AUTO_PER_TURN:** compact earlier USER turns oldest first, then try the earlier prefix once if necessary.
+- **MANUAL:** pause for cleanup; resume only when the estimate fits. Available for top-level sessions only.
+- **AUTO_PER_TURN** (default): compact earlier USER turns oldest first, then try the earlier prefix once if necessary.
 - **AUTO_SESSION:** compact the earlier prefix once.
 
-Saving a strategy does not start work. Automatic candidates must save tokens; otherwise the session stays paused for manual recovery. All user inputs in the active V2 execution turn—including steered inputs—are protected. Queued inputs are not silently discarded. Oversized synthetic-only context without a USER turn is refused rather than dispatched or given an unsafe pause. Pause authority is in memory; after reload/restart an old saved pause notice cannot resume the old request.
+Saving a strategy does not start work. Ordinary cleanup protects the whole active execution turn, including steered inputs. If normal AUTO attempts cannot free enough space, **last resort** summarizes the largest safe prefix before the exempt tail, even within that unfinished turn. This is a plugin summary, not native OpenCode or provider-native compaction. Live system instructions/tool definitions and the exempt tail are unchanged. Original history remains stored; the saved checkpoint can be read, edited or expanded later when idle.
+
+Last resort uses independent helpers and bounded chunk/merge passes when the selected prefix cannot fit one helper request. Only selected effective content is summarized; previous pruning stays in effect and unfinished work must not be presented as complete. Up to four rounds and 64 helper requests are allowed, so this can incur additional provider costs. It applies only a complete result that makes the guard fit. If the tail leaves no eligible prefix, the helper fails, or the result still does not fit, **AUTO ends with an error—never a manual recovery pause or silent oversized dispatch**. Use smaller tasks, a larger model, or a smaller retained tail where appropriate.
+
+Subagents, including nested/background children, have separate ledgers and usage accounting. Fresh child sessions discard only verified ancestor-owned ledger copies; parent history and unrelated metadata are untouched. A child inheriting or selecting MANUAL uses AUTO_PER_TURN instead. Existing top-level MANUAL choices stay MANUAL. Hidden summarizer/editor helpers remain separate: they enforce their own capacity and do not recursively compact.
+
+Queued inputs are not silently discarded. Oversized synthetic-only context without a USER turn is refused. Pause authority is in memory; after reload/restart an old saved pause notice cannot resume the old request. Stop/reload cancels last-resort work and prevents late application.
 
 ## Upgrading and limits
 
-**Version 3 is V2-only and writes policy format 7.** V1 formats 1–6 and inherited/forked ledgers are not automatically rebound to V2's changed transcript IDs/shapes. They are preserved and refused rather than reset. Keep your V1 backup/checkout for export in an isolated V1 setup; continue in a fresh V2 session with a reviewed handoff if needed. Do not mix V1/V2 writers or point V1 at V2-only configuration.
+**Version 3 is V2-only.** Existing format-7 ledgers remain supported; the first last-resort checkpoint upgrades its ledger to **format 8**, recording a stable boundary within a turn. Older plugin versions cannot read format 8: do not downgrade a session after that upgrade. V1 formats 1–6 and copied-history fork ledgers remain preserved/refused, not rebound. Fresh child sessions are distinct from forks and get their own ledger. Keep V1 backups for isolated export; do not mix V1/V2 writers.
 
 Native checkpoints are read-only; edit later USER turns. Historical tools still marked running/streaming must be settled by the host before editing. Opaque provider-executed results cannot be safely pruned; use a summary or whole-call deletion with reasoning instead. Errored reasoning that the host converted to visible text is also refused rather than guessed at. Signed/opaque reasoning, encrypted checkpoints and stateful provider transports are not universally validated.
 

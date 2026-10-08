@@ -46,7 +46,7 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
   const [pickerIndex, setPickerIndex] = createSignal(0)
   const [restoring, setRestoring] = createSignal<MultiRestorePreview>()
   const [unit, setUnit] = createSignal<"tokens" | "characters">("tokens")
-  const [auto, setAuto] = createSignal<AutoState>({ strategy: "MANUAL" })
+  const [auto, setAuto] = createSignal<AutoState>({ strategy: "AUTO_PER_TURN" })
   const [strategyPicker, setStrategyPicker] = createSignal(false)
   const [strategyIndex, setStrategyIndex] = createSignal(0)
   const [exitDialog, setExitDialog] = createSignal(false)
@@ -121,7 +121,7 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
   const saveStrategy = async () => {
     setAuto(await props.controller.host.auto!.command(props.sessionID, { action: "strategy", strategy: STRATEGIES[strategyIndex()] }))
     setStrategyPicker(false)
-    setNotice("Strategy saved for this session. While paused, g explicitly runs the selected AUTO strategy.")
+    setNotice(loaded()?.session.parentID && STRATEGIES[strategyIndex()] === "MANUAL" ? "Subagents use AUTO_PER_TURN instead of MANUAL." : "Strategy saved for this session. While paused, g explicitly runs the selected AUTO strategy.")
   }
   const finishBatch = async () => {
     touch()
@@ -306,7 +306,7 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
     const tag = rangeTag(selection(), cursor(), index)
     const status = toolStatus([block], rule(), basis())
     return {
-      title: `${selected ? "[+]" : "[ ]"} ${tag ? `${tag} · ` : ""}${rangeLabel(block.sourceIDs, sourceTurns())} · ${block.kind === "turn" ? block.messages[0]?.info.role === "user" ? "USER" : "HOST CONTEXT" : "SUMMARY"} · ${size(distribution([block], undefined, basis(), unit()).total)}${block.closed ? "" : " · unfinished"}${auto().pause && block.sourceIDs.some((id) => (auto().pause!.protectedIDs ?? [auto().pause!.userID]).includes(id)) ? " · PROTECTED" : ""}`,
+      title: `${selected ? "[+]" : "[ ]"} ${tag ? `${tag} · ` : ""}${rangeLabel(block.sourceIDs, sourceTurns())} · ${block.kind === "turn" ? block.messages[0]?.info.role === "user" ? "USER" : block.messages[0]?.info.kind === "assistant" ? "CONTINUATION" : "HOST CONTEXT" : "SUMMARY"} · ${size(distribution([block], undefined, basis(), unit()).total)}${block.closed ? "" : " · unfinished"}${auto().pause && block.sourceIDs.some((id) => (auto().pause!.protectedIDs ?? [auto().pause!.userID]).includes(id)) ? " · PROTECTED" : ""}`,
       stats: block.kind === "turn" ? rangeToolStats(status) : undefined,
       preview: rangePreview(block, loaded()!.policy),
     }
@@ -394,7 +394,7 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
             </box>
           </box>
         }>
-          <scrollbox flexGrow={1} minHeight={0} focused={!picker()}><text>{`RANGE MENU HOTKEYS\n\nSpace: start/finish a range; inside a closed range, remove it.\nArrows: move cursor. Esc: cancel open range, then return.\nc: configure compaction for selected ranges.\nConfiguration: arrows choose mode; Space toggles; Enter runs; m/t picks model/effort.\nReasoning can combine with one tool mode. Tool deletion requires reasoning removal. Summaries cannot combine with pruning.\nPruning is final in effective context. No Undo, Redo or Unprune. Stored history is unchanged.\nSummaries run in parallel and autoapply together.\nEnter: read the hovered USER or SUMMARY fullscreen.\nOrdinary turns show user text and final assistant response without reasoning or tools.\nCtrl+E: preview one-layer summary expansion, retaining earlier pruning.\na: save per-session autocompaction strategy (does not execute).\ng: explicitly run selected AUTO strategy while suspended.\nPaused exit: s/Esc stays; r resumes only below threshold; a aborts.\nThe active USER turn is entirely protected while suspended.\nf: refresh. v: cycle details/content/runtime. n: tokens/characters.\nTab: switch list/details focus. o: export effective snapshot.\n\nIncomplete batch: g retries failed ranges; m/t changes model/effort; Esc discards.\nReaders: arrows move 10 lines; PageUp/PageDown move one screen.\nSummary reader: e manual editing; r model edit; Ctrl+S applies an edit; m/t chooses model/effort.\n? opens this help.`}</text></scrollbox>
+          <scrollbox flexGrow={1} minHeight={0} focused={!picker()}><text>{`RANGE MENU HOTKEYS\n\nSpace: start/finish a range; inside a closed range, remove it.\nArrows: move cursor. Esc: cancel open range, then return.\nc: configure compaction for selected ranges.\nConfiguration: arrows choose mode; Space toggles; Enter runs; m/t picks model/effort.\nReasoning can combine with one tool mode. Tool deletion requires reasoning removal. Summaries cannot combine with pruning.\nPruning is final in effective context. No Undo, Redo or Unprune. Stored history is unchanged.\nSummaries run in parallel and autoapply together.\nEnter: read the hovered USER or SUMMARY fullscreen.\nOrdinary turns show user text and final assistant response without reasoning or tools.\nCtrl+E: preview one-layer summary expansion, retaining earlier pruning.\na: save per-session autocompaction strategy (does not execute).\ng: explicitly run selected AUTO strategy while suspended.\nPaused exit: s/Esc stays; r resumes only below threshold; a aborts.\nManual edits protect the active turn. AUTO last resort may summarize its prefix, preserving the configured recent tail.\nAUTO_PER_TURN is the default; subagents cannot use MANUAL.\nf: refresh. v: cycle details/content/runtime. n: tokens/characters.\nTab: switch list/details focus. o: export effective snapshot.\n\nIncomplete batch: g retries failed ranges; m/t changes model/effort; Esc discards.\nReaders: arrows move 10 lines; PageUp/PageDown move one screen.\nSummary reader: e manual editing; r model edit; Ctrl+S applies an edit; m/t chooses model/effort.\n? opens this help.`}</text></scrollbox>
         </Show>
         <Hotkeys api={api} lines={hints()} />
       </box>
@@ -411,7 +411,7 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
     <Show when={strategyPicker()}>
       <box id="cm-strategy-picker" position="absolute" top={2} left={0} width="85%" height={Math.min(6 + STRATEGIES.length * 2, Math.max(0, dimensions().height - 3))} border padding={1} backgroundColor={api.theme.current.background ?? "#101014"} overflow="hidden">
         <text height={2} flexShrink={0} overflow="hidden">Autocompaction strategy — saved per session. Selection does not execute it.</text>
-        <select id="cm-strategy-options" options={STRATEGIES.map((name) => ({ name, description: name === "MANUAL" ? "Open inspector; confirm before resume" : name === "AUTO_PER_TURN" ? "Oldest USER first, then one whole-prefix fallback" : "One whole-prefix pass, excluding active USER" }))} selectedIndex={strategyIndex()} flexGrow={1} minHeight={0} showScrollIndicator />
+        <select id="cm-strategy-options" options={STRATEGIES.map((name) => ({ name, description: name === "MANUAL" ? "Top-level only; subagents use AUTO_PER_TURN" : name === "AUTO_PER_TURN" ? "Oldest USER, earlier prefix, then last resort" : "Earlier prefix, then last resort" }))} selectedIndex={strategyIndex()} flexGrow={1} minHeight={0} showScrollIndicator />
       </box>
     </Show>
     <Show when={exitDialog()}>

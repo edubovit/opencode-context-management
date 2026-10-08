@@ -1,12 +1,12 @@
 import { isEncoding, type Encoding, type TokenOptions } from "./tokens.ts"
 
-export const VERSION = "3.1.0"
+export const VERSION = "3.2.0"
 export const KEY = "opencode_context_manager"
 export const AGENT = "context-manager-summarizer"
 export const EDIT_AGENT = "context-manager-editor"
 
 export type Settings = {
-  autocompaction: { headroom: number; estimateMultiplier: number }
+  autocompaction: { headroom: number; estimateMultiplier: number; lastResortKeepTokens: number }
   ui: { maxLinesPerTurn: number }
   spill: { maxLines: number; maxBytes: number; headShare: number }
   prune: { threshold: number; head: number; tail: number }
@@ -18,7 +18,7 @@ export function settings(input: unknown = {}): Settings {
   const root = record(input, "options")
   keys(root, ["spill", "prune", "summarizer", "tokenizer", "ui", "autocompaction"])
   const autocompaction = record(root.autocompaction ?? {}, "autocompaction")
-  keys(autocompaction, ["headroom", "estimateMultiplier"])
+  keys(autocompaction, ["headroom", "estimateMultiplier", "lastResortKeepTokens"])
   const ui = record(root.ui ?? {}, "ui")
   keys(ui, ["maxLinesPerTurn"])
   const spill = record(root.spill ?? {}, "spill")
@@ -36,7 +36,11 @@ export function settings(input: unknown = {}): Settings {
   const fallbackEncoding = tokenizer.fallbackEncoding ?? "o200k_base"
   if (!isEncoding(fallbackEncoding)) throw new Error("Unsupported tokenizer.fallbackEncoding")
   const value: Settings = {
-    autocompaction: { headroom: integer(autocompaction.headroom === undefined ? 20000 : autocompaction.headroom, "autocompaction.headroom", 0), estimateMultiplier: autocompaction.estimateMultiplier === undefined ? 1.3 : Number(autocompaction.estimateMultiplier) },
+    autocompaction: {
+      headroom: integer(autocompaction.headroom === undefined ? 20000 : autocompaction.headroom, "autocompaction.headroom", 0),
+      estimateMultiplier: autocompaction.estimateMultiplier === undefined ? 1.3 : Number(autocompaction.estimateMultiplier),
+      lastResortKeepTokens: integer(autocompaction.lastResortKeepTokens === undefined ? 20000 : autocompaction.lastResortKeepTokens, "autocompaction.lastResortKeepTokens", 0),
+    },
     ui: { maxLinesPerTurn: integer(ui.maxLinesPerTurn === undefined ? 4 : ui.maxLinesPerTurn, "ui.maxLinesPerTurn", 3) },
     spill: {
       maxLines: integer(spill.maxLines ?? 2000, "spill.maxLines", 2),

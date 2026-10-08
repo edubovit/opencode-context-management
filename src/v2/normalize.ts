@@ -8,6 +8,7 @@ const zero = (): Usage => ({ input: 0, output: 0, reasoning: 0, cache: { read: 0
 export function sessionView(value: SessionInfo): Session {
   return {
     id: value.id, nativeVersion: 2, directory: value.location.directory, title: value.title ?? undefined,
+    ...(value.parentID ? { parentID: value.parentID } : {}),
     time: { created: value.time.created, updated: value.time.updated },
     ...(value.model ? { model: { id: value.model.id, providerID: value.model.providerID, ...(value.model.variant ? { variant: value.model.variant } : {}) } } : {}),
     ...(value.metadata ? { metadata: value.metadata } : {}),

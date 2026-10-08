@@ -35,8 +35,9 @@ export type Operation = {
   summaryIDs?: string[]
   targetID?: string
   pruneReason?: true
+  checkpoint?: true
 }
-export type Policy = { version: 1 | 2 | 3 | 4 | 5 | 6 | 7; sessionID: string; revision: number; cursor: number; operations: Operation[] }
+export type Policy = { version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8; sessionID: string; revision: number; cursor: number; operations: Operation[] }
 
 export function emptyPolicy(sessionID: string): Policy {
   return { version: 7, sessionID, revision: 0, cursor: 0, operations: [] }
@@ -47,10 +48,10 @@ export function readPolicy(session: Pick<Session, "id" | "metadata" | "nativeVer
   if (value === undefined) return emptyPolicy(session.id)
   if (!value || typeof value !== "object") throw new Error("Invalid context-manager state")
   const policy = value as Policy
-  if (session.nativeVersion === 2 && (policy.version !== 7 || policy.sessionID !== session.id))
+  if (session.nativeVersion === 2 && (![7, 8].includes(policy.version) || policy.sessionID !== session.id))
     throw new Error("This session has a V1 or inherited context-manager ledger. Its original data is preserved. Use the V1 checkout to export it; automatic V2 migration is unsafe.")
   if (policy.sessionID !== session.id) return emptyPolicy(session.id)
-  if (![1, 2, 3, 4, 5, 6, 7].includes(policy.version) || !Array.isArray(policy.operations) || !Number.isSafeInteger(policy.revision) || policy.revision < 0 ||
+  if (![1, 2, 3, 4, 5, 6, 7, 8].includes(policy.version) || !Array.isArray(policy.operations) || !Number.isSafeInteger(policy.revision) || policy.revision < 0 ||
       !Number.isInteger(policy.cursor) || policy.cursor < 0 || policy.cursor > policy.operations.length)
     throw new Error("Unsupported or damaged context-manager state")
   const ids = new Set<string>()
@@ -58,8 +59,9 @@ export function readPolicy(session: Pick<Session, "id" | "metadata" | "nativeVer
     if (!op || typeof op.id !== "string" || !["tool-prune", "tool-prune-all", "tool-delete", "prune-reason", "compact", "brief", "unprune", "expand", "revise"].includes(op.mode) || !Array.isArray(op.sourceIDs) ||
         !op.sourceIDs.length || !op.sourceIDs.every((id) => typeof id === "string") || typeof op.beforeHash !== "string")
       throw new Error("Invalid context-manager operation")
-    if (policy.version === 7 && (ids.has(op.id) || new Set(op.sourceIDs).size !== op.sourceIDs.length || !Number.isSafeInteger(op.created) || op.created < 0 || !Number.isSafeInteger(op.beforeChars) || op.beforeChars < 0))
+    if (policy.version >= 7 && (ids.has(op.id) || new Set(op.sourceIDs).size !== op.sourceIDs.length || !Number.isSafeInteger(op.created) || op.created < 0 || !Number.isSafeInteger(op.beforeChars) || op.beforeChars < 0))
       throw new Error("Invalid operation identity or accounting")
+    if (op.checkpoint !== undefined && (policy.version < 8 || op.checkpoint !== true || op.mode !== "compact")) throw new Error("Invalid last-resort checkpoint")
     ids.add(op.id)
     if ((["tool-prune-all", "tool-delete", "prune-reason"].includes(op.mode) || op.pruneReason !== undefined) && policy.version < 6)
       throw new Error("Pruning modes require policy version 6")
@@ -235,6 +237,7 @@ export function project(active: Envelope[], policy: Policy, observe?: (op: Opera
   const pruned = new Map<string, string>()
   const originals = new Map(active.flatMap((message) => message.parts.flatMap((part) => part.type === "tool" ? [[part.id, part] as const] : [])))
   for (const op of policy.operations.slice(0, policy.cursor)) {
+    if (op.checkpoint) blocks = splitAfter(blocks, op.sourceIDs.at(-1)!)
     const start = blocks.findIndex((b) => b.sourceIDs[0] === op.sourceIDs[0])
     const end = blocks.findIndex((b) => b.sourceIDs.at(-1) === op.sourceIDs.at(-1))
     if (start < 0 || end < start) throw new Error("Saved range no longer exists. Restore the original host history before continuing.")
@@ -368,7 +371,20 @@ function legacyPrunedHash(messages: Envelope[], pruned: Map<string, string>) {
 }
 
 export function append(policy: Policy, op: Operation): Policy {
-  return { ...policy, version: 7, revision: policy.revision + 1, cursor: policy.cursor + 1, operations: [...policy.operations.slice(0, policy.cursor), op] }
+  return { ...policy, version: op.checkpoint || policy.version === 8 ? 8 : 7, revision: policy.revision + 1, cursor: policy.cursor + 1, operations: [...policy.operations.slice(0, policy.cursor), op] }
+}
+
+export function splitAfter(blocks: Block[], id: string): Block[] {
+  return blocks.flatMap((block) => {
+    const index = block.sourceIDs.indexOf(id)
+    if (index < 0 || index === block.sourceIDs.length - 1) return [block]
+    if (block.kind !== "turn") throw new Error("Cannot split a saved summary")
+    const cut = index + 1
+    return [
+      { ...block, sourceIDs: block.sourceIDs.slice(0, cut), messages: block.messages.slice(0, cut), closed: false },
+      { ...block, sourceIDs: block.sourceIDs.slice(cut), messages: block.messages.slice(cut) },
+    ]
+  })
 }
 
 export const TOOL_OUTPUT_PRUNED = "[Tool output pruned]"

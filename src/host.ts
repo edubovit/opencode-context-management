@@ -1,10 +1,11 @@
 import type { Plugin } from "@opencode/plugin"
 import type { SessionInfo } from "@opencode/client"
-import { AGENT, EDIT_AGENT } from "./config.ts"
+import { AGENT, EDIT_AGENT, KEY } from "./config.ts"
+import { AUTO_KEY, strategy } from "./auto-state.ts"
 import type { Host } from "./controller.ts"
 import { Activity } from "./v2/activity.ts"
 import { modelView, sessionView, transcriptView } from "./v2/normalize.ts"
-import { readPolicy } from "./context.ts"
+import { emptyPolicy, readPolicy } from "./context.ts"
 import { validateNativePolicy } from "./v2/projection.ts"
 
 export type PluginContext = Parameters<Plugin.Plugin["setup"]>[0]
@@ -12,13 +13,38 @@ export type PluginContext = Parameters<Plugin.Plugin["setup"]>[0]
 export function pluginHost(ctx: PluginContext) {
   const activity = new Activity((sessionID) => ctx.session.wait({ sessionID }))
   const jobs = new Map<string, { owner: string; purpose: "summary" | "edit"; running: boolean; cancelled: boolean; budgetError?: string }>()
+  const loading = new Map<string, Promise<SessionInfo>>()
   let closed = false
-  const nativeSession = async (sessionID: string): Promise<SessionInfo> => {
+  const loadSession = async (sessionID: string): Promise<SessionInfo> => {
     if (closed) throw new Error("Context manager has been unloaded")
     const value = await ctx.session.get({ sessionID })
     if (value.location.directory !== ctx.location.directory)
       throw new Error("Session location changed. Reopen the context manager in its current location.")
+    if (value.parentID && !value.fork && !value.metadata?.context_manager_job) {
+      const saved = value.metadata?.[KEY]
+      const owner = saved && typeof saved === "object" && "sessionID" in saved ? saved.sessionID : undefined
+      if (saved !== undefined && owner !== value.id) {
+        if (typeof owner !== "string") throw new Error("Invalid inherited context-manager state")
+        readPolicy({ ...sessionView(value), id: owner })
+        let ancestor: string | undefined = value.parentID
+        while (ancestor && ancestor !== owner) ancestor = (await ctx.session.get({ sessionID: ancestor })).parentID
+        if (!ancestor) throw new Error("Context-manager ledger does not belong to this child or its ancestors")
+      }
+      if (saved === undefined || owner !== value.id) {
+        const metadata: NonNullable<SessionInfo["metadata"]> = JSON.parse(JSON.stringify({ ...value.metadata, [KEY]: emptyPolicy(value.id), [AUTO_KEY]: { strategy: strategy(sessionView(value)) } }))
+        if (closed) throw new Error("Context manager unloaded before child initialization")
+        await ctx.session.update({ sessionID, metadata })
+        return { ...value, metadata }
+      }
+    }
     return value
+  }
+  const nativeSession = (sessionID: string): Promise<SessionInfo> => {
+    const pending = loading.get(sessionID)
+    if (pending) return pending
+    const next = loadSession(sessionID).finally(() => { loading.delete(sessionID) })
+    loading.set(sessionID, next)
+    return next
   }
   const host: Host = {
     session: async (id) => sessionView(await nativeSession(id)),
@@ -101,6 +127,7 @@ export function pluginHost(ctx: PluginContext) {
     close: async () => {
       closed = true
       activity.close()
+      await Promise.allSettled([...loading.values()])
       const results = await Promise.allSettled([...jobs.keys()].map(async (id) => { await ctx.session.remove({ sessionID: id }); jobs.delete(id) }))
       if (results.some((result) => result.status === "rejected")) throw new Error("Some owned helpers could not be removed during plugin cleanup")
     },

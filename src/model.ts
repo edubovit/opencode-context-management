@@ -7,7 +7,7 @@ export type Model = {
   [key: string]: unknown
 }
 export type Session = {
-  id: string; metadata?: Record<string, unknown>; nativeVersion?: 2
+  id: string; parentID?: string; metadata?: Record<string, unknown>; nativeVersion?: 2
   model?: { id: string; providerID: string; variant?: string }
   revert?: { messageID: string; partID?: string; [key: string]: unknown }
   directory?: string; title?: string; time: { created: number; updated: number }

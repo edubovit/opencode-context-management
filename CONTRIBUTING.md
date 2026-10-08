@@ -11,6 +11,7 @@ npm run test:host -- /absolute/path/to/opencode
 # Linux + Python 3: exercise the actual inspector in an 80×24 terminal
 npm run test:host -- /absolute/path/to/opencode --tui
 npm run test:usage -- /absolute/path/to/opencode
+npm run test:subagents -- /absolute/path/to/opencode
 git diff --check
 ```
 
@@ -55,6 +56,7 @@ All default tests use synthetic content. Fake-provider success proves protocol/f
 | Provider-anchored guard and request observations | `src/v2/budget.ts` |
 | Controller, parallel batch and saved-summary editor | `src/controller.ts`, `src/batch.ts`, `src/summary-editor.ts` |
 | Budget gate and strategy/ownership state | `src/autocompaction.ts`, `src/auto-state.ts` |
+| Exempt-tail selection and bounded emergency summaries | `src/last-resort.ts` |
 | Token rules, metrics and display status | `src/text.ts`, `src/tokens.ts`, `src/metrics.ts`, `src/status.ts` |
 | Server-local files and effective export | `src/storage.ts`, `src/snapshot.ts` |
 | Inspector/view adapter and components | `src/tui.tsx`, `src/ui.ts`, list/menu/reader/help TSX modules |
@@ -73,9 +75,9 @@ Stored transcript, normalized effective projection, hook capture, and final prov
 
 ### Persistence and migration
 
-The ledger remains in session metadata under `opencode_context_manager`; strategy/status uses a separate namespace. New writes use **policy format 7** and the native-normalization/source-hash basis. Package version and export schema version are independent.
+The ledger remains in session metadata under `opencode_context_manager`; strategy/status uses a separate namespace. Ordinary format-7 writes remain supported. A checkpoint upgrades to **format 8**; subsequent writes retain8. The `checkpoint: true` compact operation splits a USER block after its final source message before replay, so later assistant/tool continuations cannot move that saved boundary. Package version and export schema version are independent.
 
-Formats 1–6 still have offline regression readers, preserving old fingerprints/cursors/unprune behavior. That does **not** make them safe to attach to a converted V2 transcript. Native adapters reject old or inherited/forked ledgers without modifying them. Do not clear a policy, rehash converted content, or substitute a new session ID to bypass validation.
+Formats 1–6 still have offline regression readers, preserving old fingerprints/cursors/unprune behavior. Native adapters reject old/forked ledgers. Ordinary fresh child sessions (parentID, no fork) receive an empty own ledger only after validating any copied ledger belongs to an ancestor; unrelated metadata is retained, inherited live-pause notices removed. Own ledgers and unrelated/corrupt copies are never silently reset. Initialization is coalesced per session and pending writes drain on unload.
 
 Expansion provenance is replay-only. It must not enter provider metadata, helper input, or effective exports. New revisions target stable summary IDs without creating another expansion layer. New writes cannot rewind cursors or add Unprune.
 
@@ -119,11 +121,12 @@ Native `session.context` exposes the active window, not arbitrary pre-checkpoint
 - Native checkpoint/raw-prefix changes and model/provider/variant/agent/tokenizer/route changes invalidate incompatible anchors. Do not immediately bootstrap from the very historical reports just invalidated by a scope change. Live gate validation checks current route/model configuration and capacity before maintenance/resume.
 - Missing usage falls back to a visible configurable local uplift (default 1.3). Unknown overhead remains uncertain; no universal media/opaque-state/provider bound is claimed. Keep local content totals, historical reported usage and the actual guard forecast clearly separate in the UI/export.
 - If oversized context has no USER turn, fail before dispatch instead of skipping the budget guard or inventing a protectable turn.
-- Protect the entire V2 execution span since the last idle boundary, including steered user inputs—not just the last USER row. Queued inputs must be admitted/delivered exactly once.
+- Protect the entire V2 execution span since the last idle boundary for normal edits. Only the live server AUTO owner may create a last-resort checkpoint across that boundary; arbitrary RPC/idle commits cannot grant themselves this exception. Recheck source/revision/configuration and the exact unchanged exempt tail before committing. Queued inputs must be delivered exactly once.
 - A stored pause notice is not authority. Only the current in-memory owner can maintain/resume; source and protected-span fingerprints must still match.
 - `session.wait` supplies positive process-local idle evidence without starting work. Timeouts mean busy/unknown; pending observations are coalesced. It is not a lock against independent admission.
 - Check idle again immediately before acquiring the gate: Promise hooks do not receive cancellation signals, so Stop during async preparation must not create an orphaned suspension.
-- MANUAL requires cleanup and explicit release. AUTO_PER_TURN tries earlier USER rows once then the prefix once; AUTO_SESSION tries the prefix once. No-savings/failure stays paused for manual recovery; no endless retry.
+- AUTO_PER_TURN is the default. Children map inherited/selected MANUAL to AUTO_PER_TURN. Top-level MANUAL requires cleanup and explicit release. AUTO_PER_TURN tries earlier USER rows once then the prefix once; AUTO_SESSION tries the prefix once. Both then attempt the largest safe prefix before `lastResortKeepTokens` (default20000), retaining whole native messages/tool pairs and whole summaries. Tail counts use local content plus rough image/PDF allowances, not exact provider tokens.
+- Last resort may split an unfinished turn at a settled message boundary. Prefix-only helpers are independent conversations; split serialization without dropping Unicode content, then merge ordered partial summaries, bounded to four rounds/64 requests. Preserve host output caps and validate completed nonempty responses. Commit only a complete fitting candidate, otherwise terminate AUTO without manual recovery. Original transcript, exempt tail, system/tools, provider-budget anchor and helper isolation must remain intact.
 - Resume by releasing the original hook wait. Never fake continuation using `prompt`, `synthetic`, or interrupt-and-reprompt.
 - Stop, move, delete, reload and unload revoke ownership. Event-stream loss fails closed. Old finalizers cannot overwrite a newer owner's state; late helper results cannot apply or resume it.
 
@@ -157,9 +160,11 @@ Server artifacts are under `~/.local/state/opencode-context-manager/<project-has
 
 V3 creates no control credential file or custom listener. Native RPC uses host authentication. Historical V1 `runtime.json` artifacts can still contain old credentials; do not commit or share them.
 
-`budget-<session-hash>.json` is a versioned accounting cache of scope/history/content hashes and counts. It is independent of policy format 7 and contains no prompt text or provider credentials. Captures and budget files remain on disk; do not delete accounting state to force a paused request through. The live gate uses its own frozen estimator, and missing files require a conservative bootstrap on subsequent requests.
+`budget-<session-hash>.json` is a versioned accounting cache of scope/history/content hashes and counts. It is independent of policy format 7/8 and contains no prompt text or provider credentials. Captures and budget files remain on disk; do not delete accounting state to force a paused request through. The live gate uses its own frozen estimator, and missing files require a conservative bootstrap on subsequent requests.
 
 `script/usage-smoke.ts` emits deliberately mismatched OpenAI-style SSE usage. It verifies provider-triggered MANUAL/AUTO pauses with low local counts, cached/reasoning normalization, summary and large-prune resume, tool-result growth, restart persistence, pre-upgrade edits, model/endpoint invalidation (including a held gate), and isolated helper capacity checks. It uses the same owned private host/fake-provider isolation as the production smoke.
+
+`script/subagent-smoke.ts` enables the real built-in subagent tool in an isolated fixture with nesting depth4. It tests foreground/background and nested children of edited MANUAL parents, independent ledgers, last-resort same-turn continuation, exact retained tool output, steering/queue delivery, summary failure, ancestor Stop, no manual gates, and persisted checkpoint restart. Fake providers prove mechanics, not semantic summary quality.
 
 Exports exclude hidden expansion layers, not every possible secret. Original history/spills remain; pruning is not secure erasure and disabling the plugin can restore original context. Keep model/provider errors useful without dumping headers/credentials. Share only synthetic, sanitized reproductions.
 

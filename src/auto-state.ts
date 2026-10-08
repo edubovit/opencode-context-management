@@ -20,9 +20,10 @@ export type AutoControl = {
   commit(sessionID: string, metadata: Record<string, unknown>, expected: Expected): Promise<void>
 }
 
-export function strategy(session: Pick<Session, "metadata">): Strategy {
+export function strategy(session: Pick<Session, "metadata" | "parentID">): Strategy {
   const state = session.metadata?.[AUTO_KEY] as AutoState | undefined
-  return state && STRATEGIES.includes(state.strategy) ? state.strategy : "MANUAL"
+  const selected = state && STRATEGIES.includes(state.strategy) ? state.strategy : "AUTO_PER_TURN"
+  return session.parentID && selected === "MANUAL" ? "AUTO_PER_TURN" : selected
 }
 
 export function inputBudget(model: Pick<Model, "limit">, headroom: number) {

@@ -604,6 +604,34 @@ test("paused inspector saves strategy without executing and explicit Run starts 
   assert.deepEqual(calls.map((call) => call.action), ["strategy", "run"])
 })
 
+test("child strategy picker reports MANUAL coercion and displays AUTO_PER_TURN", async (t) => {
+  const { state, control } = pausedControl()
+  state.pause = undefined
+  state.strategy = "AUTO_PER_TURN"
+  const command = control.command
+  control.command = async (id, input) => command(id, input.action === "strategy" && input.strategy === "MANUAL" ? { ...input, strategy: "AUTO_PER_TURN" } : input)
+  const { frame, until, type, key } = await setup(t, 140, 35, ({ host, data }) => { data.session.parentID = "ses_parent"; host.auto = control })
+  await until(() => frame().includes("Ready."))
+  await type("a")
+  await until(() => frame().includes("Autocompaction strategy"))
+  key(KeyCodes.ARROW_UP)
+  key("return")
+  await until(() => frame().includes("Subagents use AUTO_PER_TURN instead of MANUAL"))
+  assert.equal(state.strategy, "AUTO_PER_TURN")
+})
+
+test("checkpointed turn tail is labeled as a continuation and remains readable", async (t) => {
+  const { frame, until, key } = await setup(t, 160, 40, ({ data }) => {
+    for (const message of data.messages) message.info.kind = message.info.role
+    data.session.metadata![KEY] = append(emptyPolicy(data.session.id), { ...operation("compact", turns(data.messages.slice(0, 1))), checkpoint: true, summary: "The user task is still in progress." })
+  })
+  await until(() => frame().includes("CONTINUATION"))
+  key(KeyCodes.ARROW_DOWN)
+  key("return")
+  await until(() => frame().includes("Continuation after a saved range boundary"))
+  assert.ok(frame().includes("Answer 0"))
+})
+
 test("paused inspector distinguishes provider guard, local count, and inclusive reported baseline", async (t) => {
   const { state, control, calls } = pausedControl()
   state.pause!.tokens = 670000
@@ -661,9 +689,9 @@ test("strategy picker fits all options at 80x24 and scrolls only when the termin
   const options = screen.renderer.root.findDescendantById("cm-strategy-options")!
   assert.equal(picker.height, 12)
   assert.equal(options.height, 6)
-  assert.ok(frame().includes("Open inspector; confirm before resume"))
-  assert.ok(frame().includes("Oldest USER first, then one whole-prefix fallback"))
-  assert.ok(frame().includes("One whole-prefix pass, excluding active USER"))
+  assert.ok(frame().includes("Top-level only; subagents use AUTO_PER_TURN"))
+  assert.ok(frame().includes("Oldest USER, earlier prefix, then last resort"))
+  assert.ok(frame().includes("Earlier prefix, then last resort"))
   screen.renderer.resize(80, 12)
   await until(() => picker.height === 9)
   assert.ok(picker.y + picker.height <= 12)
@@ -674,8 +702,8 @@ test("strategy picker fits all options at 80x24 and scrolls only when the termin
   assert.equal(calls.length, 0)
   screen.renderer.resize(80, 24)
   await until(() => picker.height === 12 && frame().includes("AUTO_PER_TURN"))
-  assert.ok(frame().includes("Open inspector; confirm before resume"))
-  assert.ok(frame().includes("One whole-prefix pass, excluding active USER"))
+  assert.ok(frame().includes("Top-level only; subagents use AUTO_PER_TURN"))
+  assert.ok(frame().includes("Earlier prefix, then last resort"))
   key("return")
   await until(() => frame().includes("Strategy saved"))
   assert.equal(state.strategy, "AUTO_SESSION")

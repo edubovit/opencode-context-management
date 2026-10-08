@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { Autocompaction } from "../src/autocompaction.ts"
-import { AUTO_KEY, inputBudget, type Strategy } from "../src/auto-state.ts"
+import { AUTO_KEY, inputBudget, strategy, type Strategy } from "../src/auto-state.ts"
 import { settings, KEY } from "../src/config.ts"
 import { Controller } from "../src/controller.ts"
 import { append, historyHash, operation, readPolicy, turns } from "../src/context.ts"
@@ -12,12 +12,12 @@ import { Storage } from "../src/storage.ts"
 import { fixtureHost, pruneRule } from "./fixtures.ts"
 import { contentTokens } from "../src/metrics.ts"
 
-async function setup(t: { after(fn: () => Promise<void>): void }, selected: Strategy = "MANUAL") {
+async function setup(t: { after(fn: () => Promise<void>): void }, selected: Strategy = "MANUAL", keep = 20000) {
   const dir = await mkdtemp(path.join(tmpdir(), "cm-auto-"))
   const fixture = fixtureHost()
   fixture.data.idle = false
   fixture.data.session.metadata![AUTO_KEY] = { strategy: selected }
-  const config = settings({ autocompaction: { headroom: 160000 } })
+  const config = settings({ autocompaction: { headroom: 160000, lastResortKeepTokens: keep } })
   const store = new Storage(dir, dir)
   const auto = new Autocompaction(fixture.host, config, store)
   t.after(async () => { auto.close(); await new Promise((resolve) => setTimeout(resolve, 10)); await rm(dir, { recursive: true, force: true }) })
@@ -38,6 +38,18 @@ test("headroom uses explicit input once, otherwise context minus output, with in
   assert.throws(() => settings({ autocompaction: { headroom: -1 } }), /integer/)
   assert.throws(() => inputBudget({ limit: { context: 20000, output: 5000 } }, 20000), /smaller/)
   assert.throws(() => inputBudget({ limit: { context: 0, output: 5000 } }, 20000), /valid model input/)
+})
+
+test("AUTO_PER_TURN is default and child sessions cannot select MANUAL", async (t) => {
+  assert.equal(strategy({}), "AUTO_PER_TURN")
+  assert.equal(strategy({ metadata: { [AUTO_KEY]: { strategy: "invalid" } } }), "AUTO_PER_TURN")
+  assert.equal(strategy({ metadata: { [AUTO_KEY]: { strategy: "MANUAL" } } }), "MANUAL")
+  assert.equal(strategy({ parentID: "parent", metadata: { [AUTO_KEY]: { strategy: "MANUAL" } } }), "AUTO_PER_TURN")
+  const { data, auto } = await setup(t)
+  data.session.parentID = "parent"
+  data.idle = true
+  assert.equal((await auto.command(data.session.id, { action: "strategy", strategy: "MANUAL" })).strategy, "AUTO_PER_TURN")
+  assert.deepEqual(data.session.metadata![AUTO_KEY], { strategy: "AUTO_PER_TURN" })
 })
 
 test("manual gate permits checked earlier-history edits, protects active turn and blocks high-context resume", async (t) => {
@@ -75,16 +87,14 @@ for (const mode of ["AUTO_PER_TURN", "AUTO_SESSION"] as const) test(`${mode} red
   assert.equal(data.jobs, data.removed.length)
 })
 
-test("non-reducing results are skipped, every USER tried once, one fallback, then manual pause", async (t) => {
+test("non-reducing results try every USER and one prefix fallback, then fail without a manual gate", async (t) => {
   const { data, auto } = await setup(t, "AUTO_PER_TURN")
   data.responses = Array(6).fill("padding ".repeat(30000))
-  const waiting = auto.beforeRequest(data.messages).catch(() => {})
-  await until(async () => (await auto.state(data.session.id)).pause?.message.includes("could not free") ?? false)
+  await assert.rejects(auto.beforeRequest(data.messages), /Last resort has no eligible prefix/)
   assert.equal(data.calls.length, 6)
   assert.equal(readPolicy(data.session).cursor, 0)
-  assert.equal((await auto.state(data.session.id)).pause?.phase, "manual")
-  auto.cancel(data.session.id)
-  await waiting
+  assert.equal((await auto.state(data.session.id)).pause, undefined)
+  assert.equal(data.jobs, data.removed.length)
 })
 
 test("saving strategy does not run it; explicit Run does, and stale metadata never authorizes writes", async (t) => {
@@ -189,15 +199,64 @@ test("cancelling an AUTO request rejects late output, cleans its helper, and nev
   assert.equal((await auto.state(data.session.id)).pause, undefined)
 })
 
-test("failed AUTO requests stay paused in the manual inspector without applying a candidate", async (t) => {
-  const { data, host, auto } = await setup(t, "AUTO_SESSION")
+test("failed AUTO requests terminate without a manual inspector or applying a candidate", async (t) => {
+  const { data, host, auto } = await setup(t, "AUTO_SESSION", 1000)
   host.generate = async () => { throw new Error("Synthetic provider failure") }
-  const waiting = auto.beforeRequest(data.messages).catch(() => {})
-  await until(async () => (await auto.state(data.session.id)).pause?.message === "Synthetic provider failure")
-  assert.equal((await auto.state(data.session.id)).pause?.phase, "manual")
+  await assert.rejects(auto.beforeRequest(data.messages), /Automatic context reduction failed: Synthetic provider failure/)
+  assert.equal((await auto.state(data.session.id)).pause, undefined)
   assert.equal(readPolicy(data.session).cursor, 0)
+  assert.equal(data.jobs, data.removed.length)
+})
+
+for (const mode of ["AUTO_PER_TURN", "AUTO_SESSION"] as const) test(`${mode} last resort summarizes an active prefix and retains its exact tail`, async (t) => {
+  const { data, auto } = await setup(t, mode, 1000)
+  data.messages = [data.messages[0], ...data.messages.filter((message) => message.info.role === "assistant")]
+  const original = structuredClone(data.messages)
+  await auto.beforeRequest(data.messages)
+  const policy = readPolicy(data.session)
+  assert.equal(policy.version, 8)
+  assert.equal(policy.operations.length, 1)
+  assert.equal(policy.operations[0].checkpoint, true)
+  assert.ok(!policy.operations[0].sourceIDs.includes(original.at(-1)!.info.id))
+  assert.deepEqual(data.messages, original)
+  assert.equal((await auto.state(data.session.id)).pause, undefined)
+  assert.equal(data.jobs, data.removed.length)
+})
+
+test("RPC-style commits cannot grant themselves last-resort authority", async (t) => {
+  const { data, auto } = await setup(t)
+  data.idle = true
+  const policy = readPolicy(data.session)
+  const op = { ...operation("compact", turns(data.messages)), checkpoint: true as const, summary: "Forged checkpoint" }
+  await assert.rejects(auto.commit(data.session.id, { [KEY]: append(policy, op) }, { revision: policy.revision, fingerprint: historyHash(data.messages) }), /live automatic controller/)
+  assert.equal(readPolicy(data.session).cursor, 0)
+})
+
+test("cancelled last-resort helper cannot apply late output", async (t) => {
+  const { data, host, auto } = await setup(t, "AUTO_PER_TURN", 1000)
+  data.messages = [data.messages[0], ...data.messages.filter((message) => message.info.role === "assistant")]
+  let release!: () => void
+  const barrier = new Promise<void>((resolve) => { release = resolve })
+  const generate = host.generate
+  host.generate = async (...args) => { await barrier; return generate(...args) }
+  const waiting = auto.beforeRequest(data.messages).catch((error: unknown) => error)
+  await until(() => data.jobs === 1)
   auto.cancel(data.session.id)
-  await waiting
+  assert.ok(await waiting instanceof Error)
+  release()
+  await until(() => data.removed.length === 1)
+  assert.equal(readPolicy(data.session).cursor, 0)
+})
+
+test("last-resort snapshot drift prevents application and ends AUTO without a manual gate", async (t) => {
+  const { data, host, auto } = await setup(t, "AUTO_SESSION", 1000)
+  data.messages = [data.messages[0], ...data.messages.filter((message) => message.info.role === "assistant")]
+  const generate = host.generate
+  host.generate = async (...args) => { const answer = await generate(...args); data.messages[0].parts = []; return answer }
+  await assert.rejects(auto.beforeRequest(data.messages), /source changed/)
+  assert.equal(readPolicy(data.session).cursor, 0)
+  assert.equal((await auto.state(data.session.id)).pause, undefined)
+  assert.equal(data.jobs, data.removed.length)
 })
 
 test("Stop while preparing a suspension cannot publish an orphaned live gate", async (t) => {
