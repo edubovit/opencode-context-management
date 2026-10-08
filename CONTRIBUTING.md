@@ -1,6 +1,6 @@
 # Contributing
 
-User installation/options are in [README.md](README.md). This package targets **OpenCode 2.0.24**, not V1. Keep private research, captures and logs under ignored `.local/`; public code and checks must work without it.
+User installation/options are in [README.md](README.md). This package targets **OpenCode V2**, with **2.0.24** as its dependency baseline, not V1. Keep private research, captures and logs under ignored `.local/`; public code and checks must work without it.
 
 ## Setup and checks
 
@@ -17,7 +17,9 @@ git diff --check
 
 `check` runs typecheck, Node/tsx unit/adapter tests, and actual OpenTUI renderer tests. `script/test-tui.mjs` launches the optional platform-specific **Bun 1.4.2** binary directly; global Bun and installation scripts are unnecessary. Do not omit optional dependencies. Linux musl and Windows use their corresponding binaries. Python is needed only for the optional Linux PTY smoke.
 
-V2 packages are pinned to **2.0.24**, OpenTUI to **0.5.14**, and Solid to **1.9.15**, matching the inspected host. Published OpenTUI has an older exact Solid peer; the explicit npm override matches the host rather than using `--force`. Seroval is overridden to patched **1.6.8**. Revalidate these overrides before changing versions. Remaining low-severity Babel-chain audit findings are not fixed by blindly jumping to Babel 8.
+V2 packages are pinned to **2.0.24**, OpenTUI to **0.5.14**, and Solid to **1.9.15**, matching the inspected baseline host. Published OpenTUI has an older exact Solid peer; the explicit npm override matches the host rather than using `--force`. Seroval is overridden to patched **1.6.8**. Revalidate these overrides before changing versions. Remaining low-severity Babel-chain audit findings are not fixed by blindly jumping to Babel 8.
+
+The declared host range is **>=2.0.24 <3**, not an exact release. Server setup does not gate on the host version string. Keep dependency pins separate from host compatibility; run the installed-host checks after upgrades because V2 API compatibility is not guaranteed by the version number. Both smoke runners accept V2 hosts and record the actual version in `result.json`.
 
 Node 22 works for the pure checks; renderer execution uses Bun. OpenTUI's Node-backend engine requirement is Node **26.4+**, so npm can warn on Node 22. Use the provided Bun launcher, not direct Node JSX execution.
 

@@ -17,7 +17,6 @@ import { hash } from "./context.ts"
 import { inputBudget } from "./auto-state.ts"
 
 export async function setupServer(ctx: PluginContext, store = new Storage(ctx.location.directory)) {
-  if (ctx.app.version !== "2.0.24") throw new Error(`Context manager ${VERSION} requires OpenCode 2.0.24; found ${ctx.app.version}`)
   const config = settings(ctx.options)
   const adapter = pluginHost(ctx)
   const host = adapter.host

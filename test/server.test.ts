@@ -10,9 +10,10 @@ import { SUMMARY_EDIT_SYSTEM, SUMMARIZER_SYSTEM } from "../src/summarize.ts"
 import { nativeFixture } from "./native-fixtures.ts"
 import { mockContext } from "./host-mock.ts"
 
-async function setup(t: { after(run: () => Promise<void>): void }) {
+async function setup(t: { after(run: () => Promise<void>): void }, version = "2.0.24") {
   const dir = await mkdtemp(path.join(tmpdir(), "cm-native-server-"))
   const mock = mockContext()
+  mock.state.version = version
   const store = new Storage("/fixture", dir)
   const close = await setupServer(mock.context, store)
   t.after(async () => { await close(); await rm(dir, { recursive: true, force: true }) })
@@ -76,8 +77,11 @@ test("V2 fresh spilling preserves structured output and attachments and owns the
   assert.equal(short.result.metadata.truncated, false)
 })
 
-test("V2 setup refuses unvalidated host versions", async () => {
-  const mock = mockContext()
-  mock.state.version = "1.18.34"
-  await assert.rejects(setupServer(mock.context), /requires OpenCode 2.0.24/)
-})
+for (const version of ["2.0.25", "2.1.0", "2.0.25-dev"]) {
+  test(`V2 setup accepts compatible APIs with host version ${version}`, async (t) => {
+    const mock = await setup(t, version)
+    assert.ok(mock.agents.has(AGENT))
+    assert.ok(mock.agents.has(EDIT_AGENT))
+    for (const name of ["context", "generate", "compaction", "execute.after"]) assert.ok(mock.hooks.has(name))
+  })
+}

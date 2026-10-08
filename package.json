@@ -3,7 +3,7 @@
   "version": "3.2.0",
   "private": true,
   "type": "module",
-  "engines": { "opencode": "2.0.24", "node": ">=22" },
+  "engines": { "opencode": ">=2.0.24 <3", "node": ">=22" },
   "exports": { ".": "./src/server.ts", "./server": "./src/server.ts", "./tui": "./src/tui.tsx", "./rpc": "./src/rpc.ts" },
   "scripts": {
     "typecheck": "tsc --noEmit",

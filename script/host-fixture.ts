@@ -15,7 +15,8 @@ type Reply = string | { text: string; finish: "stop" | "length" } | { tool: { na
 
 export async function fixture(executable = "opencode", destination?: string, options: { subagents?: boolean; keep?: number } = {}) {
   const version = spawnSync(executable, ["--version"], { encoding: "utf8" })
-  if (version.status !== 0 || version.stdout.trim() !== "opencode v2.0.24") throw new Error("This smoke test requires OpenCode 2.0.24")
+  const hostVersion = version.stdout?.trim().match(/^opencode v(2\.\S+)$/)?.[1]
+  if (version.status !== 0 || !hostVersion) throw new Error("This smoke test requires OpenCode V2")
   const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
   await mkdir(path.join(tmpdir(), "opencode"), { recursive: true })
   const root = destination ? path.resolve(destination) : await mkdtemp(path.join(tmpdir(), "opencode", "context-manager-full-"))
@@ -120,7 +121,7 @@ export async function fixture(executable = "opencode", destination?: string, opt
     await writeFile(path.join(root, "stdout.log"), log)
     await writeFile(path.join(root, "host.log"), await readFile(path.join(root, "data/opencode/log/opencode.log"), "utf8").catch(() => ""))
     await writeFile(path.join(root, "requests.json"), JSON.stringify(requests, null, 2))
-    await writeFile(path.join(root, "result.json"), JSON.stringify({ result, ...status }, null, 2))
+    await writeFile(path.join(root, "result.json"), JSON.stringify({ version: hostVersion, result, ...status }, null, 2))
     if (!status.cleaned) throw new Error("Owned host did not stop cleanly")
   }
   try { await until(() => url, "server ready") }
@@ -128,7 +129,7 @@ export async function fixture(executable = "opencode", destination?: string, opt
   const connect = () => OpenCode.make({ baseUrl: url, headers: { authorization: `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}` } })
   let client = connect()
   return {
-    root, repo, project, get client() { return client }, env, get url() { return url }, config, configPath, requests, calls, until, close,
+    root, repo, project, hostVersion, get client() { return client }, env, get url() { return url }, config, configPath, requests, calls, until, close,
     restart: async () => {
       const status = await stop()
       if (!status.cleaned) throw new Error("Owned host did not stop cleanly before restart")

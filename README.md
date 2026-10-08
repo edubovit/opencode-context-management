@@ -2,7 +2,7 @@
 
 Choose what stays in your coding session's context. Prune reasoning or tool results, summarize selected turns, and expand summaries later—without deleting the stored conversation.
 
-**Plugin 3.2.0 · OpenCode 2.0.24**. This is the OpenCode V2 port. V1 entrypoints and configuration instructions no longer apply.
+**Plugin 3.2.0 · OpenCode V2**. V1 entrypoints and configuration instructions no longer apply.
 
 ## Features
 
@@ -17,7 +17,9 @@ Initial summaries apply automatically; inspect/edit/expand them afterward. Summa
 
 ## Install
 
-This is a **source-based, private package**, not a published npm plugin. Requires the local OpenCode **2.0.24** installation and npm. Development checks run on Node.js 22+; renderer tests use the bundled Bun runtime. OpenTUI's Node-backend engine warning on Node 22 does not apply to the bundled Bun renderer. Using its Node backend directly requires Node 26.4+.
+This is a **source-based, private package**, not a published npm plugin. Requires a compatible local OpenCode **V2 (2.0.24 or newer)** installation and npm. Startup does not enforce an exact host version. OpenCode **2.0.25** passes the isolated server/TUI, usage and subagent smoke tests. Dependencies remain pinned to 2.0.24; future host API changes may still require plugin updates.
+
+Development checks run on Node.js 22+; renderer tests use the bundled Bun runtime. OpenTUI's Node-backend engine warning on Node 22 does not apply to the bundled Bun renderer. Using its Node backend directly requires Node 26.4+.
 
 1. From this repository:
 

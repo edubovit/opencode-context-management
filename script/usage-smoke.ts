@@ -61,7 +61,7 @@ try {
     await test.client.session.wait({ sessionID: controller.sessionID })
     assert.equal((await test.client.session.get({ sessionID: controller.sessionID })).outcome, "succeeded")
     assert.ok((await controller.load()).policy.cursor > 0)
-    const snapshot = JSON.parse(await readFile(await controller.dump("2.0.24"), "utf8"))
+    const snapshot = JSON.parse(await readFile(await controller.dump(test.hostVersion), "utf8"))
     assert.equal(snapshot.runtime.budget.source, "provider-matched")
     checks.push(`${strategy}: lower local count cannot bypass high provider usage; same-loop reduction/resume and accounting export`)
   }

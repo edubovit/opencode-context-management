@@ -13,7 +13,7 @@ const executable = process.argv.slice(2).find((argument) => !argument.startsWith
 const checkTui = process.argv.includes("--tui")
 const version = spawnSync(executable, ["--version"], { encoding: "utf8" })
 assert.equal(version.status, 0, version.error?.message ?? version.stderr)
-assert.equal(version.stdout.trim(), "opencode v2.0.24", "This fixture targets exactly OpenCode 2.0.24")
+assert.match(version.stdout.trim(), /^opencode v2\.\S+$/, "This fixture requires OpenCode V2")
 await access(path.join(repo, "test/v2-host/node_modules/@opencode/plugin/package.json")).catch(() => {
   throw new Error("Install fixture dependencies first: npm ci --prefix test/v2-host --ignore-scripts")
 })
