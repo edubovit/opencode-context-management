@@ -26,7 +26,7 @@ Node 22 works for the pure checks; renderer execution uses Bun. OpenTUI's Node-b
 
 No bundler/build is required for installation. Configure the **`src/` directory**; V2 resolves `server.ts` and `tui.tsx`. Native source/config reload releases scoped registrations. Dependency updates require a service restart and TUI reconnect, which interrupts active work.
 
-If this plugin is serving the development session, use a separate Git worktree. Run isolated hosts against that worktree; do not edit the live-loaded source or restart the shared service mid-session. Activate the tested source only after active work has stopped.
+Work on `master` in the canonical checkout. Do not create or push feature branches or extra development worktrees unless explicitly requested. This checkout may serve the live development session: use isolated hosts for testing, coordinate source reloads, and do not restart the shared service during active work without permission.
 
 ### Installed-host verification
 
