@@ -36,7 +36,7 @@ test("all-output pruning replaces small, empty, errored and interrupted results 
     if (status === "completed" && tool.state.status === "completed") {
       tool.state.output = ""
       tool.state.attachments = [{ type: "file", id: "attachment", sessionID: "ses_test", messageID: raw[1].info.id, mime: "image/png", url: "data:image/png;base64,REMOVED" }]
-    } else tool.state = { status: "error", input: { keep: true }, error: "REMOVED_ERROR", time: { start: 1, end: 2 }, metadata: status === "interrupted" ? { interrupted: true, output: "REMOVED_OUTPUT" } : {} }
+    } else tool.state = { status: "error", input: { keep: true }, error: "REMOVED_ERROR", metadata: status === "interrupted" ? { interrupted: true, output: "REMOVED_OUTPUT" } : {} }
     const policy = append(emptyPolicy("ses_test"), operation("tool-prune-all", [turns(raw)[0]]))
     const blocks = project(raw, policy)
     const after = blocks[0].messages[1].parts[0]
@@ -58,15 +58,15 @@ test("tool deletion removes complete calls, including pending calls, and reasoni
   const raw = messages()
   const pending = raw[1].parts[0]
   assert.ok(pending.type === "tool")
-  pending.state = { status: "running", input: { original: "kept in storage" }, time: { start: 1 } }
+  pending.state = { status: "running", input: { original: "kept in storage" } }
   const policy = append(emptyPolicy("ses_test"), { ...operation("tool-delete", [turns(raw)[0]]), pruneReason: true })
-  assert.equal(readPolicy({ id: "ses_test", metadata: { [KEY]: policy } }).version, 7)
+  assert.equal(readPolicy({ id: "ses_test", metadata: { [KEY]: policy } }).version, 9)
   const blocks = project(raw, policy)
   assert.deepEqual(blocks[0].messages, raw.slice(0, 2).map((message) => ({ ...message, parts: message.parts.filter((p) => p.type !== "tool" && p.type !== "reasoning") })))
   assert.equal(rangeToolStats(toolStatus([blocks[0]], pruneRule())), "tools:0 · no tools · no reason")
   assert.deepEqual(raw[1].parts[0], pending)
   assert.throws(() => readPolicy({ id: "ses_test", metadata: { [KEY]: { ...policy, operations: [{ ...policy.operations[0], pruneReason: undefined }] } } }), /requires pruning reasoning/)
-  assert.throws(() => readPolicy({ id: "ses_test", metadata: { [KEY]: { ...policy, version: 5 } } }), /version 6/)
+  assert.throws(() => readPolicy({ id: "ses_test", metadata: { [KEY]: { ...policy, version: 5 } } }), /Unsupported/)
 })
 
 test("nested summary expansion retains final pruning, flags and untouched gaps", () => {
@@ -115,7 +115,7 @@ test("combined disjoint pruning uses one checked write, no model; no-op/busy/inv
   await controller.pruneRanges(ranges, { reasoning: true, tools: "all" })
   assert.equal(writes, 1)
   assert.equal(data.calls.length, 0)
-  assert.equal(readPolicy(data.session).cursor, 2)
+  assert.equal(readPolicy(data.session).operations.length, 2)
   const after = (await controller.load()).blocks
   assert.deepEqual(after[1].messages, blocks[1].messages)
   assert.equal(after[0].reasonPruned, true)
@@ -125,8 +125,6 @@ test("combined disjoint pruning uses one checked write, no model; no-op/busy/inv
   await assert.rejects(controller.pruneRanges(ranges, { reasoning: false, tools: "delete" }), /requires/)
   await assert.rejects(controller.pruneRanges(ranges, { reasoning: false }), /Select at least/)
   assert.equal("undo" in controller, false)
-  const loaded = await controller.load()
-  await assert.rejects(controller.applyOperations([operation("unprune", [loaded.blocks[0]])], { revision: loaded.policy.revision, fingerprint: loaded.fingerprint }), /final/)
   data.idle = false
   await assert.rejects(controller.pruneRanges(ranges, { reasoning: true, tools: "delete" }), /idle/)
   assert.equal(writes, 1)
@@ -175,6 +173,6 @@ test("new pruning rejects source changes between preparation and persistence", a
     return originalMessages(id)
   }
   await assert.rejects(controller.prune(turns(data.messages)[0].sourceIDs, { reasoning: true, tools: "delete" }), /changed/)
-  assert.equal(readPolicy(data.session).cursor, 0)
+  assert.equal(readPolicy(data.session).operations.length, 0)
   assert.equal(data.jobs, 0)
 })

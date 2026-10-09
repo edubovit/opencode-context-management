@@ -1,18 +1,18 @@
-import type { Model, Session } from "./model.ts"
+import type { Model, ModelChoice, Session } from "./model.ts"
+export type { ModelChoice } from "./model.ts"
 import { KEY, type Settings } from "./config.ts"
-import { append, hash, historyHash, nativeActive, operation, project, readPolicy, select, serialize, type Block, type Envelope, type Operation, type Policy, type RestoreMode } from "./context.ts"
+import { append, hash, historyHash, activeMessages, operation, project, readPolicy, select, serialize, type Block, type Envelope, type Operation, type Policy, type RestoreMode } from "./context.ts"
 import { validatePruning, type Pruning } from "./compaction.ts"
 import { generateSummary, inputEstimate, refinementPrompt, summaryEditPrompt, SUMMARY_EDIT_SYSTEM, SUMMARIZER_SYSTEM } from "./summarize.ts"
 import type { Artifacts, RuntimeCapture } from "./storage.ts"
 import { snapshot } from "./snapshot.ts"
 import { toolStatus } from "./status.ts"
-import { bindPruneRule, chars, type TokenPruneRule } from "./text.ts"
+import { bindPruneRule, chars, type PruneRule } from "./text.ts"
 import { tokenBasis, type TokenBasis } from "./tokens.ts"
 import { contentTokens, lastReportedUsage } from "./metrics.ts"
 import { resolveRanges } from "./ranges.ts"
 import type { AutoControl, AutoState, Expected } from "./auto-state.ts"
 
-export type ModelChoice = { providerID: string; modelID: string; variant?: string }
 export interface Host {
   auto?: AutoControl
   session(id: string): Promise<Session>
@@ -26,7 +26,7 @@ export interface Host {
   abort(id: string): Promise<void>
   remove(id: string): Promise<void>
 }
-export type Loaded = { session: Session; raw: Envelope[]; policy: Policy; blocks: Block[]; fingerprint: string; runtime?: RuntimeCapture; models: Model[]; tokenizer: TokenBasis; pruneRule: TokenPruneRule; usage?: ReturnType<typeof lastReportedUsage>; auto?: AutoState }
+export type Loaded = { session: Session; raw: Envelope[]; policy: Policy; blocks: Block[]; fingerprint: string; runtime?: RuntimeCapture; models: Model[]; tokenizer: TokenBasis; pruneRule: PruneRule; usage?: ReturnType<typeof lastReportedUsage>; auto?: AutoState }
 export type Draft = { operation: Operation; attempts: number; refinements: number; revision: number; fingerprint: string; selected: Block[]; totalBlocks: number; model: ModelChoice; jobID: string }
 export type SummaryView = { id: string; text: string; block: Block; revision: number; fingerprint: string; tokenizer: TokenBasis }
 export type RestorePreview = {
@@ -59,7 +59,7 @@ export class Controller {
     const active = sessionModel(session, raw)
     const model = models.find((m) => m.id === active?.modelID && m.providerID === active.providerID)
     const tokenizer = tokenBasis(active, model, this.config.tokenizer)
-    return { session, raw, policy, blocks: project(nativeActive(raw, session.revert), policy), fingerprint: historyHash(raw), runtime, models, tokenizer, pruneRule: bindPruneRule(this.config.prune, tokenizer), usage: lastReportedUsage(raw), auto }
+    return { session, raw, policy, blocks: project(activeMessages(raw, session.revert), policy), fingerprint: historyHash(raw), runtime, models, tokenizer, pruneRule: bindPruneRule(this.config.prune, tokenizer), usage: lastReportedUsage(raw), auto }
   }
 
   async requireIdle() {
@@ -83,7 +83,7 @@ export class Controller {
       ...operation(mode, blocks, options.tools === "large" ? loaded.pruneRule : undefined, loaded.tokenizer),
       ...(options.reasoning && mode !== "prune-reason" ? { pruneReason: true as const } : {}),
     })).filter((op) => {
-      const after = project(nativeActive(loaded.raw, loaded.session.revert), append(loaded.policy, op))
+      const after = project(activeMessages(loaded.raw, loaded.session.revert), append(loaded.policy, op))
       return historyHash(after.flatMap((block) => block.messages)) !== historyHash(loaded.blocks.flatMap((block) => block.messages))
     })
     if (!operations.length) throw new Error("No eligible content for the selected pruning modes")
@@ -103,7 +103,7 @@ export class Controller {
     const operations = groups.filter((blocks) => blocks.some((block) => block.summaryID)).map((blocks) => operation(mode, blocks, undefined, loaded.tokenizer))
     if (!operations.length) throw new Error("No expandable plugin summaries in the selection")
     const next = operations.reduce(append, loaded.policy)
-    const projected = project(nativeActive(loaded.raw, loaded.session.revert), next)
+    const projected = project(activeMessages(loaded.raw, loaded.session.revert), next)
     const after = resolveRanges(projected, ranges).flat()
     return {
       mode, operations, revision: loaded.policy.revision, fingerprint: loaded.fingerprint, ranges, before, after,
@@ -124,21 +124,20 @@ export class Controller {
 
   async applyOperations(operations: Operation[], expected: { revision: number; fingerprint: string }, guard?: () => void) {
     if (!operations.length) throw new Error("No operations to apply")
-    if (operations.some((op) => op.mode === "unprune")) throw new Error("Pruning is final; unprune is no longer supported")
     const loaded = await this.checkSnapshot(expected)
     this.requireUnprotected(loaded, operations.flatMap((op) => op.sourceIDs))
     const next = operations.reduce(append, loaded.policy)
     readPolicy({ id: this.sessionID, metadata: { [KEY]: next } })
-    project(nativeActive(loaded.raw, loaded.session.revert), next)
+    project(activeMessages(loaded.raw, loaded.session.revert), next)
     await this.save(loaded.policy, next, loaded.fingerprint, guard)
   }
 
   async summary(id: string): Promise<SummaryView> {
     const loaded = await this.load()
     const block = loaded.blocks.find((block) => block.summaryID === id)
-    const op = loaded.policy.operations.slice(0, loaded.policy.cursor).findLast((op) => op.id === id || (op.mode === "revise" && op.targetID === id))
+    const op = loaded.policy.operations.findLast((op) => op.id === id || (op.mode === "revise" && op.targetID === id))
     if (!block || op?.summary === undefined) throw new Error("Hover a visible compact/brief summary first")
-    return { id, text: op.summary, block, revision: loaded.policy.revision, fingerprint: loaded.fingerprint, tokenizer: op.tokenizer ?? loaded.tokenizer }
+    return { id, text: op.summary, block, revision: loaded.policy.revision, fingerprint: loaded.fingerprint, tokenizer: op.tokenizer }
   }
 
   async editSummary(view: SummaryView, text: string, guard?: () => void) {
@@ -148,7 +147,7 @@ export class Controller {
     if (!block || historyHash(block.messages) !== historyHash(view.block.messages)) throw new Error("Summary changed; reopen it before editing")
     if (text.trim() === view.text) return view
     const op = { ...operation("revise", [block], undefined, view.tokenizer), targetID: view.id, summary: text.trim() }
-    const edited = project(nativeActive(loaded.raw, loaded.session.revert), append(loaded.policy, op)).find((block) => block.summaryID === view.id)!
+    const edited = project(activeMessages(loaded.raw, loaded.session.revert), append(loaded.policy, op)).find((block) => block.summaryID === view.id)!
     await this.applyOperations([op], view, guard)
     return { ...view, text: op.summary, block: edited, revision: view.revision + 1 }
   }
@@ -177,7 +176,7 @@ export class Controller {
     const status = toolStatus(before, loaded.pruneRule, loaded.tokenizer)
     if (!status.summaries) throw new Error("No expandable plugin summaries in the selected range")
     const op = { ...operation(mode, before, undefined, loaded.tokenizer), mode }
-    const projected = project(nativeActive(loaded.raw, loaded.session.revert), append(loaded.policy, op))
+    const projected = project(activeMessages(loaded.raw, loaded.session.revert), append(loaded.policy, op))
     const after = this.selection(projected, ids)
     return {
       operation: op, revision: loaded.policy.revision, fingerprint: loaded.fingerprint, before, after,
@@ -196,7 +195,7 @@ export class Controller {
       throw new Error("Session changed since restore preview. Cancel and preview again.")
     this.requireUnprotected(loaded, preview.operation.sourceIDs)
     const next = append(loaded.policy, preview.operation)
-    project(nativeActive(loaded.raw, loaded.session.revert), next)
+    project(activeMessages(loaded.raw, loaded.session.revert), next)
     await this.save(loaded.policy, next, preview.fingerprint)
   }
 
@@ -300,7 +299,7 @@ export class Controller {
     if (!choice.providerID || !choice.modelID) throw new Error("Choose a compaction model first")
     const model = (await this.host.models()).find((m) => m.id === choice.modelID && m.providerID === choice.providerID)
     if (!model) throw new Error("Summarizer model is unavailable; select a connected provider/model")
-    if (choice.variant && choice.variant !== "default" && (!model.variants?.[choice.variant] || model.variants[choice.variant].disabled === true))
+    if (choice.variant && choice.variant !== "default" && !model.variants.some((variant) => variant.id === choice.variant))
       throw new Error(`Unsupported reasoning variant: ${choice.variant}`)
     return model
   }

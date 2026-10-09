@@ -1,6 +1,6 @@
 {
   "name": "opencode-context-manager",
-  "version": "3.2.0",
+  "version": "4.0.0",
   "private": true,
   "type": "module",
   "engines": { "opencode": ">=2.0.24 <3", "node": ">=22" },
@@ -13,33 +13,34 @@
     "test:host": "tsx script/host-smoke.ts",
     "test:usage": "tsx script/usage-smoke.ts",
     "test:subagents": "tsx script/subagent-smoke.ts",
-    "typecheck:v2-host": "tsc --noEmit -p test/v2-host/tsconfig.json",
-    "test:v2-host": "npm run typecheck:v2-host && node script/v2-host-smoke.mjs"
+    "test:upgrade": "tsx script/upgrade-smoke.ts"
   },
   "peerDependencies": {
-    "@opentui/core": "0.5.14",
-    "@opentui/solid": "0.5.14",
-    "solid-js": "1.9.15"
+    "@opentui/core": ">=0.5.17 <0.6",
+    "@opentui/solid": ">=0.5.17 <0.6",
+    "solid-js": ">=1.9.15 <2"
   },
   "dependencies": {
     "gpt-tokenizer": "4.0.0",
-    "@opencode/ai": "2.0.24",
-    "@opencode/client": "2.0.24",
-    "@opencode/plugin": "2.0.24",
-    "zod": "4.1.8"
+    "@opencode/ai": "2.0.26",
+    "@opencode/client": "2.0.26",
+    "@opencode/plugin": "2.0.26",
+    "zod": "4.6.5"
   },
   "overrides": {
     "@opentui/solid": { "solid-js": "$solid-js" },
-    "seroval": "1.6.8"
+    "seroval": "1.6.9"
   },
   "devDependencies": {
-    "@opencode/theme": "2.0.24",
-    "@opentui/core": "0.5.14",
-    "@opentui/solid": "0.5.14",
-    "@types/node": "^24.0.0",
+    "@lydell/node-pty": "1.2.0-beta.15",
+    "@xterm/headless": "6.0.0",
+    "@opencode/theme": "2.0.26",
+    "@opentui/core": "0.5.17",
+    "@opentui/solid": "0.5.17",
+    "@types/node": "24.19.1",
     "bun": "1.4.2",
-    "solid-js": "1.9.15",
-    "tsx": "^4.20.0",
-    "typescript": "~5.8.3"
+    "solid-js": "1.9.17",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2"
   }
 }

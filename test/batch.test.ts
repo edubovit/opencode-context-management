@@ -52,7 +52,7 @@ test("five disjoint ranges generate concurrently from the same full frozen conte
   batch.entries[0].text += " MANUAL_KEEP"
   await batch.apply()
   assert.equal(writes, 1)
-  assert.equal(readPolicy(data.session).cursor, 5)
+  assert.equal(readPolicy(data.session).operations.length, 5)
   assert.ok(readPolicy(data.session).operations[0].summary?.includes("MANUAL_KEEP"))
   assert.deepEqual(data.messages, original)
   const loaded = await controller.load()
@@ -78,7 +78,7 @@ test("partial failures keep successful edits and retry only the failed range aga
   const firstJob = batch.entries[0].draft!.jobID
   batch.entries[0].text = "USER_REVIEW_EDIT_ONLY"
   await assert.rejects(batch.apply(), /Every range/)
-  assert.equal(readPolicy(data.session).cursor, 0)
+  assert.equal(readPolicy(data.session).operations.length, 0)
   await storage.saveCapture({ sessionID: data.session.id, time: 2, system: ["LATER_RUNTIME"], warnings: [] })
   fail = false
   await batch.retry(1)
@@ -88,7 +88,7 @@ test("partial failures keep successful edits and retry only the failed range aga
   assert.equal(batch.entries[0].draft!.jobID, firstJob)
   assert.equal(batch.entries[0].text, "USER_REVIEW_EDIT_ONLY")
   await batch.apply()
-  assert.equal(readPolicy(data.session).cursor, 2)
+  assert.equal(readPolicy(data.session).operations.length, 2)
 })
 
 test("batch revisions stay range-local and stale/busy state blocks whole-batch application", async (t) => {
@@ -108,7 +108,7 @@ test("batch revisions stay range-local and stale/busy state blocks whole-batch a
   data.idle = true
   data.messages[0].parts = []
   await assert.rejects(batch.apply(), /changed/)
-  assert.equal(readPolicy(data.session).cursor, 0)
+  assert.equal(readPolicy(data.session).operations.length, 0)
 })
 
 test("cancel while helper creation is pending prevents every model call and cleans owned sessions", async (t) => {
@@ -165,7 +165,7 @@ test("closing a running batch ignores late replies, waits for cleanup, and never
   await pending
   await closing
   assert.equal(data.removed.length, 2)
-  assert.equal(readPolicy(data.session).cursor, 0)
+  assert.equal(readPolicy(data.session).operations.length, 0)
   await assert.rejects(batch.start("brief", ranges), /closed/)
 })
 
@@ -176,7 +176,7 @@ test("cleanup failure after applying a batch warns without duplicating applicati
   const remove = host.remove
   host.remove = async () => { throw new Error("Fixture cleanup failure") }
   assert.match((await batch.apply())!, /Batch applied/)
-  assert.equal(readPolicy(data.session).cursor, 2)
+  assert.equal(readPolicy(data.session).operations.length, 2)
   await assert.rejects(batch.apply(), /already been applied/)
   host.remove = remove
   await batch.discard()
@@ -198,7 +198,7 @@ test("each parallel compact range gets its own one-retry review conversation", a
     assert.match(calls[1].text, /too short/)
     assert.doesNotMatch(calls[1].text, /<selected_range_/)
   }
-  assert.equal(readPolicy(data.session).cursor, 0)
+  assert.equal(readPolicy(data.session).operations.length, 0)
 })
 
 test("cancelling during batch preflight marks ranges retryable without creating helpers", async (t) => {
@@ -240,5 +240,5 @@ test("cancelling after generation but before metadata commit blocks automatic ac
   release()
   await rejected
   host.session = get
-  assert.equal(readPolicy(data.session).cursor, 0)
+  assert.equal(readPolicy(data.session).operations.length, 0)
 })

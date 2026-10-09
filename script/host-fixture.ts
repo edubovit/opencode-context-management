@@ -13,7 +13,7 @@ export type FakeUsage = { input: number; cached?: number; written?: number; outp
 export type RequestScope = { sessionID: string; parentID?: string }
 type Reply = string | { text: string; finish: "stop" | "length" } | { tool: { name: string; input: Record<string, unknown> } }
 
-export async function fixture(executable = "opencode", destination?: string, options: { subagents?: boolean; keep?: number } = {}) {
+export async function fixture(executable = "opencode", destination?: string, options: { subagents?: boolean; keep?: number; plugin?: string } = {}) {
   const version = spawnSync(executable, ["--version"], { encoding: "utf8" })
   const hostVersion = version.stdout?.trim().match(/^opencode v(2\.\S+)$/)?.[1]
   if (version.status !== 0 || !hostVersion) throw new Error("This smoke test requires OpenCode V2")
@@ -70,14 +70,14 @@ export async function fixture(executable = "opencode", destination?: string, opt
   if (!address || typeof address === "string") throw new Error("Missing fixture provider listener")
   const project = path.join(root, "project")
   const configDir = path.join(root, "config", "opencode")
-  const env: NodeJS.ProcessEnv = { PATH: process.env.PATH, LANG: "C.UTF-8", TERM: "xterm-256color", HOME: path.join(root, "home"), USERPROFILE: path.join(root, "home") }
+  const env: NodeJS.ProcessEnv = { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, COMSPEC: process.env.COMSPEC, LANG: "C.UTF-8", TERM: "xterm-256color", HOME: path.join(root, "home"), USERPROFILE: path.join(root, "home") }
   for (const [key, name] of Object.entries({ XDG_CONFIG_HOME: "config", XDG_DATA_HOME: "data", XDG_CACHE_HOME: "cache", XDG_STATE_HOME: "state", TMPDIR: "tmp" })) env[key] = path.join(root, name)
   for (const directory of [project, configDir, env.HOME!, env.XDG_DATA_HOME!, env.XDG_CACHE_HOME!, env.XDG_STATE_HOME!, env.TMPDIR!]) await mkdir(directory, { recursive: true })
   const password = randomUUID()
   Object.assign(env, { OPENCODE_CONFIG_DIR: configDir, OPENCODE_PASSWORD: password, OPENCODE_DISABLE_PROJECT_CONFIG: "1", OPENCODE_DISABLE_MODELS_FETCH: "1", OPENCODE_DISABLE_FFF: "1", OPENCODE_LOG_LEVEL: "DEBUG" })
   const config = {
     update: "disable", snapshots: false, compaction: { auto: false }, model: "fixture/fixture",
-    plugins: ["-opencode.provider.*", { package: path.join(repo, "src"), options: { autocompaction: { headroom: 2000, lastResortKeepTokens: options.keep ?? 20000 }, prune: { threshold: 300, head: 40, tail: 160 }, summarizer: { providerID: "fixture", modelID: "fixture" } } }, path.join(repo, "test/host-fixture")],
+    plugins: ["-opencode.provider.*", { package: options.plugin ?? path.join(repo, "src"), options: { autocompaction: { headroom: 2000, lastResortKeepTokens: options.keep ?? 20000 }, prune: { threshold: 300, head: 40, tail: 160 }, summarizer: { providerID: "fixture", modelID: "fixture" } } }, path.join(repo, "test/host-fixture")],
     permissions: [{ action: "*", resource: "*", effect: "deny" }, { action: "fixture_tool", resource: "*", effect: "allow" }, ...(options.subagents ? [{ action: "subagent", resource: "*", effect: "allow" }] : [])],
     ...(options.subagents ? { experimental: { subagent_depth: 4 }, agents: { "fixture-worker": { mode: "subagent", permissions: [{ action: "*", resource: "*", effect: "deny" }, { action: "fixture_tool", resource: "*", effect: "allow" }, { action: "subagent", resource: "*", effect: "allow" }] } } } : {}),
     providers: { fixture: { package: "@opencode/ai/providers/openai-compatible", settings: { apiKey: "synthetic-not-a-secret", baseURL: `http://127.0.0.1:${address.port}/v1` }, models: {

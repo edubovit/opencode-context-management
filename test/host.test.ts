@@ -57,8 +57,8 @@ test("V2 host rejects moved sessions and exposes normalized model variants", asy
   const mock = mockContext()
   const adapter = pluginHost(mock.context)
   const models = await adapter.host.models()
-  assert.equal(models[0].api.id, "api-model")
-  assert.deepEqual(models[0].variants, { high: {} })
+  assert.equal(models[0].modelID, "api-model")
+  assert.deepEqual(models[0].variants, [{ id: "high" }])
   mock.sessions.get("ses_native")!.location.directory = "/moved"
   await assert.rejects(adapter.host.session("ses_native"), /location changed/)
   await adapter.close()
@@ -76,7 +76,7 @@ test("ordinary children and nested children isolate ancestor ledgers, strategy a
   const children = await Promise.all([adapter.host.session("ses_child"), adapter.host.session("ses_child"), adapter.host.session("ses_nested")])
   for (const child of children) {
     assert.equal(readPolicy(child).sessionID, child.id)
-    assert.equal(readPolicy(child).cursor, 0)
+    assert.equal(readPolicy(child).operations.length, 0)
     assert.equal(child.metadata!.unrelated, "keep")
     assert.deepEqual(child.metadata![AUTO_KEY], { strategy: "AUTO_PER_TURN" })
     assert.ok(child.parentID)
@@ -94,7 +94,7 @@ test("child initialization refuses unrelated/corrupt ledgers and never resets fo
   mock.sessions.get("ses_child")!.metadata = { [KEY]: { broken: true } }
   await assert.rejects(adapter.host.session("ses_child"), /Invalid inherited/)
   mock.sessions.set("ses_fork", { ...nativeSession("ses_fork"), fork: { sessionID: "ses_native", boundary: { type: "before", messageID: "msg_boundary" } }, metadata: metadata("ses_native") })
-  assert.throws(() => readPolicy({ id: "ses_fork", nativeVersion: 2, metadata: mock.sessions.get("ses_fork")!.metadata }), /inherited/)
+  assert.throws(() => readPolicy({ id: "ses_fork", metadata: mock.sessions.get("ses_fork")!.metadata }), /another session/)
   await adapter.host.session("ses_fork")
   assert.deepEqual(mock.sessions.get("ses_fork")!.metadata, metadata("ses_native"))
   mock.sessions.get("ses_child")!.metadata = metadata("ses_child")

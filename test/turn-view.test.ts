@@ -11,7 +11,6 @@ test("turn reading shows user text and only the last final response, without rea
   step.info.id = "msg_step"
   step.info.finish = "tool-calls"
   step.parts.push({ type: "text", id: "step_text", sessionID: "ses_test", messageID: "msg_step", text: "INTERMEDIATE_COMMENTARY" })
-  final.parts.push({ type: "text", id: "ignored", sessionID: "ses_test", messageID: final.info.id, text: "IGNORED_TEXT", ignored: true })
   const original = structuredClone([user, step, final])
   assert.deepEqual(turnView(turns([user, step, final])[0]), { user: "Question 0", assistant: "Answer 0" })
   assert.deepEqual([user, step, final], original)

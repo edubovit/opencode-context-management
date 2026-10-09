@@ -11,7 +11,7 @@ export function distribution(blocks: Block[], runtime?: RuntimeCapture, basis: T
   }
   let attachments = 0
   for (const block of blocks) for (const message of block.messages) for (const part of message.parts) {
-    if (part.type === "text" && !part.ignored) counts[block.kind === "turn" ? message.info.role : "summaries"] += measure(part.text)
+    if (part.type === "text") counts[block.kind === "turn" ? message.info.role : "summaries"] += measure(part.text)
     if (part.type === "reasoning") counts.reasoning += measure(part.text)
     if (part.type === "file") attachments++
     if (part.type === "context") counts[part.category === "skill" ? "loadedSkills" : part.category === "system" ? "systemPrompts" : "assistant"] += measure(part.text)

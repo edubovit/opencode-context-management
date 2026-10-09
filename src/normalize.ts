@@ -1,13 +1,12 @@
 import type { ModelInfo, SessionInfo, SessionMessageInfo, ToolContent } from "@opencode/client"
-import type { Envelope } from "../context.ts"
-import { hash } from "../context.ts"
-import type { FilePart, Model, Part, Session, ToolPart, Usage } from "../model.ts"
+import { hash, type Envelope } from "./context.ts"
+import type { FilePart, Model, Part, Session, ToolPart, Usage } from "./model.ts"
 
 const zero = (): Usage => ({ input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } })
 
 export function sessionView(value: SessionInfo): Session {
   return {
-    id: value.id, nativeVersion: 2, directory: value.location.directory, title: value.title ?? undefined,
+    id: value.id, location: value.location, title: value.title ?? undefined,
     ...(value.parentID ? { parentID: value.parentID } : {}),
     time: { created: value.time.created, updated: value.time.updated },
     ...(value.model ? { model: { id: value.model.id, providerID: value.model.providerID, ...(value.model.variant ? { variant: value.model.variant } : {}) } } : {}),
@@ -19,16 +18,14 @@ export function sessionView(value: SessionInfo): Session {
 export function modelView(value: ModelInfo): Model {
   return {
     id: value.id, providerID: value.providerID, name: value.name,
-    api: { id: value.modelID, npm: value.package ?? "" },
+    modelID: value.modelID, package: value.package,
     limit: { context: value.limit.context, output: value.limit.output, ...(value.limit.input ? { input: value.limit.input } : {}) },
-    variants: Object.fromEntries(value.variants.map((variant) => [variant.id, {}])),
+    variants: value.variants,
   }
 }
 
 export function transcriptView(session: SessionInfo, messages: readonly SessionMessageInfo[]): Envelope[] {
-  let parentID = ""
   return messages.map((message) => {
-    if (message.type === "user") parentID = message.id
     const base = { id: message.id, sessionID: session.id, agent: session.agent ?? "build", kind: message.type, sourceHash: hash(message), time: { created: message.time.created } }
     const model = session.model ?? { providerID: "", id: "" }
     const partBase = (index: string | number) => ({ id: `${message.id}:${index}`, messageID: message.id, sessionID: session.id })
@@ -49,14 +46,14 @@ export function transcriptView(session: SessionInfo, messages: readonly SessionM
     }
     if (message.type === "assistant") return {
       info: {
-        ...base, role: "assistant" as const, parentID, agent: message.agent, providerID: message.model.providerID, modelID: message.model.id,
+        ...base, role: "assistant" as const, agent: message.agent, providerID: message.model.providerID, modelID: message.model.id,
         time: { created: message.time.created, completed: message.time.completed ?? undefined }, finish: message.finish ?? undefined,
         error: message.error ?? undefined, tokens: message.tokens ?? zero(), cost: message.cost ?? 0,
       },
       parts: message.content.map((content, index): Part => {
         if (content.type !== "tool") return { ...partBase(index), type: content.type, text: content.text, ...(content.state ? { metadata: content.state } : {}) }
         const key = partBase(`tool:${content.id}`)
-        const common = { ...key, type: "tool" as const, nativeVersion: 2 as const, callID: content.id, tool: content.name, ...(content.providerState ? { metadata: content.providerState } : {}) }
+        const common = { ...key, type: "tool" as const, callID: content.id, tool: content.name, ...(content.providerState ? { metadata: content.providerState } : {}) }
         if (content.state.status === "streaming") return { ...common, state: { status: "pending", input: { partial: content.state.input } } }
         if (content.state.status === "running") return { ...common, state: { status: "running", input: content.state.input, metadata: content.state.metadata } }
         if (content.state.status === "error") return {
@@ -80,7 +77,7 @@ export function transcriptView(session: SessionInfo, messages: readonly SessionM
       : message.type === "compaction" ? (message.status === "completed" ? `${message.summary}\n${message.recent}` : `[Native compaction ${message.status}]`)
       : `[${message.type}]`
     return {
-      info: { ...base, role: "assistant" as const, parentID, providerID: model.providerID, modelID: model.id, cost: 0, tokens: zero() },
+      info: { ...base, role: "assistant" as const, providerID: model.providerID, modelID: model.id, cost: 0, tokens: zero() },
       parts: [{ ...partBase("context"), type: "context" as const, category: message.type === "skill" ? "skill" as const : message.type === "shell" ? "shell" as const : message.type === "synthetic" ? "synthetic" as const : "system" as const, text }],
     }
   })

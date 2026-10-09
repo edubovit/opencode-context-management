@@ -7,8 +7,8 @@ import { FALLBACK_BASIS, tokenCount } from "../src/tokens.ts"
 import { contentTokens } from "../src/metrics.ts"
 import { settings, KEY } from "../src/config.ts"
 import { nativeFixture } from "./native-fixtures.ts"
-import { transcriptView } from "../src/v2/normalize.ts"
-import { projectRequest } from "../src/v2/projection.ts"
+import { transcriptView } from "../src/normalize.ts"
+import { projectRequest } from "../src/projection.ts"
 import { Message } from "@opencode/ai"
 
 test("last-resort tail configuration is strict, defaults to 20000, and permits zero", () => {
@@ -82,8 +82,8 @@ test("active-prefix checkpoint replays after tool continuation, nesting, revisio
   const range = lastResortRange(project(active, policy), 1, FALLBACK_BASIS)
   const checkpoint = { ...operation("compact", range.selected), checkpoint: true as const, summary: "Unfinished task: preserve ROOT_FACT and continue validation" }
   policy = append(policy, checkpoint)
-  assert.equal(policy.version, 8)
-  assert.equal(readPolicy({ id: session.id, nativeVersion: 2, metadata: { [KEY]: policy } }), policy)
+  assert.equal(policy.version, 9)
+  assert.deepEqual(readPolicy({ id: session.id, metadata: { [KEY]: policy } }), policy)
   const output = projectRequest(native, raw, canonical, policy)
   assert.equal(output.at(-1), canonical.at(-1))
   const next = { ...structuredClone(native.find((m) => m.type === "assistant")!), id: "msg_continuation" }
@@ -101,7 +101,7 @@ test("active-prefix checkpoint replays after tool continuation, nesting, revisio
   assert.deepEqual(projectRequest(native, newer, [...canonical, continued], expanded), projectRequest(native, newer, [...canonical, continued], append(emptyPolicy(session.id), earlier)))
   assert.equal(historyHash(blockMessages(restored)), historyHash(blockMessages(project(active, append(emptyPolicy(session.id), earlier)))))
   assert.ok(!serialize(blockMessages(restored)).includes("REASON_0"))
-  assert.throws(() => readPolicy({ id: session.id, metadata: { [KEY]: { ...policy, version: 7 } } }), /checkpoint/)
+  assert.throws(() => readPolicy({ id: session.id, metadata: { [KEY]: { ...policy, version: 7, cursor: policy.operations.length } } }), /checkpoint/)
 })
 
 test("chunking preserves all Unicode text; bounded last-resort jobs are separate and cleaned", async () => {

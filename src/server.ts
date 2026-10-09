@@ -1,6 +1,6 @@
 import { Plugin } from "@opencode/plugin"
 import { AGENT, EDIT_AGENT, KEY, VERSION, settings } from "./config.ts"
-import { blockMessages, historyHash, nativeActive, project, readPolicy } from "./context.ts"
+import { blockMessages, historyHash, activeMessages, project, readPolicy } from "./context.ts"
 import { Controller } from "./controller.ts"
 import { Storage, type RuntimeCapture } from "./storage.ts"
 import { spills, spillPreview } from "./text.ts"
@@ -8,11 +8,11 @@ import { inputEstimate, SUMMARIZER_SYSTEM, SUMMARY_EDIT_SYSTEM } from "./summari
 import { Autocompaction } from "./autocompaction.ts"
 import { ContextManager, errorMessage } from "./rpc.ts"
 import { pluginHost, type PluginContext } from "./host.ts"
-import { modelView, sessionView, transcriptView } from "./v2/normalize.ts"
-import { protectedMessages } from "./v2/history.ts"
-import { projectRequest } from "./v2/projection.ts"
+import { modelView, sessionView, transcriptView } from "./normalize.ts"
+import { protectedMessages } from "./history.ts"
+import { projectRequest } from "./projection.ts"
 import { tokenBasis } from "./tokens.ts"
-import { budgetScope, budgetUnits, estimateBudget, prepareBudget, recordRequest } from "./v2/budget.ts"
+import { budgetScope, budgetUnits, estimateBudget, prepareBudget, recordRequest } from "./budget.ts"
 import { hash } from "./context.ts"
 import { inputBudget } from "./auto-state.ts"
 
@@ -140,8 +140,8 @@ export async function setupServer(ctx: PluginContext, store = new Storage(ctx.lo
     const state = prepareBudget({ scope, model: event.model, agent: event.agent }, native, projectRequest(native, raw, incoming, currentPolicy), event.system, event.tools, basis, hash(currentPolicy), previous, (response) => {
       const position = native.findIndex((message) => message.id === response.id)
       const future = new Set(native.slice(position).map((message) => message.id))
-      const changed = currentPolicy.operations.slice(0, currentPolicy.cursor).findIndex((op) => op.created >= response.time.created || op.sourceIDs.some((id) => future.has(id)))
-      const historical = changed < 0 ? currentPolicy : { ...currentPolicy, cursor: changed }
+      const changed = currentPolicy.operations.findIndex((op) => op.created >= response.time.created || op.sourceIDs.some((id) => future.has(id)))
+      const historical = changed < 0 ? currentPolicy : { ...currentPolicy, revision: changed, operations: currentPolicy.operations.slice(0, changed) }
       return { messages: projectRequest(native, raw, incoming, historical), policy: hash(historical) }
     })
     await saveBudget(event.sessionID, state)
@@ -149,7 +149,7 @@ export async function setupServer(ctx: PluginContext, store = new Storage(ctx.lo
     const estimate = (policy: ReturnType<typeof readPolicy>) => estimateBudget(units(policy), state, config.autocompaction.estimateMultiplier)
     const capture: RuntimeCapture = {
       sessionID: event.sessionID, time: Date.now(), model: choice, variant: event.model.variant, agent: event.agent,
-      historyHash: historyHash(blockMessages(project(nativeActive(raw), readPolicy(sessionView(current))))),
+      historyHash: historyHash(blockMessages(project(activeMessages(raw), readPolicy(sessionView(current))))),
       system: [...event.system.map((part) => part.text), ...incoming.filter((message) => message.role === "system").map((message) => message.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("\n"))],
       tools: Object.entries(event.tools).map(([id, tool]) => ({ id, description: tool.description, parameters: tool.input })),
       warnings: ["Captured at this plugin's context hook; later hooks, provider framing, media and opaque state are not fully counted."],
@@ -169,7 +169,7 @@ export async function setupServer(ctx: PluginContext, store = new Storage(ctx.lo
     }
     const policy = readPolicy(sessionView(await requireSession(event.sessionID)))
     event.messages = projectRequest(native, raw, incoming, policy)
-    capture.historyHash = historyHash(blockMessages(project(nativeActive(raw), policy)))
+    capture.historyHash = historyHash(blockMessages(project(activeMessages(raw), policy)))
     capture.time = Date.now()
     capture.budget = estimate(policy)
     await saveBudget(event.sessionID, recordRequest(state, native, units(policy), hash(policy)))

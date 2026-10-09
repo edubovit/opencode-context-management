@@ -1,5 +1,5 @@
 /** @jsxImportSource @opentui/solid */
-import type { InspectorUI } from "./ui.ts"
+import { inputBlocked, type InspectorUI } from "./ui.ts"
 import type { ScrollBoxRenderable } from "@opentui/core"
 import { createEffect, Index, Show } from "solid-js"
 import { useKeyboard } from "@opentui/solid"
@@ -34,7 +34,7 @@ export function RangeList(props: {
     return index
   }
   useKeyboard((key) => {
-    if (key.defaultPrevented || !props.focused || props.api.ui?.dialog?.open || key.ctrl || key.meta || !props.rows.length) return
+    if (key.defaultPrevented || !props.focused || inputBlocked(props.api) || key.ctrl || key.meta || !props.rows.length) return
     const step = key.shift ? 5 : 1
     const next = key.name === "up" || key.name === "k" ? props.selectedIndex - step
       : key.name === "down" || key.name === "j" ? props.selectedIndex + step
@@ -50,13 +50,13 @@ export function RangeList(props: {
     contentOptions={{ flexDirection: "column" }}>
     <Index each={props.rows}>{(row, index) =>
       <box id={`cm-range-${index}`} maxHeight={props.maxLines} flexShrink={0} flexDirection="column" overflow="hidden"
-        backgroundColor={props.selectedIndex === index ? props.api.theme.current.backgroundElement ?? "#202028" : undefined}
-        onMouseUp={() => { if (props.focused && !props.api.ui?.dialog?.open) props.onChange(index) }}>
+        backgroundColor={props.selectedIndex === index ? props.api.theme.background.formfield.selected : undefined}
+        onMouseUp={() => { if (props.focused && !inputBlocked(props.api)) props.onChange(index) }}>
         <text id={`cm-range-title-${index}`} height={1} flexShrink={0} wrapMode="none" truncate
-          fg={props.focused && props.selectedIndex === index ? props.api.theme.current.primary : props.api.theme.current.text}>{row().title}</text>
-        <Show when={row().stats}>{(stats) => <text id={`cm-range-stats-${index}`} height={1} flexShrink={0} wrapMode="none" truncate fg={props.api.theme.current.textMuted}>{stats()}</text>}</Show>
+          fg={props.api.theme.text.formfield.state({ focused: props.focused && props.selectedIndex === index })}>{row().title}</text>
+        <Show when={row().stats}>{(stats) => <text id={`cm-range-stats-${index}`} height={1} flexShrink={0} wrapMode="none" truncate fg={props.api.theme.text.muted}>{stats()}</text>}</Show>
         <box id={`cm-range-preview-${index}`} maxHeight={props.maxLines - (row().stats ? 2 : 1)} flexShrink={0} overflow="hidden">
-          <text id={`cm-range-preview-text-${index}`} flexShrink={0} wrapMode="word" fg={props.api.theme.current.textMuted}>{row().preview}</text>
+          <text id={`cm-range-preview-text-${index}`} flexShrink={0} wrapMode="word" fg={props.api.theme.text.muted}>{row().preview}</text>
         </box>
       </box>
     }</Index>

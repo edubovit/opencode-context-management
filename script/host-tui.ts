@@ -1,20 +1,15 @@
 import assert from "node:assert/strict"
-import { spawn } from "node:child_process"
-import { once } from "node:events"
-import { readFile } from "node:fs/promises"
 import path from "node:path"
+import { terminal } from "./terminal.ts"
 import type { fixture } from "./host-fixture.ts"
 import type { Controller } from "../src/controller.ts"
 
 export async function verifyInspector(test: Awaited<ReturnType<typeof fixture>>, controller: Controller, executable: string) {
-  if (process.platform !== "linux") throw new Error("Real inspector PTY verification currently requires Linux/Python 3")
   const output = path.join(test.root, "inspector-tui.log")
-  const child = spawn("python3", [path.join(test.repo, "script/v2-tui-driver.py"), executable, test.url, test.project, output, controller.sessionID], { env: test.env, stdio: ["pipe", "inherit", "inherit"] })
-  const exited = once(child, "exit")
+  const child = terminal({ executable, url: test.url, project: test.project, sessionID: controller.sessionID, env: test.env, output })
   const sleep = () => new Promise((resolve) => setTimeout(resolve, 250))
-  const keys = async (keys: string) => { child.stdin.write(JSON.stringify({ keys }) + "\n"); await sleep() }
-  const screen = async () => await readFile(output + ".screen.txt", "utf8").catch(() => "")
-  const seen = (text: string) => test.until(async () => (await screen()).includes(text), `inspector UI: ${text}`)
+  const keys = async (keys: string) => { child.keys(keys); await sleep() }
+  const seen = (text: string) => test.until(async () => (await child.text()).includes(text), `inspector UI: ${text}`)
   try {
     await seen("Context manager production sm")
     const before = test.requests.length
@@ -63,16 +58,12 @@ export async function verifyInspector(test: Awaited<ReturnType<typeof fixture>>,
     await test.until(async () => (await controller.load()).policy.operations.at(-1)?.mode === "expand", "UI summary expansion")
     const loaded = await controller.load()
     assert.equal(loaded.blocks[0].reasonPruned, true)
-    child.stdin.write(JSON.stringify({ resize: [100, 30] }) + "\n")
+    child.resize(100, 30)
     await sleep()
-    child.stdin.write(JSON.stringify({ resize: [80, 24] }) + "\n")
+    child.resize(80, 24)
     await sleep()
     await keys("\x1b")
-    child.stdin.write(JSON.stringify({ exit: true }) + "\n")
-    const [code] = await exited
-    assert.equal(code, 0)
   } finally {
-    child.stdin.end()
-    await exited
+    assert.equal(await child.close(), 0, "Owned TUI must stop cleanly")
   }
 }

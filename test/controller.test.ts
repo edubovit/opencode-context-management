@@ -22,7 +22,7 @@ test("controller pruning preserves unrelated metadata and original transcript wi
   const { data, controller, ids } = await setup(t)
   const original = structuredClone(data.messages)
   await controller.prune(ids)
-  assert.equal(readPolicy(data.session).cursor, 1)
+  assert.equal(readPolicy(data.session).operations.length, 1)
   assert.equal(data.session.metadata?.unrelated, "keep")
   assert.deepEqual(data.messages, original)
   assert.equal("undo" in controller, false)
@@ -38,7 +38,7 @@ test("summary is inactive until applied; editing works; default model variant ca
   const draft = await controller.summarize("compact", ids)
   assert.equal(draft.selected.length, 1)
   assert.equal(draft.totalBlocks, 3)
-  assert.equal(readPolicy(data.session).cursor, 0)
+  assert.equal(readPolicy(data.session).operations.length, 0)
   assert.equal(data.removed.length, 0)
   await controller.apply(draft, "Edited summary")
   assert.equal(readPolicy(data.session).operations[0].summary, "Edited summary")
@@ -54,7 +54,7 @@ test("idle and stale draft guards reject unsafe updates", async (t) => {
   const draft = await controller.summarize("brief", ids)
   data.messages[0].parts = []
   await assert.rejects(controller.apply(draft, "approved"), /changed/)
-  assert.equal(readPolicy(data.session).cursor, 0)
+  assert.equal(readPolicy(data.session).operations.length, 0)
 })
 
 test("overflow and model failure never alter main context; helper cleaned", async (t) => {
@@ -66,7 +66,7 @@ test("overflow and model failure never alter main context; helper cleaned", asyn
   host.generate = async () => { throw new Error("provider overflow") }
   await assert.rejects(controller.summarize("compact", ids), /provider overflow/)
   assert.equal(data.removed.length, 1)
-  assert.equal(readPolicy(data.session).cursor, 0)
+  assert.equal(readPolicy(data.session).operations.length, 0)
 })
 
 test("input fit does not subtract a configured or model-derived output reserve", async (t) => {
@@ -77,7 +77,7 @@ test("input fit does not subtract a configured or model-derived output reserve",
   const draft = await controller.summarize("brief", ids)
   assert.equal(data.calls.length, 1)
   assert.equal(draft.attempts, 1)
-  assert.equal(readPolicy(data.session).cursor, 0)
+  assert.equal(readPolicy(data.session).operations.length, 0)
 })
 
 test("compact requests one expansion on the same helper and accepts an overshort second result", async (t) => {
@@ -90,7 +90,7 @@ test("compact requests one expansion on the same helper and accepts an overshort
   assert.match(data.calls[1].text, /too short/i)
   assert.match(data.calls[1].text, /Initial selected range size:/)
   assert.equal(draft.operation.summary, "No further useful facts.")
-  assert.equal(readPolicy(data.session).cursor, 0)
+  assert.equal(readPolicy(data.session).operations.length, 0)
 })
 
 test("controller performs one shortening revision and accepts oversized second draft", async (t) => {
@@ -103,13 +103,13 @@ test("controller performs one shortening revision and accepts oversized second d
   assert.equal(data.calls[0].sessionID, data.calls[1].sessionID)
   assert.ok(!data.prompts[1].includes("<selected_range_"))
   await controller.apply(draft, draft.operation.summary!)
-  assert.equal(readPolicy(data.session).cursor, 1)
+  assert.equal(readPolicy(data.session).operations.length, 1)
 })
 
 test("snapshot contains latest approved projection and explicit missing runtime data", async (t) => {
   const { controller, ids } = await setup(t)
   await controller.prune(ids)
-  const file = await controller.dump("1.18.32")
+  const file = await controller.dump("2.0.26")
   const dump = JSON.parse(await readFile(file, "utf8"))
   assert.equal(dump.kind, "current-effective-context")
   assert.ok(dump.text.includes("middle omitted"))
@@ -129,7 +129,7 @@ test("cancellation during helper creation prevents model call and deletes helper
   await assert.rejects(controller.summarize("compact", ids), /cancelled/)
   assert.equal(data.prompts.length, 0)
   assert.deepEqual(data.removed, ["cancelled_job"])
-  assert.equal(readPolicy(data.session).cursor, 0)
+  assert.equal(readPolicy(data.session).operations.length, 0)
 })
 
 test("approval rechecks idle status; a rejected draft remains inactive", async (t) => {
@@ -137,12 +137,12 @@ test("approval rechecks idle status; a rejected draft remains inactive", async (
   const draft = await controller.summarize("compact", ids)
   data.idle = false
   await assert.rejects(controller.apply(draft, "approved"), /idle/)
-  assert.equal(readPolicy(data.session).cursor, 0)
+  assert.equal(readPolicy(data.session).operations.length, 0)
 })
 
 test("explicit compaction model and effort override defaults without changing the main session", async (t) => {
   const { data, host, controller, ids } = await setup(t)
-  const alternate = { ...data.model, id: "other", providerID: "alternate", variants: { low: { reasoningEffort: "low" } } }
+  const alternate = { ...data.model, id: "other", providerID: "alternate", variants: [{ id: "low", settings: { reasoningEffort: "low" } }] }
   host.models = async () => [data.model, alternate]
   const before = structuredClone(data.session)
   const choice = { providerID: "alternate", modelID: "other", variant: "low" }
@@ -156,7 +156,7 @@ test("unsupported model or effort fails before creating a helper or making a req
   const { data, controller, ids } = await setup(t)
   await assert.rejects(controller.summarize("compact", ids, { providerID: "missing", modelID: "missing" }), /unavailable/)
   await assert.rejects(controller.summarize("compact", ids, { providerID: "test", modelID: "model", variant: "unknown" }), /Unsupported/)
-  data.model.variants = { disabled: { disabled: true } }
+  data.model.variants = []
   await assert.rejects(controller.summarize("compact", ids, { providerID: "test", modelID: "model", variant: "disabled" }), /Unsupported/)
   assert.equal(data.jobs, 0)
   assert.equal(data.calls.length, 0)
@@ -164,7 +164,7 @@ test("unsupported model or effort fails before creating a helper or making a req
 
 test("manual revisions retain the first full context, edited draft and conversation across model switches", async (t) => {
   const { data, host, controller, ids } = await setup(t)
-  const alternate = { ...data.model, id: "other", providerID: "alternate", variants: { low: { reasoningEffort: "low" } } }
+  const alternate = { ...data.model, id: "other", providerID: "alternate", variants: [{ id: "low", settings: { reasoningEffort: "low" } }] }
   host.models = async () => [data.model, alternate]
   data.responses = ["Initial summary. ".repeat(150), "Revised summary", "Third summary".repeat(1500)]
   const draft = await controller.summarize("compact", ids)
@@ -184,7 +184,7 @@ test("manual revisions retain the first full context, edited draft and conversat
   assert.equal(data.jobs, 1)
   assert.deepEqual(data.calls.map((call) => call.sessionID), [draft.jobID, draft.jobID, draft.jobID])
   assert.ok(data.conversations.get(draft.jobID)?.[0].parts.some((p) => p.type === "text" && p.text.includes("Question 2")))
-  assert.equal(readPolicy(data.session).cursor, 0)
+  assert.equal(readPolicy(data.session).operations.length, 0)
   assert.equal(data.removed.length, 0)
   await assert.rejects(controller.apply(draft, "Old draft"), /no longer active/)
   await controller.discard()
@@ -281,7 +281,7 @@ test("cleanup failure after approval warns without reporting that the applied op
   host.remove = async () => { throw new Error("delete unavailable") }
   const warning = await controller.apply(draft, "Approved")
   assert.match(warning!, /Summary applied/)
-  assert.equal(readPolicy(data.session).cursor, 1)
+  assert.equal(readPolicy(data.session).operations.length, 1)
   host.remove = remove
   await controller.dispose()
   assert.deepEqual(data.removed, [draft.jobID])
@@ -296,12 +296,12 @@ test("range restore previews are read-only until confirmed and use no model", as
   const preview = await controller.prepareRestore("expand", middle)
   assert.equal(preview.summaries, 1)
   assert.ok(preview.afterChars > preview.operation.beforeChars)
-  assert.equal(readPolicy(data.session).cursor, 1)
+  assert.equal(readPolicy(data.session).operations.length, 1)
   await controller.applyRestore(preview)
   const loaded = await controller.load()
   assert.deepEqual(loaded.blocks[1].messages, data.messages.slice(2, 4))
-  assert.equal(readPolicy(data.session).cursor, 2)
-  assert.equal(readPolicy(data.session).version, 7)
+  assert.equal(readPolicy(data.session).operations.length, 2)
+  assert.equal(readPolicy(data.session).version, 9)
   assert.equal(data.calls.length, calls)
 })
 
@@ -318,7 +318,7 @@ test("restore confirmation rejects a busy session or changed source/revision", a
   const fresh = await controller.prepareRestore("expand", ids)
   data.messages[0].parts = []
   await assert.rejects(controller.applyRestore(fresh))
-  assert.equal(readPolicy(data.session).cursor, 2)
+  assert.equal(readPolicy(data.session).operations.length, 2)
 })
 
 test("restore and prune no-ops do not add misleading history entries", async (t) => {
@@ -326,7 +326,7 @@ test("restore and prune no-ops do not add misleading history entries", async (t)
   await assert.rejects(controller.prepareRestore("expand", ids), /No expandable/)
   await controller.prune(ids)
   await assert.rejects(controller.prune(ids), /No eligible/)
-  assert.equal(readPolicy(data.session).cursor, 1)
+  assert.equal(readPolicy(data.session).operations.length, 1)
   assert.equal(data.calls.length, 0)
 })
 

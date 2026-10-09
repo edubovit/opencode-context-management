@@ -2,7 +2,7 @@
 
 Choose what stays in your coding session's context. Prune reasoning or tool results, summarize selected turns, and expand summaries later—without deleting the stored conversation.
 
-**Plugin 3.2.0 · OpenCode V2**. V1 entrypoints and configuration instructions no longer apply.
+**Plugin 4.0.0 · OpenCode V2**.
 
 ## Features
 
@@ -17,7 +17,9 @@ Initial summaries apply automatically; inspect/edit/expand them afterward. Summa
 
 ## Install
 
-This is a **source-based, private package**, not a published npm plugin. Requires a compatible local OpenCode **V2 (2.0.24 or newer)** installation and npm. Startup does not enforce an exact host version. OpenCode **2.0.25** passes the isolated server/TUI, usage and subagent smoke tests. Dependencies remain pinned to 2.0.24; future host API changes may still require plugin updates.
+This is a **source-based, private package**, not a published npm plugin. Requires a compatible local OpenCode **V2 (2.0.24 or newer)** installation and npm. Dependency packages are pinned to **2.0.26** for reproducibility, independently of the host. Startup does not enforce an exact host version. Host API changes may require updates; a different patch or minor version alone does not block loading.
+
+Validated against OpenCode **2.0.24, 2.0.25 and 2.0.26**, including the actual Windows terminal inspector, provider-usage accounting and subagents. See [validation details](CONTRIBUTING.md#version-400-validation).
 
 Development checks run on Node.js 22+; renderer tests use the bundled Bun runtime. OpenTUI's Node-backend engine warning on Node 22 does not apply to the bundled Bun renderer. Using its Node backend directly requires Node 26.4+.
 
@@ -60,7 +62,7 @@ Development checks run on Node.js 22+; renderer tests use the bundled Bun runtim
 
 The plugin does **not** rewrite host configuration. Explicit `compaction.auto: false` is required: native compaction runs before the context hook. While loaded, the plugin rejects native compaction requests; use its range actions instead of native `/compact`.
 
-See [V2 plugin configuration](https://opencode.ai/v2/docs/plugins/) and [development checks](CONTRIBUTING.md). Full remote installation/artifact delivery is not supported end to end: RPC is remote-aware, but source entrypoints must be available to the terminal and exports/spills stay on the server.
+See [V2 plugin configuration](https://opencode.ai/v2/docs/plugins) and [development checks](CONTRIBUTING.md). Full remote installation/artifact delivery is not supported end to end: RPC is remote-aware, but source entrypoints must be available to the terminal and exports/spills stay on the server.
 
 ## Controls and modes
 
@@ -96,7 +98,7 @@ Options belong on the single server plugin entry. Unknown options are rejected. 
     "package": "file:///absolute/path/opencode-context-management/src",
     "options": {
       "ui": { "maxLinesPerTurn": 4 },
-       "autocompaction": { "headroom": 20000, "estimateMultiplier": 1.3, "lastResortKeepTokens": 20000 },
+      "autocompaction": { "headroom": 20000, "estimateMultiplier": 1.3, "lastResortKeepTokens": 20000 },
       "spill": { "maxLines": 2000, "maxBytes": 51200, "headShare": 0.5 },
       "prune": { "threshold": 5000, "head": 1000, "tail": 1000 },
       "tokenizer": { "fallbackEncoding": "o200k_base", "overrides": {} }
@@ -152,10 +154,12 @@ Queued inputs are not silently discarded. Oversized synthetic-only context witho
 
 ## Upgrading and limits
 
-**Version 3 is V2-only.** Existing format-7 ledgers remain supported; the first last-resort checkpoint upgrades its ledger to **format 8**, recording a stable boundary within a turn. Older plugin versions cannot read format 8: do not downgrade a session after that upgrade. V1 formats 1–6 and copied-history fork ledgers remain preserved/refused, not rebound. Fresh child sessions are distinct from forks and get their own ledger. Keep V1 backups for isolated export; do not mix V1/V2 writers.
+**Version 4 is V2-native.** Existing V2 ledgers in formats **7 and 8** remain readable, including nested summaries, revisions, pruning and partial-turn checkpoints. Reading does not rewrite stored metadata. The next ledger write upgrades to append-only **format 9**, without changing existing operations or their fingerprints. Exports use schema 4. Older plugin versions cannot read format 9: back up before upgrading and do not downgrade a modified session.
 
-Native checkpoints are read-only; edit later USER turns. Historical tools still marked running/streaming must be settled by the host before editing. Opaque provider-executed results cannot be safely pruned; use a summary or whole-call deletion with reasoning instead. Errored reasoning that the host converted to visible text is also refused rather than guessed at. Signed/opaque reasoning, encrypted checkpoints and stateful provider transports are not universally validated.
+Formats 1–6, malformed ledgers and copied-history fork ledgers are preserved and refused, never silently reset. There is no V1 reader, character-pruning mode, Undo/Redo ledger cursor or Unprune implementation. Fresh child sessions are distinct from forks and get their own ledger.
 
-Captures, spill files and exports live in `~/.local/state/opencode-context-manager/<project-hash>/` on the server. The ledger and strategy live in OpenCode session metadata. Control uses authenticated native RPC; V3 creates no local control port or `runtime.json` credential. Old V1 artifacts may remain.
+Native checkpoints are read-only; edit later USER turns. Historical tools still marked running/streaming must be settled by the host before editing. Opaque provider-executed results cannot be safely pruned; use a summary or whole-call deletion with reasoning instead. Errored or interrupted reasoning that the host converted to visible text is also refused rather than guessed at. Signed/opaque reasoning, encrypted checkpoints and stateful provider transports are not universally validated.
+
+Captures, spill files and exports live in `~/.local/state/opencode-context-manager/<project-hash>/` on the server. The ledger and strategy live in OpenCode session metadata. Control uses authenticated native RPC, with no separate control port or credential file.
 
 Pruning is not secure erasure. Original history/spills remain, and disabling the plugin exposes original context again. Exports include the audit ledger, which can contain older summary revisions. No crash recovery for orphaned helper sessions, exact provider billing counts, or transactional protection against arbitrary external metadata writers is promised.

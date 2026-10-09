@@ -2,7 +2,7 @@ import type { Block, Envelope } from "./context.ts"
 
 export function messageText(message: Envelope) {
   return message.parts.flatMap((part) => {
-    if (part.type === "text" && !part.ignored) return [part.text]
+    if (part.type === "text") return [part.text]
     if (part.type === "file") return [`[Attachment: ${part.filename ?? part.id} (${part.mime})]`]
     return []
   }).join("\n\n")
@@ -11,7 +11,7 @@ export function messageText(message: Envelope) {
 export function turnView(block: Block) {
   if (block.kind !== "turn") throw new Error("Use the summary reader for compacted blocks")
   const first = block.messages[0]
-  const last = block.messages.findLast((message) => !message.info.kind || ["user", "assistant"].includes(message.info.kind))
+  const last = block.messages.findLast((message) => ["user", "assistant"].includes(message.info.kind))
   const user = first?.info.role === "user" ? messageText(first) || "[No user text recorded.]" : first?.info.kind === "assistant" ? "[Continuation after a saved range boundary; see preceding context for the user request.]" : "[No user message in this turn.]"
   if (last?.info.role === "assistant" && last.info.error)
     return { user, assistant: "[No successful final response: the assistant ended with an error.]" }

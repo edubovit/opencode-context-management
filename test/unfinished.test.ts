@@ -51,7 +51,7 @@ test("user-only turns get a distinct synthetic summary response and restore exac
   assert.deepEqual(block.sourceIDs, ids)
   assert.deepEqual(block.messages.map((message) => message.info.role), ["user", "assistant"])
   assert.notEqual(block.messages[0].info.id, block.messages[1].info.id)
-  assert.equal(readPolicy(data.session).version, 7)
+  assert.equal(readPolicy(data.session).version, 9)
   assert.deepEqual(data.messages, original)
   const expansion = await controller.prepareRestore("expand", ids)
   await controller.applyRestore(expansion)
@@ -69,5 +69,5 @@ test("unfinished selection does not bypass busy or stale-source checks", async (
   const draft = await controller.summarize("brief", ids)
   data.messages[0].parts = []
   await assert.rejects(controller.apply(draft, "Stale summary"), /changed/)
-  assert.equal(readPolicy(data.session).cursor, 0)
+  assert.equal(readPolicy(data.session).operations.length, 0)
 })

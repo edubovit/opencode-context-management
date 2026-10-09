@@ -1,6 +1,6 @@
 import type { Model, Session } from "./model.ts"
 import type { ModelChoice } from "./controller.ts"
-import type { BudgetReading } from "./v2/budget.ts"
+import type { BudgetReading } from "./budget.ts"
 
 export const AUTO_KEY = "opencode_context_autocompaction"
 export const STRATEGIES = ["MANUAL", "AUTO_PER_TURN", "AUTO_SESSION"] as const

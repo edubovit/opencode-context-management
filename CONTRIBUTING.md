@@ -1,6 +1,6 @@
 # Contributing
 
-User installation/options are in [README.md](README.md). This package targets **OpenCode V2**, with **2.0.24** as its dependency baseline, not V1. Keep private research, captures and logs under ignored `.local/`; public code and checks must work without it.
+User installation/options are in [README.md](README.md). This package targets **OpenCode V2**, with **2.0.26** as its dependency baseline. Keep private research, captures and logs under ignored `.local/`; public code and checks must work without it. Treat the OpenCode source checkout as read-only research: implementation must use public APIs, without a host patch or fork.
 
 ## Setup and checks
 
@@ -8,41 +8,55 @@ User installation/options are in [README.md](README.md). This package targets **
 npm ci --ignore-scripts
 npm run check
 npm run test:host -- /absolute/path/to/opencode
-# Linux + Python 3: exercise the actual inspector in an 80×24 terminal
+# Exercise the actual inspector in an 80×24 terminal, including Windows ConPTY
 npm run test:host -- /absolute/path/to/opencode --tui
 npm run test:usage -- /absolute/path/to/opencode
 npm run test:subagents -- /absolute/path/to/opencode
+npm audit
 git diff --check
 ```
 
-`check` runs typecheck, Node/tsx unit/adapter tests, and actual OpenTUI renderer tests. `script/test-tui.mjs` launches the optional platform-specific **Bun 1.4.2** binary directly; global Bun and installation scripts are unnecessary. Do not omit optional dependencies. Linux musl and Windows use their corresponding binaries. Python is needed only for the optional Linux PTY smoke.
+`check` runs typecheck, Node/tsx unit/adapter tests, and actual OpenTUI renderer tests. `script/test-tui.mjs` launches the optional platform-specific **Bun 1.4.2** binary directly; global Bun and installation scripts are unnecessary. Do not omit optional dependencies. The PTY smoke uses prebuilt `@lydell/node-pty` and `@xterm/headless`; it does not require Python or WSL. PTY support is limited to the platforms supported by those prebuilt binaries.
 
-V2 packages are pinned to **2.0.24**, OpenTUI to **0.5.14**, and Solid to **1.9.15**, matching the inspected baseline host. Published OpenTUI has an older exact Solid peer; the explicit npm override matches the host rather than using `--force`. Seroval is overridden to patched **1.6.8**. Revalidate these overrides before changing versions. Remaining low-severity Babel-chain audit findings are not fixed by blindly jumping to Babel 8.
+V2 packages are pinned to **2.0.26**, OpenTUI to **0.5.17**, and Solid to **1.9.17**. Published OpenTUI still has an older exact Solid peer; the explicit npm override keeps one tested Solid runtime instead of using `--force`. Seroval is overridden to **1.6.9**. Zod, TypeScript and tsx are also pinned. Revalidate overrides and audit the complete lockfile after updates; do not force dependency upgrades to silence an audit.
 
-The declared host range is **>=2.0.24 <3**, not an exact release. Server setup does not gate on the host version string. Keep dependency pins separate from host compatibility; run the installed-host checks after upgrades because V2 API compatibility is not guaranteed by the version number. Both smoke runners accept V2 hosts and record the actual version in `result.json`.
+The declared host range is **>=2.0.24 <3**, not an exact release. Server setup does not gate on the host version string. Keep dependency pins separate from host compatibility; run the installed-host checks after upgrades because V2 API compatibility is not guaranteed by the version number. Smoke runners accept V2 hosts and record the actual version in `result.json`. Server and TUI *plugin* versions must match because they share an RPC and ledger contract; that is not an OpenCode-version check.
 
 Node 22 works for the pure checks; renderer execution uses Bun. OpenTUI's Node-backend engine requirement is Node **26.4+**, so npm can warn on Node 22. Use the provided Bun launcher, not direct Node JSX execution.
 
 No bundler/build is required for installation. Configure the **`src/` directory**; V2 resolves `server.ts` and `tui.tsx`. Native source/config reload releases scoped registrations. Dependency updates require a service restart and TUI reconnect, which interrupts active work.
 
+If this plugin is serving the development session, use a separate Git worktree. Run isolated hosts against that worktree; do not edit the live-loaded source or restart the shared service mid-session. Activate the tested source only after active work has stopped.
+
 ### Installed-host verification
 
 `script/host-smoke.ts` uses the actual production entrypoints and RPC/controller workflows. `script/host-fixture.ts` starts a private foreground server and a loopback fake provider on ephemeral ports. It uses fresh HOME/config/data/cache/state directories and an explicit environment—not real credentials, MCP servers, or the shared service.
 
-The runner prints its temporary root, normally `/tmp/opencode/context-manager-full-*`. Inspect `result.json`, `host.log`, `stdout.log`, and `requests.json`. Both the scenario result and `cleaned` must succeed. Only owned processes are stopped. A supplied destination must not already exist.
+The runner prints its temporary root under the OS temporary directory's `opencode/` folder. Inspect `result.json`, `host.log`, `stdout.log`, and `requests.json`. Both the scenario result and `cleaned` must succeed. Only owned processes are stopped. A supplied destination must not already exist. On Windows pass the actual `opencode.exe`, not an npm `.cmd` wrapper.
 
-The optional PTY driver connects explicitly to that private server. It exercises actual slash-command loading, range editing, native dialog focus, readers, summarization, model-edit proposals/application, expansion, and resize. Its text snapshots decode terminal cursor updates; concatenated ANSI output is not a reliable screen representation.
+The optional PTY driver connects explicitly to that private server. It exercises actual slash-command loading, range editing, native dialog focus, readers, summarization, model-edit proposals/application, expansion, and resize. Xterm decodes cursor updates into the screen buffer; concatenated ANSI output is not a reliable screen representation. The terminal log and last screen are saved on exit, including failures.
 
-The earlier low-level V2 contract fixture is also available:
+To verify a real upgrade from plugin 3.2.0, install its dependencies in a separate checkout and run:
 
 ```sh
-npm ci --prefix test/v2-host --ignore-scripts
-npm run test:v2-host -- /absolute/path/to/opencode --tui
+npm run test:upgrade -- /absolute/path/to/opencode /absolute/path/to/3.2.0/src
 ```
 
-That isolated fixture is excluded from default typecheck and typechecked by its command. It is **not** the installed context-manager plugin; the production smoke must pass too.
+This optional test creates genuine format-7/8 operations under the old plugin, restarts only its private host with the new source, and verifies the next same-model requests, expansion, format-9 writes and another restart. Default checks need no old checkout. The duplicate prototype host fixture and projection/gate implementations have been removed; tests exercise production code.
 
 All default tests use synthetic content. Fake-provider success proves protocol/flow, not semantic summary quality or arbitrary signed-reasoning/provider compatibility. Live tests require explicit permission for provider/model and request bounds; no live-provider runner is enabled by default.
+
+### Version 4.0.0 validation
+
+- Typecheck and **197 unit/adapter tests** on Node **22.23.3** and **24.21.0**.
+- **29 OpenTUI renderer tests** on bundled Bun **1.4.2**, including native modal ownership, dark/light semantic colors and short terminals.
+- Replay stress test: **200 deterministic ledgers × 16 operations**, with immutable source, JSON round trips and exact nested expansion.
+- OpenCode **2.0.24, 2.0.25 and 2.0.26**: production server/Windows ConPTY inspector (**27 checks**), provider usage (**10 checks**) and subagents (**11 checks**) on each release.
+- Real plugin **3.2.0 → 4.0.0** upgrade using saved format-7/8 ledgers and private server restarts (**4 checks**).
+- Fresh public-tree copy without `.local/`: `npm ci --ignore-scripts`, full checks and installed-host/TUI smoke.
+- Lockfile audit: **0 known vulnerabilities**; `git diff --check` clean.
+
+This matrix is Windows validation with fake providers. It does not claim Linux/macOS PTY validation, live-provider summary quality or universal signed-reasoning/stateful-transport compatibility. The live OpenCode service and host source were not changed.
 
 ## Architecture
 
@@ -51,17 +65,18 @@ All default tests use synthetic content. Fake-provider success proves protocol/f
 | V2 lifecycle, hooks, agents, RPC registration | `src/server.ts` |
 | Public in-process session/model/helper adapter | `src/host.ts` |
 | Shared RPC schemas / remote inspector adapter | `src/rpc.ts`, `src/control.ts` |
-| Stable internal DTOs / native normalization | `src/model.ts`, `src/v2/normalize.ts` |
+| Small domain views / native normalization | `src/model.ts`, `src/normalize.ts` |
+| Ledger schema, V2 persistence decoding and append-only writes | `src/ledger.ts` |
 | Ledger replay, turn grouping, summaries, expansion | `src/context.ts` |
-| Canonical request patching / native validation | `src/v2/projection.ts`, `src/v2/request.ts` |
-| Public idle observation / history utilities | `src/v2/activity.ts`, `src/v2/history.ts` |
-| Provider-anchored guard and request observations | `src/v2/budget.ts` |
+| Canonical request patching / native validation | `src/projection.ts`, `src/tool-result.ts` |
+| Public idle observation / protected execution spans | `src/activity.ts`, `src/history.ts` |
+| Provider-anchored guard and request observations | `src/budget.ts` |
 | Controller, parallel batch and saved-summary editor | `src/controller.ts`, `src/batch.ts`, `src/summary-editor.ts` |
 | Budget gate and strategy/ownership state | `src/autocompaction.ts`, `src/auto-state.ts` |
 | Exempt-tail selection and bounded emergency summaries | `src/last-resort.ts` |
 | Token rules, metrics and display status | `src/text.ts`, `src/tokens.ts`, `src/metrics.ts`, `src/status.ts` |
 | Server-local files and effective export | `src/storage.ts`, `src/snapshot.ts` |
-| Inspector/view adapter and components | `src/tui.tsx`, `src/ui.ts`, list/menu/reader/help TSX modules |
+| Inspector, public TUI capability type and input guard | `src/tui.tsx`, `src/ui.ts`, list/menu/reader/help TSX modules |
 
 ### Data flow
 
@@ -77,13 +92,15 @@ Stored transcript, normalized effective projection, hook capture, and final prov
 
 ### Persistence and migration
 
-The ledger remains in session metadata under `opencode_context_manager`; strategy/status uses a separate namespace. Ordinary format-7 writes remain supported. A checkpoint upgrades to **format 8**; subsequent writes retain8. The `checkpoint: true` compact operation splits a USER block after its final source message before replay, so later assistant/tool continuations cannot move that saved boundary. Package version and export schema version are independent.
+The ledger remains in session metadata under `opencode_context_manager`; strategy/status uses a separate namespace. All writes use append-only **format 9**, with no runtime cursor. The decoder accepts complete V2 formats 7/8 and returns the same operations in a format-9 view without persisting it. It rejects truncated cursors, invalid revisions, foreign owners and formats 1–6. The next checked write upgrades the stored envelope. Package version, ledger format, budget-cache format and export schema are independent.
 
-Formats 1–6 still have offline regression readers, preserving old fingerprints/cursors/unprune behavior. Native adapters reject old/forked ledgers. Ordinary fresh child sessions (parentID, no fork) receive an empty own ledger only after validating any copied ledger belongs to an ancestor; unrelated metadata is retained, inherited live-pause notices removed. Own ledgers and unrelated/corrupt copies are never silently reset. Initialization is coalesced per session and pending writes drain on unload.
+`historyHash` preserves the established V2 fingerprint representation, including the fixed tool discriminator `nativeVersion: 2` **inside the hash only**. It is not a runtime version switch. Frozen 3.2.0 source/request hashes in `test/ledger.test.ts` protect nested summaries, revision, expansion and partial-turn checkpoint compatibility. Never change that representation casually or regenerate expected hashes to hide a regression. Budget bootstrap replays an explicit operation prefix; this is not Undo.
 
-Expansion provenance is replay-only. It must not enter provider metadata, helper input, or effective exports. New revisions target stable summary IDs without creating another expansion layer. New writes cannot rewind cursors or add Unprune.
+The `checkpoint: true` compact operation splits a USER block after its final source message before replay, so later continuations cannot move that boundary. Ordinary fresh children (parentID, no fork) receive an empty own ledger only after validating any copied ledger belongs to an ancestor; unrelated metadata is retained and inherited live-pause notices removed. Own ledgers, forks and unrelated/corrupt copies are never silently reset. Initialization is coalesced and pending writes drain on unload.
 
-Native `session.context` exposes the active window, not arbitrary pre-checkpoint history. Host checkpoints are read-only. Later turns can be edited without discarding a checkpoint or restoring history behind it. The public-client history utility supports cursor pagination when a complete timeline is required; limit 0 is not valid in V2.
+Expansion provenance is replay-only. It must not enter provider metadata, helper input, or effective exports. New revisions target stable summary IDs without creating another expansion layer. Pruning is token-only and final; Unprune is not a valid operation. RPC commits use the same strict ledger schema as persistence.
+
+Native `session.context` exposes the active window, not arbitrary pre-checkpoint history. Host checkpoints are read-only. Later turns can be edited without discarding a checkpoint or restoring history behind it. The plugin does not reconstruct the host's history selection or private model converter.
 
 ## Invariants
 
@@ -137,7 +154,7 @@ Native `session.context` exposes the active window, not arbitrary pre-checkpoint
 
 Preserve range controls, keyboard navigation, reader selection/cursor state, visible totals, separate model/effort choices, explicit summary application, and paused exit choices. No ordinary prompt-text commands behind the inspector.
 
-The view adapter maps public V2 theme tokens and routes. Input guards use public keymap modes: `base`, our `context-manager` mode, and native modal ownership. There is no private `dialog.open` cast. Native dialogs/model pickers must never trigger actions underneath them.
+Components use public V2 theme tokens, router destinations, data events and keymap modes directly. Input guards use `base`, our `context-manager` mode, and native modal ownership. There is no synthetic `theme.current`, route wrapper or private `dialog.open` cast. Use semantic action/formfield/feedback colors, not raw hues. Native dialogs/model pickers must never trigger actions underneath them.
 
 Keep content-sized rows capped by `maxLinesPerTurn`, measured cursor reveal/paging, fixed headers/footers, and 80×24/short-terminal coverage. Textarea data comes from `.plainText`. Send text and Return separately in real-terminal tests so autocomplete can update.
 
@@ -147,7 +164,7 @@ Use official [V2 plugin](https://opencode.ai/v2/docs/build/plugins), [migration]
 
 Important pinned-source locations: `packages/plugin/src/promise/*`, `packages/plugin/src/tui/*`, `packages/core/src/session/model-request.ts`, `session/runner/to-llm-message.ts`, `session/runner/llm.ts`, `session/compaction.ts`, `plugin/host.ts`, and generated `packages/client/src/promise/generated/*`.
 
-Do not import Core/private host modules. V1 SDK `/v2` was not the V2 client. Promise APIs have per-method result shapes; not every result has `.data`. Pinned RPC requires explicit `events`, `input`, `output`; output must be JSON without undefined fields. Declare expected RPC errors to avoid hiding them behind `rpc.internal`.
+Do not import Core/private host modules. Use `@opencode/plugin`, `@opencode/client` and `@opencode/ai`. Promise APIs have per-method result shapes; not every result has `.data`. RPC output must be JSON without undefined fields. Declare expected RPC errors to avoid hiding them behind `rpc.internal`.
 
 For changes:
 
@@ -161,9 +178,9 @@ For changes:
 
 Server artifacts are under `~/.local/state/opencode-context-manager/<project-hash>/`. Spill files older than seven days are cleaned on startup; captures/exports remain. Files use restrictive creation modes where supported; review local ACLs separately.
 
-V3 creates no control credential file or custom listener. Native RPC uses host authentication. Historical V1 `runtime.json` artifacts can still contain old credentials; do not commit or share them.
+Native RPC uses host authentication; the plugin creates no control credential file or custom listener. Do not commit or share old credentials or private captures.
 
-`budget-<session-hash>.json` is a versioned accounting cache of scope/history/content hashes and counts. It is independent of policy format 7/8 and contains no prompt text or provider credentials. Captures and budget files remain on disk; do not delete accounting state to force a paused request through. The live gate uses its own frozen estimator, and missing files require a conservative bootstrap on subsequent requests.
+`budget-<session-hash>.json` is a versioned accounting cache of scope/history/content hashes and counts. Its version 1 is unrelated to OpenCode V1 or ledger formats. It contains no prompt text or provider credentials. Do not delete accounting state to force a paused request through. The live gate uses its frozen estimator; missing files require conservative bootstrap on subsequent requests.
 
 `script/usage-smoke.ts` emits deliberately mismatched OpenAI-style SSE usage. It verifies provider-triggered MANUAL/AUTO pauses with low local counts, cached/reasoning normalization, summary and large-prune resume, tool-result growth, restart persistence, pre-upgrade edits, model/endpoint invalidation (including a held gate), and isolated helper capacity checks. It uses the same owned private host/fake-provider isolation as the production smoke.
 

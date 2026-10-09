@@ -4,7 +4,7 @@ import { FALLBACK_BASIS, tokenCount, type TokenBasis } from "./tokens.ts"
 
 export function toolStatus(blocks: Block[], rule: PruneRule, basis: TokenBasis = FALLBACK_BASIS) {
   const users = blocks.filter((block) => block.kind === "turn")
-  const result = { total: 0, pruned: 0, eligible: 0, pending: 0, fileBacked: 0, nativeCleared: 0, summaries: 0, pruneDelta: 0, pruneCharDelta: 0,
+  const result = { total: 0, pruned: 0, eligible: 0, pending: 0, fileBacked: 0, summaries: 0, pruneDelta: 0, pruneCharDelta: 0,
     noReason: users.length > 0 && users.every((block) => block.reasonPruned),
     noTools: users.length > 0 && users.every((block) => block.toolsDeleted),
     allPruned: users.length > 0 && users.every((block) => block.allToolsPruned) }
@@ -19,7 +19,6 @@ export function toolStatus(blocks: Block[], rule: PruneRule, basis: TokenBasis =
       if (part.state.status === "pending" || part.state.status === "running") { result.pending++; continue }
       const outputPath = typeof part.state.metadata?.outputPath === "string" ? part.state.metadata.outputPath : undefined
       if (outputPath) result.fileBacked++
-      if (part.state.status === "completed" && part.state.time.compacted) result.nativeCleared++
       const before = toolText(part)
       const after = prior === signature || prior === "all" ? before : pruneText(before, rule, outputPath)
       if (before !== after) {

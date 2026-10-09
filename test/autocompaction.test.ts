@@ -80,7 +80,7 @@ for (const mode of ["AUTO_PER_TURN", "AUTO_SESSION"] as const) test(`${mode} red
   const last = structuredClone(data.messages.slice(-2))
   await auto.beforeRequest(data.messages)
   const policy = readPolicy(data.session)
-  assert.equal(policy.cursor, mode === "AUTO_PER_TURN" ? 2 : 1)
+  assert.equal(policy.operations.length, mode === "AUTO_PER_TURN" ? 2 : 1)
   assert.ok(policy.operations.every((op) => !op.sourceIDs.includes(last[0].info.id)))
   assert.deepEqual(data.messages.slice(-2), last)
   assert.equal((await auto.state(data.session.id)).pause, undefined)
@@ -92,7 +92,7 @@ test("non-reducing results try every USER and one prefix fallback, then fail wit
   data.responses = Array(6).fill("padding ".repeat(30000))
   await assert.rejects(auto.beforeRequest(data.messages), /Last resort has no eligible prefix/)
   assert.equal(data.calls.length, 6)
-  assert.equal(readPolicy(data.session).cursor, 0)
+  assert.equal(readPolicy(data.session).operations.length, 0)
   assert.equal((await auto.state(data.session.id)).pause, undefined)
   assert.equal(data.jobs, data.removed.length)
 })
@@ -176,10 +176,10 @@ test("checked control writes reject cursor rewinds and new unprune operations", 
   const before = append(readPolicy(data.session), operation("tool-prune", [turns(data.messages)[0]], pruneRule()))
   data.session.metadata![KEY] = before
   const expected = { revision: before.revision, fingerprint: historyHash(data.messages) }
-  const rewind = { ...before, revision: before.revision + 1, cursor: before.cursor - 1 }
-  await assert.rejects(auto.commit(data.session.id, { ...data.session.metadata, [KEY]: rewind }, expected), /must append/)
-  const unprune = append(before, { ...before.operations[0], id: "legacy_unprune", mode: "unprune" })
-  await assert.rejects(auto.commit(data.session.id, { ...data.session.metadata, [KEY]: unprune }, expected), /final/)
+  const rewind = { ...before, revision: before.revision + 1, cursor: before.operations.length - 1 }
+  await assert.rejects(auto.commit(data.session.id, { ...data.session.metadata, [KEY]: rewind }, expected), /cursor|revision/)
+  const unprune = { ...before, revision: before.revision + 1, operations: [...before.operations, { ...before.operations[0], id: "invalid", mode: "unprune" }] }
+  await assert.rejects(auto.commit(data.session.id, { ...data.session.metadata, [KEY]: unprune }, expected), /mode/)
   assert.deepEqual(readPolicy(data.session), before)
 })
 
@@ -195,7 +195,7 @@ test("cancelling an AUTO request rejects late output, cleans its helper, and nev
   await waiting
   release()
   await until(() => data.removed.length === 1)
-  assert.equal(readPolicy(data.session).cursor, 0)
+  assert.equal(readPolicy(data.session).operations.length, 0)
   assert.equal((await auto.state(data.session.id)).pause, undefined)
 })
 
@@ -204,7 +204,7 @@ test("failed AUTO requests terminate without a manual inspector or applying a ca
   host.generate = async () => { throw new Error("Synthetic provider failure") }
   await assert.rejects(auto.beforeRequest(data.messages), /Automatic context reduction failed: Synthetic provider failure/)
   assert.equal((await auto.state(data.session.id)).pause, undefined)
-  assert.equal(readPolicy(data.session).cursor, 0)
+  assert.equal(readPolicy(data.session).operations.length, 0)
   assert.equal(data.jobs, data.removed.length)
 })
 
@@ -214,7 +214,7 @@ for (const mode of ["AUTO_PER_TURN", "AUTO_SESSION"] as const) test(`${mode} las
   const original = structuredClone(data.messages)
   await auto.beforeRequest(data.messages)
   const policy = readPolicy(data.session)
-  assert.equal(policy.version, 8)
+  assert.equal(policy.version, 9)
   assert.equal(policy.operations.length, 1)
   assert.equal(policy.operations[0].checkpoint, true)
   assert.ok(!policy.operations[0].sourceIDs.includes(original.at(-1)!.info.id))
@@ -229,7 +229,7 @@ test("RPC-style commits cannot grant themselves last-resort authority", async (t
   const policy = readPolicy(data.session)
   const op = { ...operation("compact", turns(data.messages)), checkpoint: true as const, summary: "Forged checkpoint" }
   await assert.rejects(auto.commit(data.session.id, { [KEY]: append(policy, op) }, { revision: policy.revision, fingerprint: historyHash(data.messages) }), /live automatic controller/)
-  assert.equal(readPolicy(data.session).cursor, 0)
+  assert.equal(readPolicy(data.session).operations.length, 0)
 })
 
 test("cancelled last-resort helper cannot apply late output", async (t) => {
@@ -245,7 +245,7 @@ test("cancelled last-resort helper cannot apply late output", async (t) => {
   assert.ok(await waiting instanceof Error)
   release()
   await until(() => data.removed.length === 1)
-  assert.equal(readPolicy(data.session).cursor, 0)
+  assert.equal(readPolicy(data.session).operations.length, 0)
 })
 
 test("last-resort snapshot drift prevents application and ends AUTO without a manual gate", async (t) => {
@@ -254,7 +254,7 @@ test("last-resort snapshot drift prevents application and ends AUTO without a ma
   const generate = host.generate
   host.generate = async (...args) => { const answer = await generate(...args); data.messages[0].parts = []; return answer }
   await assert.rejects(auto.beforeRequest(data.messages), /source changed/)
-  assert.equal(readPolicy(data.session).cursor, 0)
+  assert.equal(readPolicy(data.session).operations.length, 0)
   assert.equal((await auto.state(data.session.id)).pause, undefined)
   assert.equal(data.jobs, data.removed.length)
 })

@@ -52,7 +52,7 @@ try {
     assert.ok(loaded.runtime?.tools?.some((tool) => tool.id === "fixture_tool"))
     assert.ok(JSON.stringify(loaded.raw).includes("HEAD_FIXTURE") && JSON.stringify(loaded.raw).includes("TAIL_FIXTURE"))
     await controller.prune(loaded.blocks[0].sourceIDs, options)
-    assert.equal((await controller.load()).policy.version, 7)
+    assert.equal((await controller.load()).policy.version, 9)
     await send(controller, "Immediate next request after context edit")
     const request = JSON.stringify(test.requests.at(-1)?.messages)
     assert.ok(request.includes("BACKGROUND_SHELL_RESULT"))
@@ -125,7 +125,7 @@ try {
   const dump = JSON.parse(await readFile(await controller.dump(test.hostVersion), "utf8"))
   assert.equal(dump.pluginVersion, VERSION)
   assert.equal(dump.hostVersion, test.hostVersion)
-  assert.equal(dump.schemaVersion, 3)
+  assert.equal(dump.schemaVersion, 4)
   assert.ok(!JSON.stringify(dump.blocks).includes('"previous"'))
   checks.push("server-owned effective export excludes expansion layers")
 
@@ -148,12 +148,12 @@ try {
     await test.client.session.wait({ sessionID: auto.sessionID })
     assert.equal((await test.client.session.get({ sessionID: auto.sessionID })).outcome, "succeeded")
     assert.equal((await test.client.session.context({ sessionID: auto.sessionID })).filter((message) => message.type === "user").length, beforeUsers + 1)
-    assert.ok((await auto.load()).policy.cursor > 0)
+    assert.ok((await auto.load()).policy.operations.length > 0)
     checks.push(`${strategy} actual near-limit reduction and same-loop resume`)
   }
   const broken = await make()
   await test.client.session.update({ sessionID: broken.sessionID, metadata: { [KEY]: { version: 6, operations: [] }, unrelated: "keep" } })
-  await assert.rejects(broken.load(), /V1 or inherited/)
+  await assert.rejects(broken.load(), /ledger/)
   checks.push("legacy ledger blocked without mutation")
   const rpc = test.client.rpc(ContextManager)
   const first = await make()
@@ -180,7 +180,7 @@ try {
   await partialBatch.generate()
   assert.equal(partialBatch.ready, false)
   assert.equal(partialBatch.entries.filter((entry) => entry.status === "ready").length, 1)
-  assert.equal((await partial.load()).policy.cursor, 0)
+  assert.equal((await partial.load()).policy.operations.length, 0)
   await assert.rejects(partialBatch.apply(), /Every range/)
   const readyJob = partialBatch.entries.find((entry) => entry.status === "ready")!.draft!.jobID
   const retryStart = test.requests.length
@@ -189,7 +189,7 @@ try {
   assert.ok(partialBatch.entries.some((entry) => entry.draft?.jobID === readyJob))
   await partialBatch.apply()
   test.respond(() => undefined)
-  assert.equal((await partial.load()).policy.cursor, 2)
+  assert.equal((await partial.load()).policy.operations.length, 2)
   checks.push("truncated sibling blocks partial application; retry only failed helper, one complete batch")
 
   const cancelEditor = new SummaryEditor(partial, await partial.summary((await partial.load()).blocks[0].summaryID!))

@@ -1,8 +1,8 @@
 import type { ContentPart, Message } from "@opencode/ai"
 import type { SessionMessageInfo } from "@opencode/client"
 import { z } from "zod"
-import { hash } from "../context.ts"
-import { tokenCount, type TokenBasis } from "../tokens.ts"
+import { hash } from "./context.ts"
+import { tokenCount, type TokenBasis } from "./tokens.ts"
 
 const count = z.number().int().nonnegative()
 const unitSchema = z.object({ key: z.string(), tokens: count })

@@ -2,19 +2,20 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 import { Message } from "@opencode/ai"
 import { nativeFixture } from "./native-fixtures.ts"
-import { sessionView, transcriptView } from "../src/v2/normalize.ts"
-import { projectRequest, validateNativePolicy } from "../src/v2/projection.ts"
-import { append, emptyPolicy, historyHash, nativeActive, operation, project, readPolicy } from "../src/context.ts"
+import { sessionView, transcriptView } from "../src/normalize.ts"
+import { projectRequest, validateNativePolicy } from "../src/projection.ts"
+import { append, emptyPolicy, historyHash, activeMessages, operation, project, readPolicy } from "../src/context.ts"
 import { KEY } from "../src/config.ts"
 import { TOKENIZER_ID } from "../src/tokens.ts"
 import { distribution } from "../src/metrics.ts"
 import { toolText } from "../src/text.ts"
+import { pruneRule } from "./fixtures.ts"
 
 test("native normalization pins source identity, excludes unselectable controls, and retains user spans", () => {
   const { session, native } = nativeFixture()
   const raw = transcriptView(session, native)
   assert.equal(raw.length, native.length)
-  const blocks = project(nativeActive(raw), emptyPolicy(session.id))
+  const blocks = project(activeMessages(raw), emptyPolicy(session.id))
   assert.equal(blocks.length, 3)
   assert.ok(blocks.every((block) => block.closed))
   assert.deepEqual(blocks[0].sourceIDs, ["msg_u0", "msg_a0"])
@@ -29,7 +30,7 @@ test("actual V2 ledger renders nested summaries, revisions and exact expansion a
   const source = JSON.stringify({ native, canonical })
   const raw = transcriptView(session, native)
   let policy = emptyPolicy(session.id)
-  const blocks = () => project(nativeActive(raw), policy)
+  const blocks = () => project(activeMessages(raw), policy)
   const rule = { unit: "tokens" as const, threshold: 200, head: 10, tail: 10, encoding: "o200k_base" as const, library: TOKENIZER_ID }
   policy = append(policy, { ...operation("tool-prune", [blocks()[0]], rule), pruneReason: true })
   const pruned = projectRequest(native, raw, canonical, policy)
@@ -57,7 +58,7 @@ test("canonical projection preserves earlier hook redactions and keeps unselecte
   const { session, native, canonical } = nativeFixture()
   const raw = transcriptView(session, native)
   let policy = emptyPolicy(session.id)
-  const blocks = project(nativeActive(raw), policy)
+  const blocks = project(activeMessages(raw), policy)
   policy = append(policy, { ...operation("brief", [blocks[0]]), summary: "ONE" })
   policy = append(policy, { ...operation("brief", [blocks[2]]), summary: "THREE" })
   const gap = canonical.find((message) => message.id === "msg_u1")!
@@ -65,14 +66,14 @@ test("canonical projection preserves earlier hook redactions and keeps unselecte
   assert.equal(result.find((message) => message.id === gap.id), gap)
   assert.ok(JSON.stringify(result).includes("QUESTION_1"))
   const redacted = canonical.map((message) => message.role === "tool" && message.content.some((part) => part.type === "tool-result" && part.id === "call_0") ? Message.tool({ id: "call_0", name: "fixture", result: { type: "text", value: "ALREADY_REDACTED" } }) : message)
-  policy = append(emptyPolicy(session.id), operation("tool-prune", [blocks[0]], { threshold: 10, head: 1, tail: 1 }))
+  policy = append(emptyPolicy(session.id), operation("tool-prune", [blocks[0]], pruneRule({ threshold: 10, head: 1, tail: 1 })))
   assert.ok(!JSON.stringify(projectRequest(native, raw, redacted, policy)).includes("HEAD_0"))
 })
 
 test("source changes and native checkpoints fail before a V2 policy write", () => {
   const { session, native } = nativeFixture()
   const raw = transcriptView(session, native)
-  const blocks = project(nativeActive(raw), emptyPolicy(session.id))
+  const blocks = project(activeMessages(raw), emptyPolicy(session.id))
   const policy = append(emptyPolicy(session.id), operation("prune-reason", [blocks[0]]))
   const changed = structuredClone(native)
   changed[0].metadata = { changed: true }
@@ -80,7 +81,7 @@ test("source changes and native checkpoints fail before a V2 policy write", () =
   const checkpoint = { id: "msg_checkpoint", type: "compaction" as const, status: "completed" as const, reason: "manual" as const, summary: "native", recent: "", time: { created: 0 } }
   const prefixed = [checkpoint, ...native]
   const normalized = transcriptView(session, prefixed)
-  const checkpointBlock = project(nativeActive(normalized), emptyPolicy(session.id))[0]
+  const checkpointBlock = project(activeMessages(normalized), emptyPolicy(session.id))[0]
   const invalid = append(emptyPolicy(session.id), operation("prune-reason", [checkpointBlock]))
   assert.throws(() => validateNativePolicy(prefixed, normalized, invalid), /read-only/)
 })
@@ -88,10 +89,10 @@ test("source changes and native checkpoints fail before a V2 policy write", () =
 test("V2 accepts only native-format ledgers and refuses inherited/V1 state without resetting it", () => {
   const { session } = nativeFixture()
   const legacy = { ...emptyPolicy(session.id), version: 6 }
-  assert.throws(() => readPolicy({ ...sessionView(session), metadata: { [KEY]: legacy } }), /V1 or inherited/)
+  assert.throws(() => readPolicy({ ...sessionView(session), metadata: { [KEY]: legacy } }), /Unsupported/)
   assert.equal(legacy.version, 6)
-  assert.throws(() => readPolicy({ ...sessionView(session), metadata: { [KEY]: emptyPolicy("ses_parent") } }), /inherited/)
-  assert.equal(readPolicy({ ...sessionView(session), metadata: { [KEY]: emptyPolicy(session.id) } }).version, 7)
+  assert.throws(() => readPolicy({ ...sessionView(session), metadata: { [KEY]: emptyPolicy("ses_parent") } }), /another session/)
+  assert.equal(readPolicy({ ...sessionView(session), metadata: { [KEY]: emptyPolicy(session.id) } }).version, 9)
 })
 
 test("background shell records intentionally omitted by the host do not block saved edits", () => {
@@ -102,9 +103,9 @@ test("background shell records intentionally omitted by the host do not block sa
   canonical.splice(4, 0, Message.make({ id: completion.id, role: "user", content: completion.text }))
   const raw = transcriptView(session, native)
   const original = JSON.stringify({ native, raw, canonical })
-  const selected = project(nativeActive(raw), emptyPolicy(session.id)).slice(0, 1)
+  const selected = project(activeMessages(raw), emptyPolicy(session.id)).slice(0, 1)
   for (const mode of ["prune-reason", "tool-prune", "tool-prune-all", "tool-delete"] as const) {
-    const policy = append(emptyPolicy(session.id), { ...operation(mode, selected, { threshold: 200, head: 10, tail: 10 }), ...(mode === "tool-delete" ? { pruneReason: true as const } : {}) })
+    const policy = append(emptyPolicy(session.id), { ...operation(mode, selected, mode === "tool-prune" ? pruneRule({ threshold: 200, head: 10, tail: 10 }) : undefined), ...(mode === "tool-delete" ? { pruneReason: true as const } : {}) })
     const result = projectRequest(native, raw, canonical, policy)
     assert.ok(result.some((message) => message.id === completion.id))
     assert.ok(!JSON.stringify(result).includes("RAW_SHELL_COMMAND"))
@@ -114,7 +115,7 @@ test("background shell records intentionally omitted by the host do not block sa
   const summarized = JSON.stringify(projectRequest(native, raw, canonical, policy))
   assert.ok(!summarized.includes("SHELL_COMPLETION"))
   assert.ok(summarized.includes("Saved shell completion facts"))
-  policy = append(policy, operation("expand", project(nativeActive(raw), policy).slice(0, 1)))
+  policy = append(policy, operation("expand", project(activeMessages(raw), policy).slice(0, 1)))
   assert.deepEqual(projectRequest(native, raw, canonical, policy), canonical)
   assert.equal(JSON.stringify({ native, raw, canonical }), original)
 })
@@ -123,7 +124,7 @@ test("missing foreground shells, completion messages, user/assistant messages an
   const { session, native, canonical } = nativeFixture()
   const check = (source: typeof native, incoming: typeof canonical) => {
     const raw = transcriptView(session, source)
-    const policy = append(emptyPolicy(session.id), operation("prune-reason", project(nativeActive(raw), emptyPolicy(session.id)).slice(0, 1)))
+    const policy = append(emptyPolicy(session.id), operation("prune-reason", project(activeMessages(raw), emptyPolicy(session.id)).slice(0, 1)))
     assert.throws(() => projectRequest(source, raw, incoming, policy), /absent from.*context/)
   }
   for (const background of [undefined, false, "true"]) {
@@ -143,13 +144,13 @@ test("native error attachments and interruption text remain visible until all-ou
   assert.equal(tool.type, "tool")
   tool.state = { status: "error", input: {}, error: { type: "tool.interrupted", message: "Terminal error" }, metadata: { interrupted: true, output: "not model-visible metadata" }, content: [{ type: "text", text: "Visible interrupted output" }, { type: "file", uri: "data:image/png;base64,AA==", mime: "image/png" }] }
   const raw = transcriptView(session, native)
-  const blocks = project(nativeActive(raw), emptyPolicy(session.id))
+  const blocks = project(activeMessages(raw), emptyPolicy(session.id))
   assert.equal(distribution(blocks).attachments, 1)
   const part = blocks[0].messages.flatMap((message) => message.parts).find((part) => part.type === "tool")!
   assert.equal(part.type, "tool")
   assert.match(toolText(part), /Terminal error[\s\S]*Visible interrupted output/)
   const policy = append(emptyPolicy(session.id), operation("tool-prune-all", [blocks[0]]))
-  const after = project(nativeActive(raw), policy)
+  const after = project(activeMessages(raw), policy)
   assert.equal(distribution(after).attachments, 0)
   assert.ok(!JSON.stringify(after[0]).includes("Visible interrupted output"))
   assert.ok(!JSON.stringify(after[0]).includes("not model-visible metadata"))
@@ -166,5 +167,5 @@ test("native textual attachments remain available to summaries while binary medi
   const raw = transcriptView(session, native)
   assert.ok(raw[0].parts.some((part) => part.type === "text" && part.text.includes("IMPORTANT_FILE_FACT 漢字") && part.text.includes("readme.txt")))
   assert.equal(raw[0].parts.filter((part) => part.type === "file").length, 1)
-  assert.equal(distribution(project(nativeActive(raw), emptyPolicy(session.id))).attachments, 1)
+  assert.equal(distribution(project(activeMessages(raw), emptyPolicy(session.id))).attachments, 1)
 })

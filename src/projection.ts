@@ -1,17 +1,17 @@
 import { Message, type ContentPart } from "@opencode/ai"
 import type { SessionMessageInfo } from "@opencode/client"
-import { hash, nativeActive, project, replacement, type Block, type Envelope, type Operation, type Policy } from "../context.ts"
-import { pruneResult } from "./request.ts"
-import { tokenCount, type TokenBasis } from "../tokens.ts"
+import { hash, activeMessages, project, replacement, type Block, type Envelope, type Operation, type Policy } from "./context.ts"
+import { pruneResult } from "./tool-result.ts"
 
 type Assistant = Extract<SessionMessageInfo, { type: "assistant" }>
 type Tool = Extract<Assistant["content"][number], { type: "tool" }>
 type Entry = { message: Message; sourceIDs: string[]; anchor: number; slot: number; summaryID?: string; rules: Map<string, string> }
 
 export function projectRequest(native: readonly SessionMessageInfo[], raw: Envelope[], incoming: readonly Message[], policy: Policy): Message[] {
-  if (!policy.cursor) return [...incoming]
-  const active = nativeActive(raw)
+  if (!policy.operations.length) return [...incoming]
+  const active = activeMessages(raw)
   const selectable = new Set(active.map((message) => message.info.id))
+  const edited = new Set(policy.operations.flatMap((op) => op.sourceIDs))
   const originals = new Map(native.map((message) => [message.id, message]))
   const tools = new Map<string, Map<string, Tool>>()
   for (const message of native) if (message.type === "assistant") {
@@ -28,6 +28,11 @@ export function projectRequest(native: readonly SessionMessageInfo[], raw: Envel
   const seenResults = new Set<string>()
   let entries: Entry[] = incoming.map((message, anchor) => {
     let owner = message.id && selectable.has(message.id) ? message.id : undefined
+    if (owner && edited.has(owner)) {
+      const source = originals.get(owner)!
+      if ((source.type === "assistant" && message.role !== "assistant") || (source.type === "user" && message.role !== "user"))
+        throw new Error("Request role does not match transcript message")
+    }
     for (const part of message.content) if (part.type === "tool-call") {
       if (owner && tools.get(owner)?.get(part.id)?.name !== part.name) throw new Error("Model context contains an unexpected tool call")
       if (owner) {
@@ -95,7 +100,6 @@ export function projectRequest(native: readonly SessionMessageInfo[], raw: Envel
       }
       return
     }
-    if (op.mode === "unprune") throw new Error("V1 unprune operations require the original V1 transcript")
     const ids = selected.filter((block) => block.kind === "turn").flatMap((block) => block.sourceIDs)
     const reason = op.pruneReason || op.mode === "prune-reason"
     const signature = op.mode === "tool-prune" ? hash(op.rule) : "all"
@@ -104,8 +108,8 @@ export function projectRequest(native: readonly SessionMessageInfo[], raw: Envel
       if (entry.message.native || entry.message.providerMetadata) throw new Error("Opaque message-level provider state cannot be safely edited")
       const owner = entry.sourceIDs[0]
       const original = originals.get(owner)
-      if (reason && original?.type === "assistant" && original.error && original.content.some((part) => part.type === "reasoning"))
-        throw new Error("Failed-assistant reasoning became visible text; refusing ambiguous removal")
+      if (reason && original?.type === "assistant" && convertedReasoning(original))
+        throw new Error("Failed-assistant reasoning or interrupted reasoning became visible text; refusing ambiguous removal")
       const rules = new Map(entry.rules)
       const content = entry.message.content.flatMap((part): ContentPart[] => {
         if (part.type === "reasoning" && reason) return []
@@ -130,7 +134,7 @@ export function projectRequest(native: readonly SessionMessageInfo[], raw: Envel
 
 export function validateNativePolicy(native: readonly SessionMessageInfo[], raw: Envelope[], policy: Policy) {
   const source = new Map(native.map((message) => [message.id, message]))
-  project(nativeActive(raw), policy, (op, selected) => {
+  project(activeMessages(raw), policy, (op, selected) => {
     for (const block of selected) {
       if (block.kind !== "turn") continue
       for (const id of block.sourceIDs) {
@@ -139,8 +143,8 @@ export function validateNativePolicy(native: readonly SessionMessageInfo[], raw:
         if (message?.type !== "assistant") continue
         if (message.content.some((part) => part.type === "tool" && ["streaming", "running"].includes(part.state.status)))
           throw new Error("The host must settle unfinished tool calls before editing this historical turn")
-        if ((op.pruneReason || op.mode === "prune-reason") && message.error && message.content.some((part) => part.type === "reasoning"))
-          throw new Error("Failed-assistant reasoning cannot be removed safely; summarize the range instead")
+        if ((op.pruneReason || op.mode === "prune-reason") && convertedReasoning(message))
+          throw new Error("Failed-assistant reasoning or interrupted reasoning cannot be removed safely; summarize the range instead")
         if (["tool-prune", "tool-prune-all"].includes(op.mode) && message.content.some((part) => part.type === "tool" && part.executed && (part.providerResultState || part.providerState)))
           throw new Error("Opaque provider-executed results cannot be pruned; summarize or delete the complete calls with reasoning")
       }
@@ -148,11 +152,6 @@ export function validateNativePolicy(native: readonly SessionMessageInfo[], raw:
   })
 }
 
-export function requestTokens(messages: readonly Message[], system: readonly { text: string }[], tools: Record<string, unknown>, basis: TokenBasis) {
-  return tokenCount(system.map((part) => part.text).join("\n\n"), basis.encoding) + tokenCount(JSON.stringify(tools), basis.encoding) + messages.reduce((total, message) => total + message.content.reduce((sum, part) => {
-    if (part.type === "text" || part.type === "reasoning") return sum + tokenCount(part.text, basis.encoding)
-    if (part.type === "tool-call") return sum + tokenCount(JSON.stringify(part.input) ?? "", basis.encoding)
-    if (part.type === "tool-result") return sum + tokenCount(JSON.stringify(part.result), basis.encoding)
-    return sum
-  }, 0), 0)
+function convertedReasoning(message: Assistant) {
+  return message.content.some((part) => part.type === "reasoning" && (message.error || (part.time && part.time.completed === undefined)))
 }

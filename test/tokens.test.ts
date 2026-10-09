@@ -7,7 +7,7 @@ import { settings, KEY } from "../src/config.ts"
 import { bindPruneRule, pruneText } from "../src/text.ts"
 import { FALLBACK_BASIS, TOKENIZER_ID, tokenBasis, tokenCount, tokenEdges, type Encoding } from "../src/tokens.ts"
 import { contentTokens, distribution, lastReportedUsage } from "../src/metrics.ts"
-import { append, blockMessages, emptyPolicy, operation, project, readPolicy, replacementTokens, select, serialize, turns } from "../src/context.ts"
+import { append, emptyPolicy, operation, project, readPolicy, replacementTokens, select, serialize, turns } from "../src/context.ts"
 import { generateSummary, inputEstimate, SUMMARIZER_SYSTEM } from "../src/summarize.ts"
 import { Controller } from "../src/controller.ts"
 import { Storage } from "../src/storage.ts"
@@ -25,7 +25,7 @@ test("local tokenization treats special-token-looking text literally and resolve
   assert.ok(tokenCount("<|endoftext|>") > 1)
   assert.equal(tokenCount("x".repeat(10000)), 1250)
   const base = model()
-  const alias = { ...base, providerID: "openai", id: "my-alias", api: { ...base.api, id: "gpt-4o" } }
+  const alias = { ...base, providerID: "openai", id: "my-alias", modelID: "gpt-4o" }
   assert.equal(tokenBasis({ providerID: "openai", modelID: "my-alias" }, alias, settings().tokenizer).source, "model-name mapping")
   const unknown = tokenBasis({ providerID: "fixture", modelID: "unmapped-model" }, undefined, settings().tokenizer)
   assert.equal(unknown.source, "fallback")
@@ -124,27 +124,13 @@ test("helper input estimate includes the entire conversation, system and input-o
   assert.ok(inputEstimate(prompt, basis, history) > inputEstimate(prompt, basis))
 })
 
-test("old character policies and saved cursors replay unchanged alongside token rules", () => {
+test("saved pruning requires the pinned tokenizer and token accounting", () => {
   const raw = messages()
-  const legacyRule = { threshold: 8000, head: 2000, tail: 2000 }
-  const legacy = operation("tool-prune", select(turns(raw), 0, 0), legacyRule)
-  delete legacy.beforeTokens
-  delete legacy.tokenizer
-  const old = { version: 2 as const, sessionID: "ses_test", revision: 1, cursor: 1, operations: [legacy] }
-  assert.equal(readPolicy({ ...session(), metadata: { [KEY]: old } }).version, 2)
-  const oldView = project(raw, old)
-  assert.ok(serialize(oldView[0].messages).includes("characters omitted"))
-  const tokenOp = operation("tool-prune", select(oldView, 1, 1), pruneRule())
-  const next = append(old, tokenOp)
-  assert.equal(next.version, 7)
-  const view = project(raw, next)
-  assert.deepEqual(view[0], oldView[0])
-  assert.ok(serialize(view[1].messages).includes("tokens (o200k_base)"))
-  assert.deepEqual(blockMessages(project(raw, { ...next, cursor: 1 })), blockMessages(oldView))
-  assert.throws(() => readPolicy({ ...session(), metadata: { [KEY]: { ...next, version: 2 } } }), /token pruning/)
-  const unsupported = structuredClone(next)
-  if (unsupported.operations[1].rule?.unit === "tokens") (unsupported.operations[1].rule as { library: string }).library = "future-tokenizer"
-  assert.throws(() => readPolicy({ ...session(), metadata: { [KEY]: unsupported } }), /token pruning/)
+  const op = operation("tool-prune", turns(raw), pruneRule())
+  for (const invalid of [{ ...op, rule: { threshold: 8000, head: 2000, tail: 2000 } }, { ...op, tokenizer: undefined }, { ...op, beforeTokens: undefined }, { ...op, rule: { ...op.rule, library: "future-tokenizer" } }]) {
+    const value = { ...emptyPolicy("ses_test"), revision: 1, operations: [invalid] }
+    assert.throws(() => readPolicy({ ...session(), metadata: { [KEY]: value } }))
+  }
 })
 
 test("the main encoding drives operations while a different helper model is selected", async () => {
@@ -186,8 +172,8 @@ test("historical usage is separate from the current token projection and exports
   const usage = lastReportedUsage(raw)
   assert.equal(usage?.total, 240)
   const policy = append(emptyPolicy("ses_test"), operation("tool-prune", turns(raw), pruneRule()))
-  const dump = snapshot("ses_test", "1.18.33", project(raw, policy), policy, undefined, FALLBACK_BASIS, usage)
-  assert.equal(dump.schemaVersion, 3)
+  const dump = snapshot("ses_test", "2.0.26", project(raw, policy), policy, undefined, FALLBACK_BASIS, usage)
+  assert.equal(dump.schemaVersion, 4)
   assert.equal(dump.distribution.unit, "estimated content tokens")
   assert.equal(dump.characterDistribution.unit, "Unicode characters")
   assert.equal(dump.lastReportedUsage?.total, 240)

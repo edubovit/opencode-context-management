@@ -2,12 +2,12 @@ import { randomUUID } from "node:crypto"
 import { Controller, type Host, type Loaded, type ModelChoice } from "./controller.ts"
 import { AUTO_KEY, STRATEGIES, inputBudget, strategy, type AutoCommand, type AutoControl, type AutoState, type Expected, type Pause } from "./auto-state.ts"
 import { AGENT, EDIT_AGENT, KEY, type Settings } from "./config.ts"
-import { append, blockMessages, hash, historyHash, nativeActive, operation, project, readPolicy, type Envelope, type Policy } from "./context.ts"
+import { append, blockMessages, hash, historyHash, activeMessages, operation, project, readPolicy, type Envelope, type Policy } from "./context.ts"
 import { distribution } from "./metrics.ts"
 import { tokenBasis, type TokenBasis } from "./tokens.ts"
 import { bindPruneRule } from "./text.ts"
 import { Storage } from "./storage.ts"
-import type { BudgetReading } from "./v2/budget.ts"
+import type { BudgetReading } from "./budget.ts"
 import { LastResort, lastResortRange } from "./last-resort.ts"
 
 type Gate = {
@@ -102,7 +102,7 @@ export class Autocompaction implements AutoControl {
     if (!model) throw new Error("Autocompaction cannot find the active model's limits")
     const budget = inputBudget(model, this.config.autocompaction.headroom)
     const basis = tokenBasis(choice, model, this.config.tokenizer)
-    const blocks = project(nativeActive(messages), readPolicy(session))
+    const blocks = project(activeMessages(messages), readPolicy(session))
     const estimate = input ? input.estimate(readPolicy(session)) : distribution(blocks, await this.storage.capture(session.id), basis).total
     const tokens = typeof estimate === "number" ? estimate : estimate.tokens
     if (tokens <= budget.threshold) return
@@ -113,7 +113,7 @@ export class Autocompaction implements AutoControl {
     void waiting.catch(() => {})
     const raw = await this.host.messages(session.id)
     const protectedIDs = input?.protectedIDs ?? [user.id]
-    const protectedTurn = project(nativeActive(raw), readPolicy(session)).filter((block) => block.sourceIDs.some((id) => protectedIDs.includes(id)))
+    const protectedTurn = project(activeMessages(raw), readPolicy(session)).filter((block) => block.sourceIDs.some((id) => protectedIDs.includes(id)))
     if (!protectedTurn.length) throw new Error("Active USER turn unavailable for context suspension")
     if (await this.host.idle(session.id)) throw new Error("The host stopped before context suspension could be acquired")
     const gate: Gate = {
@@ -171,7 +171,7 @@ export class Autocompaction implements AutoControl {
       try {
         const draft = await worker.summarize("compact", selected.flatMap((block) => block.sourceIDs), choice, loaded)
         if (!gate.active) return
-        const candidate = project(nativeActive(loaded.raw, loaded.session.revert), append(loaded.policy, draft.operation))
+        const candidate = project(activeMessages(loaded.raw, loaded.session.revert), append(loaded.policy, draft.operation))
         const estimate = gate.estimate ? gate.estimate(append(loaded.policy, draft.operation)) : distribution(candidate, loaded.runtime, gate.basis).total
         const after = typeof estimate === "number" ? estimate : estimate.tokens
         if (after < gate.pause.tokens) await worker.applyOperations([draft.operation], draft)
@@ -203,7 +203,7 @@ export class Autocompaction implements AutoControl {
       const summary = await worker.summarize(range.selected, selectedModel)
       const op = { ...operation("compact", range.selected, undefined, gate.basis), checkpoint: true as const, summary }
       const next = append(loaded.policy, op)
-      const estimate = gate.estimate ? gate.estimate(next) : distribution(project(nativeActive(loaded.raw), next), loaded.runtime, gate.basis).total
+      const estimate = gate.estimate ? gate.estimate(next) : distribution(project(activeMessages(loaded.raw), next), loaded.runtime, gate.basis).total
       const tokens = typeof estimate === "number" ? estimate : estimate.tokens
       if (tokens >= gate.pause.tokens || tokens > gate.pause.threshold) throw new Error("Last-resort summary cannot fit the request while preserving the exempt tail. Use a smaller task, a larger model, or a smaller lastResortKeepTokens setting.")
       await this.locked(gate.sessionID, async () => {
@@ -271,16 +271,16 @@ export class Autocompaction implements AutoControl {
     const before = readPolicy(session)
     if (before.revision !== expected.revision || historyHash(raw) !== expected.fingerprint) throw new Error("Session or policy changed before maintenance commit")
     if (gate && (!gate.active || !["manual", "auto"].includes(gate.pause.phase) || historyHash(raw) !== gate.fingerprint)) throw new Error("Suspension changed before maintenance commit")
-    const next = readPolicy({ id: sessionID, metadata, nativeVersion: session.nativeVersion })
+    const next = readPolicy({ id: sessionID, metadata })
     const affected = changedOperations(before, next)
     if (affected.some((op) => op.checkpoint) && !checkpoint) throw new Error("Last-resort checkpoints require the live automatic controller")
     if (!checkpoint && gate && affected.some((op) => op.sourceIDs.some((id) => (gate.pause.protectedIDs ?? [gate.pause.userID]).includes(id)))) throw new Error("The entire active USER turn is protected until this run ends")
     if (session.revert) throw new Error("Finish native undo/unrevert before context maintenance")
     if (gate?.valid && !await gate.valid()) throw new Error("Model/provider configuration changed while paused. Abort this run before continuing.")
-    const projected = project(nativeActive(raw), next)
+    const projected = project(activeMessages(raw), next)
     if (checkpoint) {
       if (!gate?.active || gate.pause.phase !== "auto" || affected.length !== 1 || !affected[0].checkpoint) throw new Error("Invalid last-resort authority")
-      const range = lastResortRange(project(nativeActive(raw), before), this.config.autocompaction.lastResortKeepTokens, gate.basis)
+      const range = lastResortRange(project(activeMessages(raw), before), this.config.autocompaction.lastResortKeepTokens, gate.basis)
       if (hash(affected[0].sourceIDs) !== hash(range.selected.flatMap((block) => block.sourceIDs)) || historyHash(blockMessages(projected.slice(1))) !== historyHash(blockMessages(range.tail))) throw new Error("Last-resort range or exempt tail changed")
     }
     if (!checkpoint && gate && historyHash(protectedBlocks({ blocks: projected }, gate.pause).flatMap((block) => block.messages)) !== gate.protectedHash)
@@ -306,10 +306,8 @@ function protectedBlocks(loaded: Pick<Loaded, "blocks">, pause: Pause) {
 
 function changedOperations(before: Policy, next: Policy) {
   if (next.sessionID !== before.sessionID) throw new Error("Invalid maintenance policy identity")
-  const added = next.cursor - before.cursor
-  if (added < 1 || next.operations.length !== next.cursor || next.revision !== before.revision + added ||
-      hash(before.operations.slice(0, before.cursor)) !== hash(next.operations.slice(0, before.cursor))) throw new Error("Maintenance must append operations; existing history cannot be rewritten")
-  const operations = next.operations.slice(before.cursor)
-  if (operations.some((op) => op.mode === "unprune")) throw new Error("Pruning is final; unprune is no longer supported")
-  return operations
+  const added = next.operations.length - before.operations.length
+  if (added < 1 || next.revision !== before.revision + added ||
+      hash(before.operations) !== hash(next.operations.slice(0, before.operations.length))) throw new Error("Maintenance must append operations; existing history cannot be rewritten")
+  return next.operations.slice(before.operations.length)
 }

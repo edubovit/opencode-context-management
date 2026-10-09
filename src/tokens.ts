@@ -68,11 +68,11 @@ export function tokenEdges(text: string, head: number, tail: number, encoding: E
 }
 
 export function tokenBasis(choice: { providerID: string; modelID: string } | undefined, model: Model | undefined, options: TokenOptions): TokenBasis {
-  const identity = choice ? { providerID: choice.providerID, modelID: choice.modelID, apiModelID: model?.api.id ?? choice.modelID } : {}
+  const identity = choice ? { providerID: choice.providerID, modelID: choice.modelID, apiModelID: model?.modelID ?? choice.modelID } : {}
   const override = choice && options.overrides[`${choice.providerID}/${choice.modelID}`]
   if (override) return { ...identity, encoding: override, library: TOKENIZER_ID, source: "configured override" }
-  const id = model?.api.id ?? choice?.modelID ?? ""
-  const openai = choice?.providerID === "openai" || choice?.providerID === "azure" || choice?.providerID.includes("github-copilot") || model?.api.npm === "@ai-sdk/azure" || model?.api.npm === "@opencode/ai/providers/azure"
+  const id = model?.modelID ?? choice?.modelID ?? ""
+  const openai = choice?.providerID === "openai" || choice?.providerID === "azure" || choice?.providerID.includes("github-copilot") || model?.package === "aisdk:@ai-sdk/azure" || model?.package === "@opencode/ai/providers/azure"
   if (openai && /^(gpt-5(?:[.-]|$)|gpt-4o(?:-|$)|chatgpt-4o-|gpt-4\.[15](?:-|$)|o[13](?:-|$)|o4-mini(?:-|$))/.test(id))
     return { ...identity, encoding: "o200k_base", library: TOKENIZER_ID, source: "model-name mapping" }
   if (openai && /^(gpt-4(?:-|$)|gpt-3\.5(?:-|$)|gpt-35-turbo(?:-|$))/.test(id))

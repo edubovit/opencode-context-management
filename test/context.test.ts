@@ -1,11 +1,11 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { settings, KEY } from "../src/config.ts"
-import { chars, pruneText, spills, spillPreview } from "../src/text.ts"
-import { append, blockMessages, emptyPolicy, hash, historyHash, nativeActive, operation, project, readPolicy, replacementTokens, select, serialize, turns } from "../src/context.ts"
+import { chars, spills, spillPreview } from "../src/text.ts"
+import { append, blockMessages, emptyPolicy, hash, historyHash, operation, project, readPolicy, replacementTokens, select, serialize, turns } from "../src/context.ts"
 import { distribution, snapshot } from "../src/snapshot.ts"
 import { generateSummary, summaryPrompt } from "../src/summarize.ts"
-import { legacyCursor, messages, pruneRule, session } from "./fixtures.ts"
+import { messages, pruneRule, session } from "./fixtures.ts"
 
 test("settings validate configurable budgets and model pairing", () => {
   assert.equal(settings().spill.maxBytes, 51200)
@@ -17,16 +17,6 @@ test("settings validate configurable budgets and model pairing", () => {
 
 test("fingerprints ignore JSON object key ordering across HTTP/schema boundaries", () => {
   assert.equal(hash({ a: 1, b: { c: 2, d: 3 } }), hash({ b: { d: 3, c: 2 }, a: 1 }))
-})
-
-test("manual pruning has strict character threshold, both ends, Unicode and link", () => {
-  const rule = { threshold: 8000, head: 2000, tail: 2000 }
-  assert.equal(pruneText("😀".repeat(8000), rule), "😀".repeat(8000))
-  const result = pruneText("😀".repeat(8001), rule, "/output.txt")
-  assert.ok(result.startsWith("😀".repeat(2000)))
-  assert.ok(result.includes("4001 characters omitted"))
-  assert.ok(result.includes("😀".repeat(2000) + "\n\n[Full output: /output.txt]"))
-  assert.equal(chars("a😀b"), 3)
 })
 
 test("spill threshold is either bytes or lines, preview preserves both ends", () => {
@@ -84,21 +74,21 @@ test("error and interrupted-result pruning preserve provider metadata", () => {
     assert.ok(original.type === "tool")
     original.metadata = { openai: { itemId: "fc_error_fixture" } }
     original.state = {
-      status: "error", input: { keep: "original" }, error: interrupted ? "Interrupted" : "E42!".repeat(3000),
-      metadata: interrupted ? { interrupted: true, output: "INT_23 ".repeat(2000) } : {}, time: { start: 1, end: 2 },
+      status: "error", input: { keep: "original" }, error: interrupted ? "Interrupted\n\n" + "INT_23 ".repeat(2000) : "E42!".repeat(3000),
+      metadata: interrupted ? { interrupted: true } : {},
     }
     const op = operation("tool-prune", select(turns(raw), 0, 0), pruneRule())
     const result = blockMessages(project(raw, append(emptyPolicy("ses_test"), op)))[1].parts[0]
     assert.ok(result.type === "tool" && result.state.status === "error")
     assert.deepEqual(result.metadata, original.metadata)
     assert.deepEqual(result.state.input, original.state.input)
-    assert.ok(String(interrupted ? result.state.metadata?.output : result.state.error).includes("middle omitted"))
+    assert.ok(result.state.error.includes("middle omitted"))
   }
 })
 
 test("identical repeated pruning is idempotent even when its notice exceeds the configured threshold", () => {
   const raw = messages()
-  const rule = { threshold: 30, head: 5, tail: 5 }
+  const rule = pruneRule({ threshold: 30, head: 5, tail: 5 })
   const first = operation("tool-prune", select(turns(raw), 0, 0), rule)
   const policy = append(emptyPolicy("ses_test"), first)
   const once = project(raw, policy)
@@ -110,36 +100,7 @@ test("identical repeated pruning is idempotent even when its notice exceeds the 
   assert.equal(part.metadata, undefined)
 })
 
-test("old dependent-operation fingerprints replay without forwarding legacy pruning markers", () => {
-  const raw = messages()
-  const rule = { threshold: 8000, head: 2000, tail: 2000 }
-  const first = operation("tool-prune", select(turns(raw), 0, 0), rule)
-  let policy = append(emptyPolicy("ses_test"), first)
-  const legacy = project(raw, policy)
-  const legacyTool = legacy[0].messages[1].parts[0]
-  assert.ok(legacyTool.type === "tool")
-  legacyTool.metadata = { ...legacyTool.metadata, [KEY]: hash(rule) }
-  const olderSummary = { ...operation("compact", select(legacy, 0, 0)), summary: "Summary saved by the old plugin" }
-  assert.equal(project(raw, append(policy, olderSummary))[0].kind, "compact")
-  const secondRule = { threshold: 2000, head: 500, tail: 500 }
-  const olderSecond = operation("tool-prune", select(legacy, 0, 1), secondRule)
-  policy = append(policy, olderSecond)
-  const projected = project(raw, policy)
-  for (const block of projected) for (const message of block.messages) for (const part of message.parts)
-    if (part.type === "tool") assert.equal(part.metadata?.[KEY], undefined)
-  const newerSummary = { ...operation("compact", select(projected, 0, 1)), summary: "Mixed old/new operation chain" }
-  assert.equal(project(raw, append(policy, newerSummary))[0].kind, "compact")
-  const broken = structuredClone(policy)
-  broken.operations[1].beforeHash = "incorrect-source-fingerprint"
-  assert.throws(() => project(raw, broken), /content changed/)
-  const changedRaw = structuredClone(raw)
-  const changedTool = changedRaw[1].parts[0]
-  assert.ok(changedTool.type === "tool")
-  changedTool.state.input = { changed: "must not bypass source checks" }
-  assert.throws(() => project(changedRaw, policy), /content changed/)
-})
-
-test("summary blocks merge with summaries/turns and legacy saved cursors replay the exact view", () => {
+test("summary blocks merge with summaries and turns without mutating the prior policy", () => {
   const raw = messages()
   const first = { ...operation("compact", select(turns(raw), 0, 0)), summary: "Learned fact A." }
   let state = append(emptyPolicy("ses_test"), first)
@@ -152,9 +113,9 @@ test("summary blocks merge with summaries/turns and legacy saved cursors replay 
   assert.equal(effective.length, 1)
   assert.equal(effective[0].kind, "compact")
   assert.equal(effective[0].sourceIDs.length, 6)
-  assert.deepEqual(project(raw, legacyCursor(state, -1)), before)
-  assert.deepEqual(project(raw, legacyCursor(legacyCursor(state, -1), 1)), effective)
-  assert.ok(!blockMessages(effective).some((m) => m.info.role === "assistant" && m.info.summary))
+  assert.equal(before.length, 3)
+  assert.equal(before[0].summaryID, first.id)
+  assert.equal(before[1].summaryID, second.id)
 })
 
 test("stale ranges fail; forked metadata does not apply; unfinished turns remain selectable", () => {
@@ -163,26 +124,17 @@ test("stale ranges fail; forked metadata does not apply; unfinished turns remain
   raw[0].parts = []
   assert.throws(() => project(raw, state), /content changed/)
   const fork = { ...session("ses_fork"), metadata: { [KEY]: state } }
-  assert.equal(readPolicy(fork).cursor, 0)
+  assert.throws(() => readPolicy(fork), /another session/)
   const original = messages()
   original.pop()
   assert.equal(select(turns(original), 2, 2)[0].closed, false)
-})
-
-test("native pruned results are represented by placeholders, not resurrected", () => {
-  const raw = messages()
-  const p = raw[1].parts[0]
-  assert.ok(p.type === "tool" && p.state.status === "completed")
-  p.state.time.compacted = 100
-  assert.ok(serialize(nativeActive(raw)).includes("Old tool result content cleared"))
-  assert.ok(p.state.output.includes("HEAD"))
 })
 
 test("pruning covers skill text and interrupted tool output without touching inputs or attachments", () => {
   const raw = messages()
   const error = raw[1].parts[0]
   assert.ok(error.type === "tool")
-  error.state = { status: "error", input: { large: "retain".repeat(4000) }, error: "Interrupted", metadata: { interrupted: true, output: "INT_23 ".repeat(2000) }, time: { start: 1, end: 2 } }
+  error.state = { status: "error", input: { large: "retain".repeat(4000) }, error: "Interrupted\n\n" + "INT_23 ".repeat(2000), metadata: { interrupted: true } }
   const skill = raw[3].parts[0]
   assert.ok(skill.type === "tool" && skill.state.status === "completed")
   skill.state.attachments = [{ type: "file", id: "file", sessionID: "ses_test", messageID: "msg_1_a", mime: "image/png", url: "data:image/png;base64,AA==" }]
@@ -191,8 +143,8 @@ test("pruning covers skill text and interrupted tool output without touching inp
   const nextError = projected[1].parts[0]
   assert.ok(nextError.type === "tool" && nextError.state.status === "error")
   assert.deepEqual(nextError.state.input, error.state.input)
-  assert.equal(nextError.state.error, "Interrupted")
-  assert.ok(String(nextError.state.metadata?.output).includes("middle omitted"))
+  assert.ok(nextError.state.error.startsWith("Interrupted"))
+  assert.ok(nextError.state.error.includes("middle omitted"))
   const nextSkill = projected[3].parts[0]
   assert.ok(nextSkill.type === "tool" && nextSkill.state.status === "completed")
   assert.ok(nextSkill.state.output.includes("middle omitted"))
@@ -234,7 +186,7 @@ test("distribution is disjoint; missing capture is explicit; export preserves ef
   assert.equal(counts.counts.advertisedSkills, chars("<available_skills>xyz</available_skills>"))
   assert.ok(counts.counts.loadedSkills > 10000)
   assert.equal(counts.total, Object.values(counts.counts).reduce((a, b) => a + b, 0))
-  const dump = snapshot("ses_test", "1.18.32", blocks, emptyPolicy("ses_test"))
+  const dump = snapshot("ses_test", "2.0.26", blocks, emptyPolicy("ses_test"))
   assert.equal(dump.runtime, null)
   assert.ok(dump.warnings.some((w) => w.includes("unavailable")))
   assert.equal(dump.historyHash, historyHash(blockMessages(blocks)))

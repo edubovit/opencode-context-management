@@ -2,7 +2,7 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 import { Message } from "@opencode/ai"
 import type { SessionMessageInfo } from "@opencode/client"
-import { budgetScope, budgetUnits, estimateBudget, localTokens, prepareBudget, recordRequest, budgetStateSchema, type BudgetIdentity, type BudgetState } from "../src/v2/budget.ts"
+import { budgetScope, budgetUnits, estimateBudget, localTokens, prepareBudget, recordRequest, budgetStateSchema, type BudgetIdentity, type BudgetState } from "../src/budget.ts"
 import { FALLBACK_BASIS } from "../src/tokens.ts"
 import { settings } from "../src/config.ts"
 

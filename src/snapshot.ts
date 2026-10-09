@@ -9,7 +9,7 @@ export function snapshot(sessionID: string, hostVersion: string, blocks: Block[]
   tokenizer: TokenBasis = FALLBACK_BASIS, usage?: ReturnType<typeof lastReportedUsage>) {
   const messages = blockMessages(blocks)
   return {
-    schemaVersion: 3, pluginVersion: VERSION, hostVersion, sessionID, created: new Date().toISOString(),
+    schemaVersion: 4, pluginVersion: VERSION, hostVersion, sessionID, created: new Date().toISOString(),
     kind: "current-effective-context", stage: "effective normalized transcript, not canonical hook messages or a provider request",
     historyHash: historyHash(messages), policy, runtime: runtime ?? null, tokenizer, lastReportedUsage: usage ?? null,
     warnings: [

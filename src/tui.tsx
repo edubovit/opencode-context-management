@@ -1,11 +1,11 @@
 /** @jsxImportSource @opentui/solid */
 import { Plugin } from "@opencode/plugin/tui"
-import { inspectorUI, type InspectorUI } from "./ui.ts"
+import { inputBlocked, type InspectorUI } from "./ui.ts"
 import type { Model } from "./model.ts"
 import { createMemo, createSignal, onCleanup, onMount, Show } from "solid-js"
 import { useKeyboard, useTerminalDimensions } from "@opentui/solid"
 import { Controller, type Loaded, type ModelChoice, type MultiRestorePreview } from "./controller.ts"
-import { blockMessages, nativeActive, serialize, type Block, type RestoreMode } from "./context.ts"
+import { blockMessages, activeMessages, serialize, type Block, type RestoreMode } from "./context.ts"
 import { SummaryBatch } from "./batch.ts"
 import { SummaryEditor } from "./summary-editor.ts"
 import { SummaryReader } from "./summary-reader.tsx"
@@ -58,10 +58,10 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
   const basis = () => loaded()?.tokenizer ?? FALLBACK_BASIS
   const rule = () => loaded()?.pruneRule ?? bindPruneRule(props.controller.config.prune, basis())
   const size = (value: number) => unit() === "tokens" ? `≈${value.toLocaleString()} tokens` : `${value.toLocaleString()} chars`
-  const popMode = api.mode.push("context-manager")
-  onCleanup(() => { popMode(); void Promise.all([summaries.dispose(), props.controller.dispose()]).catch((error) => api.ui.toast({ message: String(error), variant: "warning" })) })
+  const popMode = api.keymap.mode.push("context-manager")
+  onCleanup(() => { popMode(); void Promise.all([summaries.dispose(), props.controller.dispose()]).catch((error) => api.ui.toast.show({ message: String(error), variant: "warning" })) })
   const blocks = () => loaded()?.blocks ?? []
-  const sourceTurns = createMemo(() => turnIndex(nativeActive(loaded()?.raw ?? [], loaded()?.session.revert)))
+  const sourceTurns = createMemo(() => turnIndex(activeMessages(loaded()?.raw ?? [], loaded()?.session.revert)))
   const ranges = () => visibleRanges(selection(), cursor())
   const inspected = () => selectedBlocks(blocks(), ranges())
   const selectedIDs = () => rangeIDs(blocks(), selection())
@@ -98,7 +98,7 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
         if (!alive) return
         const previous = auto().pause
         setAuto(next)
-        if (previous && !next.pause) { api.route.navigate("session", { sessionID: props.sessionID }); return }
+        if (previous && !next.pause) { api.ui.router.navigate({ type: "session", sessionID: props.sessionID }); return }
         if (previous?.phase === "auto" && next.pause?.phase === "manual") await refresh()
       } catch (error) { if (alive) setNotice(`Context control unavailable: ${error instanceof Error ? error.message : String(error)}`) }
       finally { checking = false }
@@ -111,7 +111,7 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
     if (!control || !pause) throw new Error("There is no live suspended run")
     const next = await control.command(props.sessionID, { action, pauseID: pause.id, ...(action === "run" ? { model: choice() } : {}) })
     setAuto(next)
-    if (action !== "run") { setExitDialog(false); api.route.navigate("session", { sessionID: props.sessionID }) }
+    if (action !== "run") { setExitDialog(false); api.ui.router.navigate({ type: "session", sessionID: props.sessionID }) }
   }
   const openStrategy = () => {
     if (!props.controller.host.auto) { setNotice("Context controls unavailable; reload the plugin and reconnect"); return }
@@ -192,7 +192,7 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
     }))
     if (!current) return []
     const model = models().find((m) => m.providerID === current.providerID && m.id === current.modelID)
-    const variants = Object.entries(model?.variants ?? {}).filter(([name, options]) => name !== "default" && options.disabled !== true).map(([name]) => name)
+    const variants = (model?.variants ?? []).map((variant) => variant.id).filter((id) => id !== "default")
     return ["default", ...variants].map((variant) => ({
       name: variant === "default" ? "Default" : variant,
       description: variant === "default" ? "Provider/model default; no forced effort override" : "Model-supported reasoning / configuration variant",
@@ -216,7 +216,7 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
     setPicker(undefined)
   }
   useKeyboard((key) => {
-    if (key.defaultPrevented || api.ui?.dialog?.open) return
+    if (key.defaultPrevented || inputBlocked(api)) return
     if (exitDialog()) {
       key.preventDefault()
       if (busy()) return
@@ -272,7 +272,7 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
       }
       if (selection().anchor !== undefined) { setSelection({ ranges: selection().ranges }); return }
       if (auto().pause) { setExitDialog(true); return }
-      api.route.navigate("session", { sessionID: props.sessionID })
+      api.ui.router.navigate({ type: "session", sessionID: props.sessionID })
       return
     }
     if (runningBatch()) {
@@ -361,11 +361,11 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
   return <box width="100%" height="100%" flexDirection="column" overflow="hidden">
     <Show when={reader()} keyed fallback={
       <box width="100%" height="100%" flexDirection="column" padding={1} overflow="hidden">
-        <text height={1} wrapMode="none" truncate fg={api.theme.current.primary}>Context manager · {props.sessionID} · revision {loaded()?.policy.revision ?? "?"}{busy() ? " · WORKING" : ""}</text>
+        <text height={1} wrapMode="none" truncate fg={api.theme.text.base}>Context manager · {props.sessionID} · revision {loaded()?.policy.revision ?? "?"}{busy() ? " · WORKING" : ""}</text>
         <text height={1} wrapMode="none" truncate>{`Compaction model: ${choice() ? `${choice()!.providerID}/${choice()!.modelID}` : "not selected"} · Effort: ${choice()?.variant ?? "default"}`}</text>
         <text height={1} wrapMode="none" truncate>Context tokenizer: {tokenLabel(basis())}</text>
         <text height={1} flexShrink={0} wrapMode="none" truncate>{`Auto: ${auto().strategy} · headroom ${props.controller.config.autocompaction.headroom.toLocaleString()} · a strategy · g Run AUTO when paused`}</text>
-        <Show when={auto().pause}>{(pause) => <text height={2} flexShrink={0} overflow="hidden" fg={api.theme.current.primary}>{`PAUSED (${pause().phase}) ≈${pause().tokens.toLocaleString()} / ${pause().threshold.toLocaleString()} tokens · input limit ${pause().derived ? "derived" : "advertised"}\n${pause().message}`}</text>}</Show>
+        <Show when={auto().pause}>{(pause) => <text height={2} flexShrink={0} overflow="hidden" fg={api.theme.text.feedback.warning.base}>{`PAUSED (${pause().phase}) ≈${pause().tokens.toLocaleString()} / ${pause().threshold.toLocaleString()} tokens · input limit ${pause().derived ? "derived" : "advertised"}\n${pause().message}`}</text>}</Show>
         <text height={2} overflow="hidden">{notice()}</text>
         <Show when={help()} fallback={
           <box flexDirection="row" flexGrow={1} minHeight={0} gap={1} overflow="hidden">
@@ -373,14 +373,14 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
               <Show when={restoring()} keyed fallback={
                 <Show when={runningBatch()} fallback={
                   <Show when={configuring()} fallback={<RangeList api={api} rows={rows()} maxLines={props.controller.config.ui.maxLinesPerTurn} selectedIndex={cursor()} onChange={setCursor} focused={!busy() && !automatic() && !exitDialog() && !strategyPicker() && !picker() && pane() === "list"} />}>
-                    <CompactionMenu api={api} value={compaction()} index={compactionIndex()} toggle={(index) => { if (!picker() && !api.ui?.dialog?.open) setCompaction(toggleMode(compaction(), index)) }} />
+                    <CompactionMenu api={api} value={compaction()} index={compactionIndex()} toggle={(index) => { if (!picker() && !inputBlocked(api)) setCompaction(toggleMode(compaction(), index)) }} />
                   </Show>
                 }>
-                  <text height={1} fg={api.theme.current.primary}>Batch progress — automatic acceptance</text>
+                  <text height={1} fg={api.theme.text.base}>Batch progress — automatic acceptance</text>
                   <scrollbox flexGrow={1} minHeight={0} focused={!busy() && !picker()}><text>{batchStatus()}</text></scrollbox>
                 </Show>
               }>{(preview) => <>
-                <text height={2} fg={api.theme.current.primary}>Restore preview — {preview.operations.map((op) => operationLabel(op, sourceTurns())).join("; ")}</text>
+                <text height={2} fg={api.theme.text.base}>Restore preview — {preview.operations.map((op) => operationLabel(op, sourceTurns())).join("; ")}</text>
                 <text height={2}>{`Expand ${preview.summaries} summaries by one layer.`}{` Context delta: ${signed(preview.afterTokens - preview.beforeTokens)} tokens`}</text>
                 <scrollbox flexGrow={1} minHeight={0} focused={!busy()}><text selectable>{limited(`BEFORE\n\n${serialize(blockMessages(preview.before))}\n\nAFTER\n\n${serialize(blockMessages(preview.after))}`)}</text></scrollbox>
               </>}</Show>
@@ -402,23 +402,23 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
       ? <SummaryReader api={api} editor={value.editor} choice={choice} modalOpen={() => !!picker()} pick={openPicker} close={closeSummary} />
       : <TurnReader api={api} block={value.block} label={value.label} close={() => setReader(undefined)} />}</Show>
     <Show when={picker()}>
-      <box position="absolute" top={2} left={0} width={reader() ? "85%" : "45%"} height="65%" border padding={1} backgroundColor={api.theme.current.background ?? "#101014"} overflow="hidden">
+      <box position="absolute" top={2} left={0} width={reader() ? "85%" : "45%"} height="65%" border padding={1} backgroundColor={api.theme.background.base} overflow="hidden">
         <text height={1} wrapMode="none" truncate>{picker() === "model" ? "Choose compaction model" : "Choose reasoning effort / variant"}</text>
         <input placeholder="Type to filter" onInput={(value) => { setQuery(value); setPickerIndex(0) }} focused />
         <select options={filteredOptions()} selectedIndex={pickerIndex()} onSelect={(index) => chooseOption(index)} flexGrow={1} minHeight={0} showScrollIndicator />
       </box>
     </Show>
     <Show when={strategyPicker()}>
-      <box id="cm-strategy-picker" position="absolute" top={2} left={0} width="85%" height={Math.min(6 + STRATEGIES.length * 2, Math.max(0, dimensions().height - 3))} border padding={1} backgroundColor={api.theme.current.background ?? "#101014"} overflow="hidden">
+      <box id="cm-strategy-picker" position="absolute" top={2} left={0} width="85%" height={Math.min(6 + STRATEGIES.length * 2, Math.max(0, dimensions().height - 3))} border padding={1} backgroundColor={api.theme.background.base} overflow="hidden">
         <text height={2} flexShrink={0} overflow="hidden">Autocompaction strategy — saved per session. Selection does not execute it.</text>
         <select id="cm-strategy-options" options={STRATEGIES.map((name) => ({ name, description: name === "MANUAL" ? "Top-level only; subagents use AUTO_PER_TURN" : name === "AUTO_PER_TURN" ? "Oldest USER, earlier prefix, then last resort" : "Earlier prefix, then last resort" }))} selectedIndex={strategyIndex()} flexGrow={1} minHeight={0} showScrollIndicator />
       </box>
     </Show>
     <Show when={exitDialog()}>
-      <box id="cm-pause-exit" position="absolute" top={2} left={0} width="95%" height={10} border padding={1} backgroundColor={api.theme.current.background ?? "#101014"} overflow="hidden">
+      <box id="cm-pause-exit" position="absolute" top={2} left={0} width="95%" height={10} border padding={1} backgroundColor={api.theme.background.base} overflow="hidden">
         <text height={2}>Leave the suspended session?</text>
         <text height={1} onMouseUp={() => setExitDialog(false)}>s / Esc — Stay in menu</text>
-        <text height={2} fg={canResume() ? api.theme.current.primary : api.theme.current.textMuted} onMouseUp={() => { if (canResume()) void run(() => autoCommand("resume")) }}>{canResume() ? "r — Resume and exit (continues the agent loop)" : "Resume blocked: context is above threshold or an AUTO job is running."}</text>
+        <text height={2} fg={api.theme.text.action.primary.state({ disabled: !canResume() })} onMouseUp={() => { if (canResume()) void run(() => autoCommand("resume")) }}>{canResume() ? "r — Resume and exit (continues the agent loop)" : "Resume blocked: context is above threshold or an AUTO job is running."}</text>
         <text height={1} onMouseUp={() => void run(() => autoCommand("abort"))}>a — Abort run and exit (does not resume)</text>
       </box>
     </Show>
@@ -440,7 +440,7 @@ function limited(text: string) {
 const plugin = Plugin.define({
   id: "context-manager",
   setup: (ctx) => {
-    const api = inspectorUI(ctx)
+    const api = ctx
     const remotes = new Set<ReturnType<typeof remoteHost>>()
     const unregister = ctx.ui.router.register({
       name: "context-manager",
@@ -452,7 +452,7 @@ const plugin = Plugin.define({
         let remote: ReturnType<typeof remoteHost> | undefined
         onCleanup(() => {
           closed = true
-          if (remote) { const current = remote; void current.close().catch((error) => api.ui.toast({ message: String(error), variant: "warning" })).finally(() => remotes.delete(current)) }
+          if (remote) { const current = remote; void current.close().catch((error) => api.ui.toast.show({ message: String(error), variant: "warning" })).finally(() => remotes.delete(current)) }
         })
         onMount(async () => {
           try {
@@ -464,7 +464,7 @@ const plugin = Plugin.define({
             if (!closed) setController(new Controller(remote.host, sessionID, settings(published.settings), remote.artifacts))
           } catch (e) { setError(e instanceof Error ? e.message : String(e)) }
         })
-        useKeyboard((key) => { if (!key.defaultPrevented && !api.ui.dialog.open && !controller() && key.name === "escape") api.route.navigate("session", { sessionID }) })
+        useKeyboard((key) => { if (!key.defaultPrevented && !inputBlocked(api) && !controller() && key.name === "escape") api.ui.router.navigate({ type: "session", sessionID }) })
         return <Show when={controller()} keyed fallback={<text>{error() || "Loading context manager…"} · Esc back</text>}>
           {(value) => <Inspector api={api} sessionID={sessionID} controller={value} />}
         </Show>
@@ -473,14 +473,13 @@ const plugin = Plugin.define({
     ctx.keymap.layer(() => ({ mode: "global", commands: [{
       id: "context-manager.open", title: "Context manager", group: "Session", palette: true, slash: { name: "context-manager" },
       run: () => {
-        const current = api.route.current
-        const sessionID = "params" in current ? current.params?.sessionID : undefined
-        if (current.name !== "session" || typeof sessionID !== "string") {
-          api.ui.toast({ message: "Open a session first", variant: "warning" })
+        const current = api.ui.router.current()
+        if (current.type !== "session") {
+          api.ui.toast.show({ message: "Open a session first", variant: "warning" })
           return
         }
         api.ui.dialog.clear()
-        api.route.navigate("context-manager", { sessionID })
+        api.ui.router.navigate({ type: "plugin", name: "context-manager", data: { sessionID: current.sessionID } })
       },
     }] }))
     const unsubscribe = watchSuspensions(api, async (id) => remoteHost(ctx.client, id).host.auto)
@@ -490,7 +489,8 @@ const plugin = Plugin.define({
 
 export function watchSuspensions(api: InspectorUI, control: (sessionID: string) => Promise<AutoControl | undefined>) {
     const seen = new Map<string, string>()
-    return api.event.on((info) => {
+    return api.data.on("session.metadata.updated", (event) => {
+      const info = { id: event.data.sessionID, metadata: event.data.metadata }
       const notice = (info.metadata?.[AUTO_KEY] as AutoState | undefined)?.pause
       if (!notice) { seen.delete(info.id); return }
       if (!["manual", "invalid"].includes(notice.phase) || seen.get(info.id) === notice.id) return
@@ -499,10 +499,10 @@ export function watchSuspensions(api: InspectorUI, control: (sessionID: string) 
         if (state?.pause?.id !== notice.id || !["manual", "invalid"].includes(state.pause.phase)) return
         if (seen.get(info.id) === notice.id) return
         seen.set(info.id, notice.id)
-        const current = api.route.current
-        if (current.name === "session" && "params" in current && current.params?.sessionID === info.id && !api.ui.dialog.open)
-          api.route.navigate("context-manager", { sessionID: info.id })
-        else if (current.name !== "context-manager") api.ui.toast({ message: `Session paused for context reduction: ${info.id}. Open /context-manager in that session.`, variant: "warning" })
+        const current = api.ui.router.current()
+        if (current.type === "session" && current.sessionID === info.id && !inputBlocked(api))
+          api.ui.router.navigate({ type: "plugin", name: "context-manager", data: { sessionID: info.id } })
+        else if (current.type !== "plugin" || current.name !== "context-manager") api.ui.toast.show({ message: `Session paused for context reduction: ${info.id}. Open /context-manager in that session.`, variant: "warning" })
       })().catch(() => {})
     })
 }

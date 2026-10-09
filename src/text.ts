@@ -2,11 +2,9 @@ import type { Settings } from "./config.ts"
 import type { ToolPart } from "./model.ts"
 import { TOKENIZER_ID, tokenCount, tokenEdges, type Encoding, type TokenBasis } from "./tokens.ts"
 
-export type LegacyPruneRule = { threshold: number; head: number; tail: number; unit?: undefined }
-export type TokenPruneRule = { threshold: number; head: number; tail: number; unit: "tokens"; encoding: Encoding; library: typeof TOKENIZER_ID }
-export type PruneRule = LegacyPruneRule | TokenPruneRule
+export type PruneRule = { threshold: number; head: number; tail: number; unit: "tokens"; encoding: Encoding; library: typeof TOKENIZER_ID }
 
-export function bindPruneRule(rule: Settings["prune"], basis: TokenBasis): TokenPruneRule {
+export function bindPruneRule(rule: Settings["prune"], basis: TokenBasis): PruneRule {
   return { ...rule, unit: "tokens", encoding: basis.encoding, library: basis.library }
 }
 
@@ -15,38 +13,23 @@ export function chars(value: string) {
 }
 
 export function pruneText(value: string, rule: PruneRule, outputPath?: string) {
-  if (rule.unit === "tokens") {
-    if (rule.library !== TOKENIZER_ID) throw new Error("Saved tokenizer version is unavailable")
-    const original = tokenCount(value, rule.encoding)
-    if (original <= rule.threshold) return value
-    const ends = tokenEdges(value, rule.head, rule.tail, rule.encoding)
-    if (!ends.separated) return value
-    const result = [
-      ends.head,
-      `[Context manager: middle omitted from tool output; original ${original} tokens (${rule.encoding}).]`,
-      ends.tail,
-      outputPath ? `[Full output: ${outputPath}]` : "",
-    ].filter(Boolean).join("\n\n")
-    return tokenCount(result, rule.encoding) < original ? result : value
-  }
-  const points = Array.from(value)
-  if (points.length <= rule.threshold) return value
-  const omitted = points.length - rule.head - rule.tail
-  return [
-    points.slice(0, rule.head).join(""),
-    `[Context manager: ${omitted} characters omitted from tool output.]`,
-    rule.tail ? points.slice(-rule.tail).join("") : "",
+  if (rule.unit !== "tokens" || rule.library !== TOKENIZER_ID) throw new Error("Saved token pruning rule is unsupported")
+  const original = tokenCount(value, rule.encoding)
+  if (original <= rule.threshold) return value
+  const ends = tokenEdges(value, rule.head, rule.tail, rule.encoding)
+  if (!ends.separated) return value
+  const result = [
+    ends.head,
+    `[Context manager: middle omitted from tool output; original ${original} tokens (${rule.encoding}).]`,
+    ends.tail,
     outputPath ? `[Full output: ${outputPath}]` : "",
   ].filter(Boolean).join("\n\n")
+  return tokenCount(result, rule.encoding) < original ? result : value
 }
 
 export function toolText(part: ToolPart) {
   if (part.state.status === "completed") return part.state.output
-  if (part.state.status === "error") {
-    if (part.nativeVersion === 2) return part.state.error
-    const metadata = part.state.metadata
-    return metadata?.interrupted === true && typeof metadata.output === "string" ? metadata.output : part.state.error
-  }
+  if (part.state.status === "error") return part.state.error
   return `[${part.state.status}]`
 }
 

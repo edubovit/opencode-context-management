@@ -6,7 +6,7 @@ import path from "node:path"
 import { Controller } from "../src/controller.ts"
 import { SummaryEditor } from "../src/summary-editor.ts"
 import { Storage } from "../src/storage.ts"
-import { KEY, settings } from "../src/config.ts"
+import { settings } from "../src/config.ts"
 import { project, readPolicy } from "../src/context.ts"
 import { fixtureHost, messages } from "./fixtures.ts"
 
@@ -42,7 +42,7 @@ test("summary edits start fresh with only applied summary, continue for review, 
   await editor.request("One more change", choice)
   assert.notEqual(data.calls.at(-1)!.sessionID, first.sessionID)
   assert.match(data.calls.at(-1)!.text, /SECOND_EDIT/)
-  assert.equal(readPolicy(data.session).cursor, 2)
+  assert.equal(readPolicy(data.session).operations.length, 2)
 })
 
 test("summary revision operations survive dependent compaction and expansion without rewriting originals", async (t) => {
@@ -51,7 +51,7 @@ test("summary revision operations survive dependent compaction and expansion wit
   const originalOp = structuredClone(readPolicy(data.session).operations[0])
   await editor.apply("MANUAL_EDIT")
   assert.deepEqual(readPolicy(data.session).operations[0], originalOp)
-  assert.equal(readPolicy(data.session).version, 7)
+  assert.equal(readPolicy(data.session).version, 9)
   assert.equal((await controller.load()).blocks[0].summaryID, id)
   assert.equal((await controller.summary(id)).text, "MANUAL_EDIT")
   const all = (await controller.load()).blocks.slice(0, 2).flatMap((block) => block.sourceIDs)
@@ -66,9 +66,8 @@ test("summary revision operations survive dependent compaction and expansion wit
   assert.deepEqual(data.messages, original)
 })
 
-test("legacy summaries can be read and edited after new main messages, while stale/busy edits fail", async (t) => {
+test("saved summaries can be read and edited after new main messages, while stale/busy edits fail", async (t) => {
   const { data, controller, id, choice } = await setup(t)
-  data.session.metadata![KEY] = { ...readPolicy(data.session), version: 3 }
   data.messages.push(...messages(data.session.id, 4).slice(6))
   const editor = new SummaryEditor(controller, await controller.summary(id))
   t.after(() => editor.dispose())
@@ -78,7 +77,7 @@ test("legacy summaries can be read and edited after new main messages, while sta
   data.idle = true
   data.messages[0].parts = []
   await assert.rejects(editor.apply(), /changed/)
-  assert.equal(readPolicy(data.session).cursor, 1)
+  assert.equal(readPolicy(data.session).operations.length, 1)
 })
 
 test("failed edits keep the last proposed result; closing discards it without changing context", async (t) => {
@@ -113,11 +112,10 @@ test("closing a pending summary edit discards late output and deletes only its h
   assert.equal(data.aborted.length, 1)
 })
 
-test("summary revisions require policy v4 and an exact visible summary target", async (t) => {
+test("summary revisions require an exact visible summary target", async (t) => {
   const { data, editor } = await setup(t)
   await editor.apply("Updated text")
   const policy = structuredClone(readPolicy(data.session))
-  assert.throws(() => readPolicy({ ...data.session, metadata: { [KEY]: { ...policy, version: 3 } } }), /summary revision/)
   policy.operations.at(-1)!.targetID = "wrong-summary"
   assert.throws(() => project(data.messages, policy), /revision target/)
 })

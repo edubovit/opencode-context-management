@@ -3,10 +3,10 @@ import type { SessionInfo } from "@opencode/client"
 import { AGENT, EDIT_AGENT, KEY } from "./config.ts"
 import { AUTO_KEY, strategy } from "./auto-state.ts"
 import type { Host } from "./controller.ts"
-import { Activity } from "./v2/activity.ts"
-import { modelView, sessionView, transcriptView } from "./v2/normalize.ts"
+import { Activity } from "./activity.ts"
+import { modelView, sessionView, transcriptView } from "./normalize.ts"
 import { emptyPolicy, readPolicy } from "./context.ts"
-import { validateNativePolicy } from "./v2/projection.ts"
+import { validateNativePolicy } from "./projection.ts"
 
 export type PluginContext = Parameters<Plugin.Plugin["setup"]>[0]
 
@@ -59,7 +59,6 @@ export function pluginHost(ctx: PluginContext) {
       const session = await nativeSession(id)
       const native = await ctx.session.context({ sessionID: id })
       const policy = readPolicy({ ...sessionView(session), metadata })
-      if (policy.operations.some((op) => op.mode === "tool-prune" && op.rule?.unit !== "tokens")) throw new Error("V2 pruning requires a pinned token rule")
       validateNativePolicy(native, transcriptView(session, native), policy)
       await ctx.session.update({ sessionID: id, metadata: JSON.parse(JSON.stringify(metadata)) })
     },

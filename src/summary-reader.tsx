@@ -1,5 +1,5 @@
 /** @jsxImportSource @opentui/solid */
-import type { InspectorUI } from "./ui.ts"
+import { inputBlocked, type InspectorUI } from "./ui.ts"
 import type { ScrollBoxRenderable, TextareaRenderable } from "@opentui/core"
 import { createSignal, onCleanup, Show } from "solid-js"
 import { useKeyboard } from "@opentui/solid"
@@ -23,7 +23,7 @@ export function SummaryReader(props: {
   let scroll: ScrollBoxRenderable | undefined
   let textarea: TextareaRenderable | undefined
   let request: TextareaRenderable | undefined
-  onCleanup(() => { void props.editor.dispose().catch((error) => props.api.ui.toast({ message: String(error), variant: "warning" })) })
+  onCleanup(() => { void props.editor.dispose().catch((error) => props.api.ui.toast.show({ message: String(error), variant: "warning" })) })
   const run = async (task: () => Promise<void>) => {
     if (busy()) return
     setBusy(true)
@@ -38,7 +38,7 @@ export function SummaryReader(props: {
     setNotice(warning ?? "Summary updated. The editing dialogue was disposed. Saved changes have no Undo.")
   }
   useKeyboard((key) => {
-    if (key.defaultPrevented || props.api.ui?.dialog?.open || props.modalOpen()) return
+    if (key.defaultPrevented || inputBlocked(props.api) || props.modalOpen()) return
     if (help()) { if (key.name === "escape" || key.name === "?") { key.preventDefault(); setHelp(false) }; return }
     if (key.name === "escape") {
       key.preventDefault()
@@ -101,10 +101,10 @@ export function SummaryReader(props: {
       [...(props.editor.draft === undefined ? [] : [{ key: "Ctrl+S", label: "apply proposed edit" }]), { key: "m", label: "model" }, { key: "t", label: "effort" }, { key: "Esc", label: "discard edits and return" }],
     ]
   return <box width="100%" height="100%" flexDirection="column" overflow="hidden" padding={1}>
-    <text height={1} wrapMode="none" truncate fg={props.api.theme.current.primary}>Summary reader · SUMMARY · {mode() === "read" ? "READ-ONLY" : mode().toUpperCase()}{busy() ? " · WORKING" : ""}</text>
+    <text height={1} wrapMode="none" truncate fg={props.api.theme.text.base}>Summary reader · SUMMARY · {mode() === "read" ? "READ-ONLY" : mode().toUpperCase()}{busy() ? " · WORKING" : ""}</text>
     <text height={1} wrapMode="none" truncate>{`≈${tokenCount(text(), props.editor.view.tokenizer.encoding)} tokens · ${props.editor.draft === undefined ? "Applied summary" : "Proposed edit (not applied)"} · ${props.choice()?.providerID}/${props.choice()?.modelID} · ${props.choice()?.variant ?? "default"}`}</text>
     <text height={2} width="100%" overflow="hidden">{notice()}</text>
-    <box id="cm-summary-header-rule" width="100%" height={1} flexShrink={0} border={["top"]} borderStyle="single" borderColor={props.api.theme.current.textMuted ?? "#8daecc"} />
+    <box id="cm-summary-header-rule" width="100%" height={1} flexShrink={0} border={["top"]} borderStyle="single" borderColor={props.api.theme.border.base} />
     <Show when={help()} fallback={
       <Show when={mode() === "edit"} fallback={
         <scrollbox id="cm-summary-scroll" flexGrow={1} minHeight={0} ref={(value) => { scroll = value }} focused={!busy() && !props.modalOpen() && mode() === "read"}>
@@ -117,10 +117,10 @@ export function SummaryReader(props: {
       <scrollbox flexGrow={1} minHeight={0} focused={!props.modalOpen()}><text>{`SUMMARY READER\n\nArrows: scroll 10 lines. PageUp/PageDown: one viewport. Home/End: start/end.\n\ne: enter manual editing; Ctrl+S saves, Esc cancels.\nr: ask a model to revise the current summary. The first request contains only the applied summary and your instructions, not original conversation context.\nSubsequent requests use the same edit dialogue and proposed summary. Ctrl+S applies the proposed edit. Applying or leaving the reader deletes that dialogue.\n\nm/t: choose next editing model/effort.\nEsc in the reader discards proposed edits and returns to ranges.\nSaved changes have no Undo. Summary expansion restores the pre-summary context, including earlier pruning.`}</text></scrollbox>
     </Show>
     <Show when={!help() && mode() === "request"}>
-      <text height={1} fg={props.api.theme.current.primary}>Requested summary changes:</text>
+      <text height={1} fg={props.api.theme.text.formfield.base}>Requested summary changes:</text>
       <textarea id="cm-summary-request" height={4} flexShrink={0} initialValue={instruction()} ref={(value) => { request = value }} onContentChange={() => { if (request) setInstruction(request.plainText) }} focused={!busy() && !props.modalOpen()} />
     </Show>
-    <box id="cm-summary-footer-rule" width="100%" height={1} flexShrink={0} border={["top"]} borderStyle="single" borderColor={props.api.theme.current.textMuted ?? "#8daecc"} />
+    <box id="cm-summary-footer-rule" width="100%" height={1} flexShrink={0} border={["top"]} borderStyle="single" borderColor={props.api.theme.border.base} />
     <Hotkeys api={props.api} lines={hints()} />
   </box>
 }

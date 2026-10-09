@@ -8,6 +8,7 @@ import { testRender } from "@opentui/solid"
 import { KeyCodes } from "@opentui/core/testing"
 import { RGBA, type ScrollBoxRenderable, type SelectRenderable, type TextRenderable } from "@opentui/core"
 import type { InspectorUI } from "../src/ui.ts"
+import { themeFixture } from "./theme-fixture.ts"
 import { Inspector, watchSuspensions } from "../src/tui.tsx"
 import { Controller } from "../src/controller.ts"
 import { Storage } from "../src/storage.ts"
@@ -25,9 +26,11 @@ async function setup(t: { after(fn: () => Promise<void>): void }, width = 140, h
   const { data, host } = fixture
   const controller = new Controller(host, data.session.id, settings(options), new Storage(dir, dir))
   const navigations: string[] = []
+  let inputMode = "context-manager"
   const api = {
-    app: { version: "2.0.24" }, mode: { push: () => () => {} }, route: { navigate: (name: string) => { navigations.push(name) } },
-    theme: { current: { primary: "#aaccff", textMuted: "#8899aa" } }, ui: { toast: () => {} },
+    app: { version: "2.0.26" }, keymap: { mode: { current: () => inputMode, push: () => () => {} } },
+    theme: themeFixture(),
+    ui: { toast: { show: () => {} }, router: { navigate: (route: { type: string }) => { navigations.push(route.type) } } },
   } as unknown as InspectorUI
   const screen = await testRender(() => <Inspector api={api} controller={controller} sessionID={data.session.id} />, { width, height })
   t.after(async () => { screen.renderer.destroy(); await controller.dispose(); await rm(dir, { recursive: true, force: true }) })
@@ -51,8 +54,28 @@ async function setup(t: { after(fn: () => Promise<void>): void }, width = 140, h
     if (!modes.options[index].name.startsWith("[+]")) await screen.mockInput.typeText(" ")
     key("return")
   }
-  return { ...fixture, controller, screen, frame, until, navigations, compact, type: screen.mockInput.typeText, key, esc: screen.mockInput.pressEscape }
+  return { ...fixture, controller, screen, frame, until, navigations, compact, setInputMode: (mode: string) => { inputMode = mode }, type: screen.mockInput.typeText, key, esc: screen.mockInput.pressEscape }
 }
+
+test("native modal input ownership blocks inspector actions and resumes cleanly", async (t) => {
+  const view = await setup(t, 80, 24)
+  await view.until(() => view.frame().includes("Ready."))
+  await view.type(" ")
+  await view.type(" ")
+  view.setInputMode("native-dialog")
+  await view.type("c")
+  await view.type("a")
+  view.esc()
+  await new Promise((resolve) => setTimeout(resolve, 100))
+  await view.screen.renderOnce()
+  assert.equal(view.screen.renderer.root.findDescendantById("cm-compaction-config"), undefined)
+  assert.equal(view.screen.renderer.root.findDescendantById("cm-strategy-picker"), undefined)
+  assert.deepEqual(view.navigations, [])
+  assert.equal(readPolicy(view.data.session).revision, 0)
+  view.setInputMode("context-manager")
+  await view.type("c")
+  await view.until(() => !!view.screen.renderer.root.findDescendantById("cm-compaction-config"))
+})
 
 test("Space ranges use configured pruning and compaction autoapplies without recovery shortcuts", async (t) => {
   const { data, frame, until, type, key, compact } = await setup(t)
@@ -64,14 +87,14 @@ test("Space ranges use configured pruning and compaction autoapplies without rec
   key(KeyCodes.ARROW_DOWN)
   await type(" ")
   await compact(1)
-  await until(() => readPolicy(data.session).cursor === 1 && frame().includes("Pruning applied"))
+  await until(() => readPolicy(data.session).operations.length === 1 && frame().includes("Pruning applied"))
   assert.equal(readPolicy(data.session).operations[0].sourceIDs.length, 4)
   await type("urpb")
   key("u", { ctrl: true })
-  assert.equal(readPolicy(data.session).cursor, 1)
+  assert.equal(readPolicy(data.session).operations.length, 1)
   await compact(4)
   await until(() => frame().includes("Summaries applied automatically"))
-  assert.equal(readPolicy(data.session).cursor, 2)
+  assert.equal(readPolicy(data.session).operations.length, 2)
   assert.equal(data.calls.length, 2)
   assert.match(data.calls[1].text, /too short/)
   assert.equal(data.removed.length, 1)
@@ -99,7 +122,7 @@ test("compaction configuration combines pruning, forces reasoning for deletion a
   await until(() => choices()[1].startsWith("[ ]") && choices()[2].startsWith("[+]"))
   key("return")
   await until(() => frame().includes("Pruning applied"))
-  assert.equal(readPolicy(data.session).cursor, 1)
+  assert.equal(readPolicy(data.session).operations.length, 1)
   assert.equal(data.jobs, 0)
   assert.equal((screen.renderer.root.findDescendantById("cm-range-stats-0") as TextRenderable).plainText, "pruned:1 · no reason")
   assert.match((screen.renderer.root.findDescendantById("cm-range-title-0") as TextRenderable).plainText, /USER/)
@@ -112,17 +135,17 @@ test("compaction configuration combines pruning, forces reasoning for deletion a
   await until(() => choices()[0].startsWith("[+]") && choices()[3].startsWith("[+]"))
   esc()
   await until(() => !frame().includes("Compaction configuration"))
-  assert.equal(readPolicy(data.session).cursor, 1, "Cancel must not run pruning")
+  assert.equal(readPolicy(data.session).operations.length, 1, "Cancel must not run pruning")
   await type("c")
   key("return")
-  await until(() => frame().includes("Pruning applied") && readPolicy(data.session).cursor === 2)
+  await until(() => frame().includes("Pruning applied") && readPolicy(data.session).operations.length === 2)
   assert.equal((screen.renderer.root.findDescendantById("cm-range-stats-0") as TextRenderable).plainText, "tools:0 · no tools · no reason")
   assert.deepEqual((await controller.load()).blocks[1].messages, data.messages.slice(2, 4))
 })
 
 test("configuration picker consumes model keys, keeps selection and fits a small terminal", async (t) => {
   const { data, screen, frame, until, type, key } = await setup(t, 80, 24, ({ data, host }) => {
-    host.models = async () => [data.model, { ...data.model, id: "other", providerID: "alternate", name: "Other", variants: { low: {} } }]
+    host.models = async () => [data.model, { ...data.model, id: "other", providerID: "alternate", name: "Other", variants: [{ id: "low" }] }]
   })
   await until(() => frame().includes("Ready."))
   await type("  c")
@@ -170,7 +193,7 @@ test("fullscreen summary is read-only until manual edit; save appends a revision
   await until(() => !frame().includes("Choose compaction model"))
   assert.ok(frame().includes("Summary reader"), "Closing a picker must not also close the reader")
   await type("xyz")
-  assert.equal(readPolicy(data.session).cursor, 1)
+  assert.equal(readPolicy(data.session).operations.length, 1)
   await type("e")
   await until(() => frame().includes("MANUAL EDIT"))
   await type("MANUAL_KEEP ")
@@ -178,18 +201,18 @@ test("fullscreen summary is read-only until manual edit; save appends a revision
   await until(() => frame().includes("Summary updated"))
   const id = readPolicy(data.session).operations[0].id
   assert.match((await controller.summary(id)).text, /MANUAL_KEEP/)
-  assert.equal(readPolicy(data.session).cursor, 2)
+  assert.equal(readPolicy(data.session).operations.length, 2)
   assert.equal(data.jobs, 1, "Manual editing must not call a model")
   esc()
   await until(() => frame().includes("Ready."))
   await type("u")
-  assert.equal(readPolicy(data.session).cursor, 2)
+  assert.equal(readPolicy(data.session).operations.length, 2)
   assert.match((await controller.summary(id)).text, /MANUAL_KEEP/)
 })
 
 test("model edits use fresh summary-only dialogue, review/revise before apply, then dispose", async (t) => {
   const { data, frame, until, type, key, esc, compact } = await setup(t, 150, 42, ({ data, host }) => {
-    host.models = async () => [data.model, { ...data.model, providerID: "alternate", id: "other", name: "Alternate", variants: { low: {} } }]
+    host.models = async () => [data.model, { ...data.model, providerID: "alternate", id: "other", name: "Alternate", variants: [{ id: "low" }] }]
     data.responses = ["APPLIED_ONLY", "FIRST_PROPOSAL", "SECOND_PROPOSAL"]
   })
   await until(() => frame().includes("Ready."))
@@ -211,7 +234,7 @@ test("model edits use fresh summary-only dialogue, review/revise before apply, t
   await type("Clarify the summary")
   key("s", { ctrl: true })
   await until(() => frame().includes("FIRST_PROPOSAL"))
-  assert.equal(readPolicy(data.session).cursor, 1)
+  assert.equal(readPolicy(data.session).operations.length, 1)
   assert.equal(data.jobs, 2)
   assert.deepEqual(data.calls[1].choice, { providerID: "alternate", modelID: "other", variant: "low" })
   assert.match(data.calls[1].text, /APPLIED_ONLY/)
@@ -224,7 +247,7 @@ test("model edits use fresh summary-only dialogue, review/revise before apply, t
   assert.equal(data.removed.length, 1)
   key("s", { ctrl: true })
   await until(() => frame().includes("Summary updated"))
-  assert.equal(readPolicy(data.session).cursor, 2)
+  assert.equal(readPolicy(data.session).operations.length, 2)
   assert.equal(data.removed.length, 2)
   esc()
   await until(() => frame().includes("Ready."))
@@ -277,7 +300,7 @@ test("reader separators frame scrolling content and keep footer reserved at narr
   const request = screen.renderer.root.findDescendantById("cm-summary-request")!
   assert.ok(request.y + request.height <= footerRule.y)
   assertRulesVisible()
-  assert.equal(readPolicy(data.session).cursor, 1)
+  assert.equal(readPolicy(data.session).operations.length, 1)
 })
 
 test("multi-range statistics stay visible and failed batches autoapply only after retry", async (t) => {
@@ -303,11 +326,11 @@ test("multi-range statistics stay visible and failed batches autoapply only afte
   assert.ok(frame().includes(`≈${distribution([blocks[0], blocks[2]]).total.toLocaleString()} tokens`))
   await compact(5)
   await until(() => frame().includes("Fixture range failed") && frame().includes("Batch incomplete"))
-  assert.equal(readPolicy(data.session).cursor, 0)
+  assert.equal(readPolicy(data.session).operations.length, 0)
   assert.ok(!frame().includes("APPLIED_ONLY"))
   await type("g")
   await until(() => frame().includes("Summaries applied automatically"))
-  assert.equal(readPolicy(data.session).cursor, 2)
+  assert.equal(readPolicy(data.session).operations.length, 2)
   assert.equal(data.jobs, 3)
   assert.equal(data.removed.length, 3)
   assert.deepEqual((await controller.load()).blocks[1].messages, data.messages.slice(2, 4))
@@ -328,7 +351,7 @@ test("range restore confirmation and contextual help do not overlap the content"
   assert.ok(frame().includes("Ctrl+S confirm restore"))
   assert.ok(frame().includes("WHOLE EFFECTIVE CONTEXT"))
   key("s", { ctrl: true })
-  await until(() => readPolicy(data.session).cursor === 2)
+  await until(() => readPolicy(data.session).operations.length === 2)
   const footer = screen.renderer.root.findDescendantById("cm-hotkeys")!
   assert.ok(footer.y + footer.height <= 32)
 })
@@ -341,13 +364,13 @@ test("failed projection reports source mismatch without advertising removed reco
   await until(() => frame().includes("Saved range content changed"))
   assert.ok(!frame().includes("Undo latest action"))
   await type("ur")
-  assert.equal(readPolicy(data.session).cursor, 1)
+  assert.equal(readPolicy(data.session).operations.length, 1)
 })
 
-test("hotkey keys use the theme primary color while labels, separators and notes stay muted", async () => {
+for (const mode of ["dark", "light"] as const) test(`${mode} hotkeys use semantic action colors while labels, separators and notes stay muted`, async () => {
   const primary = "#aaccff"
   const muted = "#8899aa"
-  const api = { theme: { current: { primary, textMuted: muted } } } as unknown as InspectorUI
+  const api = { theme: themeFixture(mode) } as InspectorUI
   const screen = await testRender(() => <Hotkeys api={api} lines={[
     [{ key: "c", label: "configure" }, { key: "Ctrl+E", label: "expand" }, "read-only note"],
   ]} />, { width: 80, height: 6 })
@@ -388,13 +411,13 @@ test("Enter on an ordinary turn opens user/final response fullscreen and preserv
   await type("epcrmu ")
   key("s", { ctrl: true })
   assert.equal(data.jobs, 0)
-  assert.equal(readPolicy(data.session).cursor, 0)
+  assert.equal(readPolicy(data.session).operations.length, 0)
   assert.deepEqual(data.messages, original)
   esc()
   await until(() => frame().includes("SELECTED RANGES (0 + open)"))
   await type(" ")
   await compact(1)
-  await until(() => readPolicy(data.session).cursor === 1 && frame().includes("Pruning applied"))
+  await until(() => readPolicy(data.session).operations.length === 1 && frame().includes("Pruning applied"))
   assert.deepEqual(readPolicy(data.session).operations[0].sourceIDs, original.slice(2).map((message) => message.info.id))
 })
 
@@ -515,7 +538,7 @@ test("content-sized list keeps wrapping previews clipped and distant cursor visi
   key(KeyCodes.ARROW_UP)
   await type(" ")
   await compact(1)
-  await until(() => readPolicy(data.session).cursor === 1 && frame().includes("Pruning applied"))
+  await until(() => readPolicy(data.session).operations.length === 1 && frame().includes("Pruning applied"))
   assert.deepEqual(readPolicy(data.session).operations[0].sourceIDs, data.messages.slice(-4).map((message) => message.info.id))
   assert.equal(data.jobs, 0)
 })
@@ -566,7 +589,7 @@ test("R labels identify closed/open ranges and unfinished endpoints remain selec
   data.idle = true
   await compact(5)
   await until(() => frame().includes("Summaries applied automatically"))
-  assert.equal(readPolicy(data.session).cursor, 2)
+  assert.equal(readPolicy(data.session).operations.length, 2)
 })
 
 function pausedControl() {
@@ -724,20 +747,20 @@ test("paused exit can abort instead of resuming above threshold", async (t) => {
 test("automatic inspector opening verifies a live gate and ignores stale metadata", async () => {
   const { state, control } = pausedControl()
   const opened: string[] = []
-  let handler: ((event: { id: string; metadata: Record<string, unknown> }) => void) | undefined
+  let handler: ((event: { data: { sessionID: string; metadata: Record<string, unknown> } }) => void) | undefined
   const api = {
-    event: { on: (fn: typeof handler) => { handler = fn; return () => { handler = undefined } } },
-    route: { current: { name: "session", params: { sessionID: "ses_test" } }, navigate: (name: string) => { opened.push(name) } },
-    ui: { dialog: { open: false }, toast: () => {} },
+    data: { on: (_type: string, fn: typeof handler) => { handler = fn; return () => { handler = undefined } } },
+    keymap: { mode: { current: () => "base" } },
+    ui: { router: { current: () => ({ type: "session", sessionID: "ses_test" }), navigate: (route: { name: string }) => { opened.push(route.name) } }, toast: { show: () => {} } },
   } as unknown as InspectorUI
   const off = watchSuspensions(api, async () => control)
   const metadata = { [AUTO_KEY]: structuredClone(state) }
   state.pause = undefined
-  handler!({ id: "ses_test", metadata })
+  handler!({ data: { sessionID: "ses_test", metadata } })
   await new Promise((resolve) => setTimeout(resolve, 10))
   assert.equal(opened.length, 0)
   state.pause = pausedControl().state.pause
-  handler!({ id: "ses_test", metadata })
+  handler!({ data: { sessionID: "ses_test", metadata } })
   await new Promise((resolve) => setTimeout(resolve, 10))
   assert.deepEqual(opened, ["context-manager"])
   off()

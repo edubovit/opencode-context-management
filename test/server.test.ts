@@ -77,7 +77,7 @@ test("V2 fresh spilling preserves structured output and attachments and owns the
   assert.equal(short.result.metadata.truncated, false)
 })
 
-for (const version of ["2.0.25", "2.1.0", "2.0.25-dev"]) {
+for (const version of ["2.0.24", "2.0.25", "2.0.26", "2.0.27", "2.1.0", "2.0.26-dev", "custom-build"]) {
   test(`V2 setup accepts compatible APIs with host version ${version}`, async (t) => {
     const mock = await setup(t, version)
     assert.ok(mock.agents.has(AGENT))

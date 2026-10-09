@@ -1,4 +1,4 @@
-import { blockMessages, replacementTokens, serialize, type Block, type Envelope, type Operation } from "./context.ts"
+import { replacementTokens, serialize, type Block, type Envelope, type Operation } from "./context.ts"
 import { contentTokens } from "./metrics.ts"
 import { FALLBACK_BASIS, tokenCount, type TokenBasis } from "./tokens.ts"
 
@@ -52,8 +52,8 @@ export async function generateSummary(op: Operation, all: Block[], selected: Blo
   if (!first) throw new Error("Summarizer returned an empty result")
   const initial = { ...op, summary: first }
   if (op.mode !== "compact") return { operation: initial, attempts: 1 }
-  const basis = op.tokenizer ?? FALLBACK_BASIS
-  const before = op.beforeTokens ?? contentTokens(blockMessages(selected), basis)
+  const basis = op.tokenizer
+  const before = op.beforeTokens
   const after = replacementTokens(initial, selected)
   if (after <= before / 2 && after >= before / 20)
     return { operation: initial, attempts: 1 }

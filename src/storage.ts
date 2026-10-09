@@ -3,7 +3,7 @@ import { homedir } from "node:os"
 import path from "node:path"
 import { randomUUID } from "node:crypto"
 import { hash } from "./context.ts"
-import { budgetStateSchema, type BudgetState, type BudgetReading } from "./v2/budget.ts"
+import { budgetStateSchema, type BudgetState, type BudgetReading } from "./budget.ts"
 
 export type RuntimeCapture = {
   time: number
