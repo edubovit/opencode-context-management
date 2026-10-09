@@ -11,7 +11,7 @@ import { OpenCode } from "@opencode/client"
 export type Wire = { model: string; messages: { role: string; content?: unknown; tool_calls?: unknown }[]; [key: string]: unknown }
 export type FakeUsage = { input: number; cached?: number; written?: number; output: number; reasoning?: number }
 export type RequestScope = { sessionID: string; parentID?: string }
-type Reply = string | { text: string; finish: "stop" | "length" } | { tool: { name: string; input: Record<string, unknown> } }
+type Reply = string | { text: string; finish: "stop" | "length" } | { tool: { name: string; input: Record<string, unknown> } } | { error: { status: number; message: string; code: string } }
 
 export async function fixture(executable = "opencode", destination?: string, options: { subagents?: boolean; keep?: number; plugin?: string } = {}) {
   const version = spawnSync(executable, ["--version"], { encoding: "utf8" })
@@ -48,6 +48,11 @@ export async function fixture(executable = "opencode", destination?: string, opt
     if (hold && lastText.includes("HOLD_FIXTURE")) await hold.promise
     if (res.destroyed) return
     const custom = respond(input, scope)
+    if (custom && typeof custom === "object" && "error" in custom) {
+      res.writeHead(custom.error.status, { "content-type": "application/json" })
+      res.end(JSON.stringify({ error: { message: custom.error.message, type: "invalid_request_error", code: custom.error.code } }))
+      return
+    }
     const selectedTool = typeof custom === "object" && "tool" in custom ? custom.tool : undefined
     const tool = selectedTool || (!summary && !editing && lastText.includes("EXERCISE_TOOL") && !input.messages.some((message) => message.role === "tool"))
     const text = (typeof custom === "object" ? "text" in custom ? custom.text : undefined : custom) ?? (editing ? (serialized.includes("EDIT_ONE") ? "EDIT_TWO: corrected saved summary" : "EDIT_ONE: clarified saved summary")

@@ -53,7 +53,7 @@ export class LastResort {
         this.check()
         const request = prompt(chunk)
         if (inputEstimate(request, basis) > capacity) throw new Error("Last-resort summary chunk exceeds helper capacity")
-        this.job = await this.host.createJob("summary", this.owner)
+        this.job = await this.host.createJob("summary", this.owner, "auto")
         try {
           this.check()
           const answer = (await this.host.generate(this.job, choice, request)).trim()

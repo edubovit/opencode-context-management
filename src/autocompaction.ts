@@ -70,7 +70,7 @@ export class Autocompaction implements AutoControl {
         return this.locked(id, () => this.write(id, metadata, expected, gate))
       },
     }
-    return new Controller(host, gate.sessionID, this.config, this.storage)
+    return new Controller(host, gate.sessionID, this.config, this.storage, "summary", "auto")
   }
 
   private async loaded(gate: Gate): Promise<Loaded> {

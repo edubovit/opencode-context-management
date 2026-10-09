@@ -69,6 +69,13 @@ This matrix is Windows validation with fake providers. It does not claim Linux/m
 
 These checks use synthetic providers and owned private servers. No shared-service restart or host-source modification is needed. Archive dependencies intentionally reproduce the older release; audit the current package separately rather than force-upgrading compatibility fixtures.
 
+### Version 4.1.1 validation
+
+- Typecheck, **224 unit/adapter tests** and **36 renderer tests** passed.
+- Extended provider-usage suite: **14 checks** on each of OpenCode **2.0.24, 2.0.25 and 2.0.26**. Manual batches exceed advertised helper capacity without a plugin veto; manual follow-ups ignore oversized usage forecasts; actual provider input rejection preserves history. Automatic helper follow-ups still fail before dispatch when their guard exceeds capacity.
+- Production server/Windows ConPTY smoke: **33 checks** on 2.0.26; subagents/automatic recovery: **11 checks**. All private hosts stopped cleanly. Synthetic providers only; no live-provider capacity guarantee.
+- Version/lockfile agreement and whitespace checks passed. No dependency, RPC-schema or ledger-format change.
+
 ## Architecture
 
 | Area | Files |
@@ -145,6 +152,7 @@ Native `session.context` exposes the active window, not arbitrary pre-checkpoint
 - Apply the complete successful batch in one checked write. Failed siblings block partial application; retry only unresolved jobs against the frozen source. Cancellation prevents late application, except a write already in flight is not promised to roll back.
 - Saved-summary editing starts a new deny-all helper containing only the applied summary and edit request. Further edits continue that dialogue; proposals require explicit apply. No original-range/background leakage and no size-review retry.
 - Helpers are tracked by server generation and parent session, with client-side cleanup tracking. Close/discard/apply/abort/reload removes owned helpers. Crash recovery of abandoned helpers is not implemented.
+- Helper budget policy follows the originating action, not the parent's strategy. Controllers default to manual; automatic controllers and last-resort jobs explicitly use `auto`. Inspector RPC creates manual jobs. The host adapter records the trigger only in its live owned-job map; metadata cannot grant a bypass. Manual summaries, retries/refinements and summary edits skip local input preflight and helper budget accounting, but still isolate system/tools, preserve host output caps and validate source/ownership/cancellation/completion. Automatic helpers and main-request pause/resume retain their guards. Do not weaken the global multiplier or silently omit background to make a manual request fit.
 
 ### Autocompaction and cancellation
 
@@ -200,7 +208,7 @@ Native RPC uses host authentication; the plugin creates no control credential fi
 
 `budget-<session-hash>.json` is a versioned accounting cache of scope/history/content hashes and counts. Its version 1 is unrelated to OpenCode V1 or ledger formats. It contains no prompt text or provider credentials. Do not delete accounting state to force a paused request through. The live gate uses its frozen estimator; missing files require conservative bootstrap on subsequent requests.
 
-`script/usage-smoke.ts` emits deliberately mismatched OpenAI-style SSE usage. It verifies provider-triggered MANUAL/AUTO pauses with low local counts, cached/reasoning normalization, summary and large-prune resume, tool-result growth, restart persistence, pre-upgrade edits, model/endpoint invalidation (including a held gate), and isolated helper capacity checks. It uses the same owned private host/fake-provider isolation as the production smoke.
+`script/usage-smoke.ts` emits deliberately mismatched OpenAI-style SSE usage. It verifies provider-triggered MANUAL/AUTO pauses with low local counts, cached/reasoning normalization, summary and large-prune resume, tool-result growth, restart persistence, pre-upgrade edits, model/endpoint invalidation (including a held gate), and isolated automatic-helper capacity checks. It also sends manual batches above the selected model's advertised input capacity and manual edit follow-ups after oversized usage reports, then checks a real HTTP provider rejection without partial writes. It uses the same owned private host/fake-provider isolation as the production smoke.
 
 `script/subagent-smoke.ts` enables the real built-in subagent tool in an isolated fixture with nesting depth4. It tests foreground/background and nested children of edited MANUAL parents, independent ledgers, last-resort same-turn continuation, exact retained tool output, steering/queue delivery, summary failure, ancestor Stop, no manual gates, and persisted checkpoint restart. Fake providers prove mechanics, not semantic summary quality.
 

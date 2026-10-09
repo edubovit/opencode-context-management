@@ -11,6 +11,7 @@ test("V2 host creates owned deny-all helpers and separates admission, completion
   const mock = mockContext()
   const adapter = pluginHost(mock.context)
   const id = await adapter.host.createJob("summary", "ses_native")
+  assert.equal(adapter.manualJob(id), false)
   assert.equal(mock.state.created[0].agent, AGENT)
   assert.deepEqual(mock.state.created[0].permissions, [{ action: "*", resource: "*", effect: "deny" }])
   assert.equal(mock.state.created[0].parentID, "ses_native")
@@ -21,6 +22,19 @@ test("V2 host creates owned deny-all helpers and separates admission, completion
   assert.equal(adapter.owns(id, "ses_other"), false)
   await adapter.host.remove(id)
   await assert.rejects(adapter.host.remove("ses_native"), /Only owned/)
+  await adapter.close()
+})
+
+test("helper trigger belongs to the live owner, not persisted or inherited metadata", async () => {
+  const mock = mockContext()
+  const adapter = pluginHost(mock.context)
+  const manual = await adapter.host.createJob("summary", "ses_native", "manual")
+  const automatic = await adapter.host.createJob("summary", "ses_native", "auto")
+  assert.equal(adapter.manualJob(manual), true)
+  assert.equal(adapter.manualJob(automatic), false)
+  assert.deepEqual(mock.sessions.get(manual)!.metadata, mock.sessions.get(automatic)!.metadata)
+  await adapter.host.remove(manual)
+  assert.equal(adapter.manualJob(manual), false)
   await adapter.close()
 })
 

@@ -118,7 +118,7 @@ Options belong on the single server plugin entry. Unknown options are rejected. 
 | --- | --- |
 | `ui.maxLinesPerTurn` | Maximum lines per list entry; integer ≥3. Short entries shrink. |
 | `autocompaction.headroom` | Pause above input capacity minus this nonnegative margin. Must leave a positive threshold; never changes output caps. |
-| `autocompaction.estimateMultiplier` | Conservative uplift for unmeasured text: default `1.3`, finite number ≥1. Used for missing-usage fallback and as the minimum multiplier on new content. |
+| `autocompaction.estimateMultiplier` | Conservative uplift for main-request guards and automatic helpers: default `1.3`, finite number ≥1. Used for missing-usage fallback and as the minimum multiplier on new content. Does not veto manually requested summaries or edits. |
 | `autocompaction.lastResortKeepTokens` | Newest conversation content exempt from last-resort compaction; nonnegative integer, default `20000`. Whole messages/tool pairs and existing summaries stay intact, so the actual retained tail can be larger. `0` permits summarizing the entire effective conversation. |
 | `spill.maxLines` / `maxBytes` | Fresh output limits; minimum 2 lines / 8 UTF-8 bytes. Full captured text is saved before previewing. |
 | `spill.headShare` | `0.5` half head/half tail, `1` head only, `0` tail only. Notice/path are extra. |
@@ -135,13 +135,15 @@ Helpers inherit the main session model/effort unless these optional defaults are
 
 Set both model fields or neither. Inspector choices override defaults for that inspector, not the main session. Use a helper model large enough for the full background; nothing is silently dropped or switched. There is no `prune.unit`, `outputReserve`, or plugin-imposed output cap.
 
+**Manual compaction lets the provider decide whether the input fits.** User-started summaries, batch ranges, refinements and saved-summary edits have no plugin token-size preflight, safety multiplier or usage-based veto. This also applies in AUTO sessions and during manual cleanup pauses. Each batch range still sends the full frozen background; splitting ranges does not split request size. Host/provider limits and errors still apply, and failed or incomplete results are never applied. Automatic cleanup—including Run from a pause—and main-request Resume keep their budget guards.
+
 ### Autocompaction
 
 The safety guard is **provider-aware**, not the inspector's local content total. It uses the latest compatible reported input (including cached input once) and output/reasoning, plus estimated growth since that response. A high reported count can trigger cleanup even when the local tokenizer is below the threshold. The check runs before the next main request, including tool continuations—not in the middle of the response that supplies the usage.
 
 Requests are paired with their reports using model/agent/configuration identity and native history fingerprints. After pruning, summaries or expansion, the guard recounts against that fixed baseline. New content is charged with at least the configured multiplier or the observed input/local ratio; removed content receives only its unscaled local estimate as credit. Unexplained provider overhead is retained, not silently declared freed. The same count governs pause, automatic candidates and resume.
 
-The inspector shows **Live guard** while paused or **Last request guard** otherwise, separately from local categories and historical usage. `provider-matched` means a captured request/report pair; `provider-unpaired` is a conservative reconstruction for an existing session without a sample. Known later ledger edits are excluded from that historical reconstruction. `local-fallback` means no compatible report is available and uses the configured uplift. Helpers have independent accounting and fail before dispatch when their own capacity would be exceeded; they do not compact or pollute the parent's usage baseline.
+The inspector shows **Live guard** while paused or **Last request guard** otherwise, separately from local categories and historical usage. This meter is not the manual summarizer's input count. `provider-matched` means a captured request/report pair; `provider-unpaired` is a conservative reconstruction for an existing session without a sample. Known later ledger edits are excluded from that historical reconstruction. `local-fallback` means no compatible report is available and uses the configured uplift. Automatic helpers have independent accounting and fail before dispatch when their estimated capacity would be exceeded. Manual helpers skip that guard. Neither kind recursively compacts or changes the parent's usage baseline.
 
 Accounting survives restart. Model, variant, agent, configured route or tokenizer changes invalidate incompatible measurements; a changed model/provider configuration also prevents resuming a stale live pause. The files contain hashes/counts, not request text or credentials.
 
@@ -155,7 +157,7 @@ Saving a strategy does not start work. Ordinary cleanup protects the whole activ
 
 Last resort uses independent helpers and bounded chunk/merge passes when the selected prefix cannot fit one helper request. Only selected effective content is summarized; previous pruning stays in effect and unfinished work must not be presented as complete. Up to four rounds and 64 helper requests are allowed, so this can incur additional provider costs. It applies only a complete result that makes the guard fit. If the tail leaves no eligible prefix, the helper fails, or the result still does not fit, **AUTO ends with an error—never a manual recovery pause or silent oversized dispatch**. Use smaller tasks, a larger model, or a smaller retained tail where appropriate.
 
-Subagents, including nested/background children, have separate ledgers and usage accounting. Fresh child sessions discard only verified ancestor-owned ledger copies; parent history and unrelated metadata are untouched. A child inheriting or selecting MANUAL uses AUTO_PER_TURN instead. Existing top-level MANUAL choices stay MANUAL. Hidden summarizer/editor helpers remain separate: they enforce their own capacity and do not recursively compact.
+Subagents, including nested/background children, have separate ledgers and usage accounting. Fresh child sessions discard only verified ancestor-owned ledger copies; parent history and unrelated metadata are untouched. A child inheriting or selecting MANUAL uses AUTO_PER_TURN instead. Existing top-level MANUAL choices stay MANUAL. Hidden summarizer/editor helpers remain separate and do not recursively compact; only automatically triggered helpers enforce the plugin's capacity estimate.
 
 Queued inputs are not silently discarded. Oversized synthetic-only context without a USER turn is refused. Pause authority is in memory; after reload/restart an old saved pause notice cannot resume the old request. Stop/reload cancels last-resort work and prevents late application.
 

@@ -2,7 +2,7 @@ import type { Plugin } from "@opencode/plugin"
 import type { SessionInfo } from "@opencode/client"
 import { AGENT, EDIT_AGENT, KEY } from "./config.ts"
 import { AUTO_KEY, strategy } from "./auto-state.ts"
-import type { Host } from "./controller.ts"
+import type { HelperTrigger, Host } from "./controller.ts"
 import { Activity } from "./activity.ts"
 import { modelView, sessionView, transcriptView } from "./normalize.ts"
 import { emptyPolicy, readPolicy } from "./context.ts"
@@ -12,7 +12,7 @@ export type PluginContext = Parameters<Plugin.Plugin["setup"]>[0]
 
 export function pluginHost(ctx: PluginContext) {
   const activity = new Activity((sessionID) => ctx.session.wait({ sessionID }))
-  const jobs = new Map<string, { owner: string; purpose: "summary" | "edit"; running: boolean; cancelled: boolean; budgetError?: string }>()
+  const jobs = new Map<string, { owner: string; purpose: "summary" | "edit"; trigger: HelperTrigger; running: boolean; cancelled: boolean; budgetError?: string }>()
   const loading = new Map<string, Promise<SessionInfo>>()
   let closed = false
   const loadSession = async (sessionID: string): Promise<SessionInfo> => {
@@ -62,7 +62,7 @@ export function pluginHost(ctx: PluginContext) {
       validateNativePolicy(native, transcriptView(session, native), policy)
       await ctx.session.update({ sessionID: id, metadata: JSON.parse(JSON.stringify(metadata)) })
     },
-    createJob: async (purpose = "summary", ownerID) => {
+    createJob: async (purpose = "summary", ownerID, trigger = "auto") => {
       if (!ownerID) throw new Error("Summary job owner is required")
       await nativeSession(ownerID)
       const job = await ctx.session.create({
@@ -71,7 +71,7 @@ export function pluginHost(ctx: PluginContext) {
         metadata: { context_manager_job: true, context_manager_edit: purpose === "edit" },
         permissions: [{ action: "*", resource: "*", effect: "deny" }],
       })
-      jobs.set(job.id, { owner: ownerID, purpose, running: false, cancelled: false })
+      jobs.set(job.id, { owner: ownerID, purpose, trigger, running: false, cancelled: false })
       if (closed) { await ctx.session.remove({ sessionID: job.id }); jobs.delete(job.id); throw new Error("Context manager unloaded while creating a helper") }
       try { await nativeSession(ownerID) }
       catch (error) { await ctx.session.remove({ sessionID: job.id }); jobs.delete(job.id); throw error }
@@ -115,6 +115,7 @@ export function pluginHost(ctx: PluginContext) {
   return {
     host, nativeSession,
     owns: (id: string, owner: string) => jobs.get(id)?.owner === owner,
+    manualJob: (id: string) => jobs.get(id)?.trigger === "manual",
     budgetFailure: (id: string, message: string) => { const job = jobs.get(id); if (job) job.budgetError = message },
     moved: async (owner: string) => {
       await Promise.all([...jobs].filter(([, job]) => job.owner === owner).map(async ([id, job]) => { job.cancelled = true; await host.remove(id) }))

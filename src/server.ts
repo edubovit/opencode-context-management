@@ -4,7 +4,7 @@ import { blockMessages, historyHash, activeMessages, project, readPolicy } from 
 import { Controller } from "./controller.ts"
 import { Storage, type RuntimeCapture } from "./storage.ts"
 import { spills, spillPreview } from "./text.ts"
-import { inputEstimate, SUMMARIZER_SYSTEM, SUMMARY_EDIT_SYSTEM } from "./summarize.ts"
+import { SUMMARIZER_SYSTEM, SUMMARY_EDIT_SYSTEM } from "./summarize.ts"
 import { Autocompaction } from "./autocompaction.ts"
 import { ContextManager, errorMessage } from "./rpc.ts"
 import { pluginHost, type PluginContext } from "./host.ts"
@@ -74,7 +74,7 @@ export async function setupServer(ctx: PluginContext, store = new Storage(ctx.lo
     createJob: ({ sessionID, purpose }, call) => attempt((message) => call.error("rejected", message, null), async () => {
       if (!await eligible(sessionID)) throw new Error("Wait for the main session or a live manual suspension")
       call.signal.throwIfAborted()
-      const id = await host.createJob(purpose, sessionID)
+      const id = await host.createJob(purpose, sessionID, "manual")
       if (call.signal.aborted || closed) { await host.remove(id); throw new Error("Helper creation cancelled") }
       return id
     }),
@@ -84,8 +84,6 @@ export async function setupServer(ctx: PluginContext, store = new Storage(ctx.lo
       if (!await eligible(sessionID)) throw new Error("Main session is no longer available for context maintenance")
       const selected = (await host.models()).find((entry) => entry.providerID === model.providerID && entry.id === model.modelID)
       if (!selected) throw new Error("Summary model is unavailable")
-      const estimate = inputEstimate(text, tokenBasis(model, selected, config.tokenizer), await host.messages(jobID), purpose === "edit" ? SUMMARY_EDIT_SYSTEM : SUMMARIZER_SYSTEM)
-      if (estimate > (selected.limit.input || selected.limit.context)) throw new Error("Summary dialogue exceeds the helper input capacity")
       call.signal.throwIfAborted()
       const abort = () => { void host.abort(jobID).catch(() => {}) }
       call.signal.addEventListener("abort", abort, { once: true })
@@ -116,13 +114,13 @@ export async function setupServer(ctx: PluginContext, store = new Storage(ctx.lo
     const native = await ctx.session.context({ sessionID: event.sessionID })
     const raw = transcriptView(current, native)
     const incoming = [...event.messages]
-    const model = (await ctx.model.list()).data.find((entry) => entry.id === event.model.id && entry.providerID === event.model.providerID)
-    const choice = { providerID: event.model.providerID, modelID: event.model.id, variant: event.model.variant }
-    const basis = tokenBasis(choice, model && modelView(model), config.tokenizer)
-    if (!gate) {
+    if (!gate || (helper && adapter.manualJob(event.sessionID))) {
       event.messages = projectRequest(native, raw, incoming, readPolicy(sessionView(current)))
       return
     }
+    const model = (await ctx.model.list()).data.find((entry) => entry.id === event.model.id && entry.providerID === event.model.providerID)
+    const choice = { providerID: event.model.providerID, modelID: event.model.id, variant: event.model.variant }
+    const basis = tokenBasis(choice, model && modelView(model), config.tokenizer)
     const provider = (await ctx.provider.get({ providerID: event.model.providerID })).data
     const definition = (value: { package?: string; settings?: unknown; headers?: unknown; body?: unknown } | undefined) => value && ({ package: value.package, settings: value.settings, headers: value.headers, body: value.body })
     const requestScope = (selected: typeof model, configured: typeof provider) => budgetScope({ model: event.model, agent: event.agent }, basis, {

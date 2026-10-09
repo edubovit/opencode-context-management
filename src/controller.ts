@@ -3,7 +3,7 @@ export type { ModelChoice } from "./model.ts"
 import { KEY, type Settings } from "./config.ts"
 import { append, hash, historyHash, activeMessages, operation, project, readPolicy, select, serialize, type Block, type Envelope, type Operation, type Policy, type RestoreMode } from "./context.ts"
 import { validatePruning, type Pruning } from "./compaction.ts"
-import { generateSummary, inputEstimate, refinementPrompt, summaryEditPrompt, SUMMARY_EDIT_SYSTEM, SUMMARIZER_SYSTEM } from "./summarize.ts"
+import { generateSummary, inputEstimate, refinementPrompt, summaryEditPrompt, SUMMARIZER_SYSTEM } from "./summarize.ts"
 import type { Artifacts, RuntimeCapture } from "./storage.ts"
 import { snapshot } from "./snapshot.ts"
 import { toolStatus } from "./status.ts"
@@ -13,6 +13,8 @@ import { contentTokens, lastReportedUsage } from "./metrics.ts"
 import { resolveRanges } from "./ranges.ts"
 import type { AutoControl, AutoState, Expected } from "./auto-state.ts"
 
+export type HelperTrigger = "manual" | "auto"
+
 export interface Host {
   auto?: AutoControl
   session(id: string): Promise<Session>
@@ -21,7 +23,7 @@ export interface Host {
   update(id: string, metadata: Record<string, unknown>, expected?: Expected): Promise<void>
   models(): Promise<Model[]>
   configured(): Promise<boolean>
-  createJob(purpose?: "summary" | "edit", ownerID?: string): Promise<string>
+  createJob(purpose?: "summary" | "edit", ownerID?: string, trigger?: HelperTrigger): Promise<string>
   generate(id: string, model: ModelChoice, text: string, purpose?: "summary" | "edit"): Promise<string>
   abort(id: string): Promise<void>
   remove(id: string): Promise<void>
@@ -52,7 +54,7 @@ export class Controller {
   private cancelled = false
   private working = false
   private disposed = false
-  constructor(readonly host: Host, readonly sessionID: string, readonly config: Settings, readonly storage: Artifacts, private readonly purpose: "summary" | "edit" = "summary") {}
+  constructor(readonly host: Host, readonly sessionID: string, readonly config: Settings, readonly storage: Artifacts, private readonly purpose: "summary" | "edit" = "summary", private readonly trigger: HelperTrigger = "manual") {}
 
   async load(): Promise<Loaded> {
     const [session, raw, runtime, models, auto] = await Promise.all([this.host.session(this.sessionID), this.host.messages(this.sessionID), this.storage.capture(this.sessionID), this.host.models(), this.host.auto?.state(this.sessionID)])
@@ -308,17 +310,16 @@ export class Controller {
   private async request(choice: ModelChoice, model: Model, text: string) {
     if (this.cancelled) throw new Error("Summary cancelled")
     await this.requireIdle()
-    const history = this.job ? await this.host.messages(this.job) : []
-    const basis = tokenBasis(choice, model, this.config.tokenizer)
-    const estimate = inputEstimate(text, basis, history, this.purpose === "edit" ? SUMMARY_EDIT_SYSTEM : SUMMARIZER_SYSTEM)
-    const limit = model.limit.input || model.limit.context
-    if (!limit || estimate > limit) {
-      const subject = this.purpose === "edit" ? "Summary editing dialogue" : "Whole effective session and summary conversation"
-      const advice = this.purpose === "edit" ? "Choose a larger model or close the reader and start a fresh editing dialogue." : "Choose a larger model or discard the draft and tool-prune first."
-      throw new Error(`${subject} may not fit summarizer: estimated ${estimate} input tokens, input limit ${limit || "unknown"}. ${advice}`)
+    if (this.trigger === "auto") {
+      const history = this.job ? await this.host.messages(this.job) : []
+      const basis = tokenBasis(choice, model, this.config.tokenizer)
+      const estimate = inputEstimate(text, basis, history, SUMMARIZER_SYSTEM)
+      const limit = model.limit.input || model.limit.context
+      if (!limit || estimate > limit)
+        throw new Error(`Automatic summary conversation may not fit summarizer: estimated ${estimate} input tokens, input limit ${limit || "unknown"}.`)
     }
     if (this.cancelled) throw new Error("Summary cancelled")
-    this.job ??= await this.host.createJob(this.purpose, this.sessionID)
+    this.job ??= await this.host.createJob(this.purpose, this.sessionID, this.trigger)
     if (this.cancelled) throw new Error("Summary cancelled")
     const summary = (await this.host.generate(this.job, choice, text, this.purpose)).trim()
     if (this.cancelled) throw new Error("Summary cancelled")

@@ -2,11 +2,13 @@ import assert from "node:assert/strict"
 import { readFile, writeFile, unlink } from "node:fs/promises"
 import path from "node:path"
 import { Storage } from "../src/storage.ts"
-import { hash } from "../src/context.ts"
+import { hash, operation } from "../src/context.ts"
 import { Controller } from "../src/controller.ts"
 import { remoteHost } from "../src/control.ts"
 import { settings } from "../src/config.ts"
 import { fixture } from "./host-fixture.ts"
+import { SummaryBatch } from "../src/batch.ts"
+import { inputEstimate, summaryPrompt } from "../src/summarize.ts"
 
 const test = await fixture(process.argv[2])
 const checks: string[] = []
@@ -174,11 +176,61 @@ try {
   test.usage((wire) => noHelpers(wire) ? { input: 167500, output: 1000, cached: 100000, reasoning: 900 } : undefined)
   await editing.rewrite("Saved summary", "First edit", { providerID: "fixture", modelID: "fixture" })
   const helperCalls = test.requests.length
-  await assert.rejects(editing.rewrite("Saved summary", "Second edit", { providerID: "fixture", modelID: "fixture" }), /exceeds helper input capacity/)
-  assert.equal(test.requests.length, helperCalls)
+  await editing.rewrite("Saved summary", "Second edit", { providerID: "fixture", modelID: "fixture" })
+  assert.equal(test.requests.length, helperCalls + 1)
   assert.equal((await parent.load()).auto?.pause, undefined)
   await editing.dispose()
-  checks.push("helper usage is isolated and over-capacity helper follow-ups fail before dispatch")
+  checks.push("manual editing follow-ups reach the provider despite an over-capacity historical usage estimate; parent accounting stays isolated")
+
+  test.usage(() => undefined)
+  const { controller: manual } = await make("AUTO_PER_TURN")
+  await test.client.session.switchModel({ sessionID: manual.sessionID, model: { providerID: "fixture", id: "fixture" } })
+  await send(manual.sessionID, "MANUAL_FIRST " + "Full history must remain available. ".repeat(2500))
+  await send(manual.sessionID, "MANUAL_SECOND " + "Later context must remain available. ".repeat(2500))
+  const loaded = await manual.load()
+  const original = await test.client.session.context({ sessionID: manual.sessionID })
+  const small = { providerID: "fixture", modelID: "small" }
+  assert.ok(inputEstimate(summaryPrompt(operation("brief", [loaded.blocks[0]]), loaded.blocks, JSON.stringify(loaded.runtime))) > 12000)
+  const batch = new SummaryBatch(manual)
+  try {
+    await batch.start("brief", loaded.blocks.map((block) => block.sourceIDs), small)
+    const start = test.calls.length
+    await batch.generate()
+    assert.ok(batch.ready, JSON.stringify(batch.entries.map((entry) => entry.error)))
+    const sent = test.calls.slice(start).filter((call) => call.scope.parentID === manual.sessionID && noHelpers(call.wire))
+    assert.equal(sent.length, 2)
+    for (const { wire } of sent) {
+      assert.equal(wire.model, "small")
+      const content = JSON.stringify(wire.messages)
+      assert.match(content, /MANUAL_FIRST/)
+      assert.match(content, /MANUAL_SECOND/)
+      assert.equal(wire.tools, undefined)
+    }
+    assert.equal((await manual.load()).policy.operations.length, 0)
+  } finally { await batch.dispose() }
+  checks.push("manual multi-range summaries in an AUTO session send full frozen requests above the selected model's local input limit")
+
+  test.respond((wire) => noHelpers(wire) ? { error: { status: 400, code: "context_length_exceeded", message: "Fixture provider rejected the oversized summary input" } } : undefined)
+  const rejectedStart = test.calls.length
+  await assert.rejects(manual.summarize("brief", loaded.blocks[0].sourceIDs, small), /Fixture provider rejected the oversized summary input/)
+  assert.equal(test.calls.slice(rejectedStart).filter((call) => call.scope.parentID === manual.sessionID && noHelpers(call.wire)).length, 1)
+  assert.equal((await manual.load()).policy.operations.length, 0)
+  assert.deepEqual(await test.client.session.context({ sessionID: manual.sessionID }), original)
+  assert.equal((await manual.load()).auto?.pause, undefined)
+  test.respond(() => undefined)
+  checks.push("actual provider input rejection is surfaced without retries, partial writes, main-history changes or automatic fallback")
+
+  const { controller: automatic } = await make("AUTO_PER_TURN")
+  test.usage((wire) => noHelpers(wire) ? { input: 167500, output: 1000, cached: 100000, reasoning: 900 } : { input: 10000, output: 800 })
+  await send(automatic.sessionID, "AUTOMATIC_CAPACITY " + "Earlier useful facts. ".repeat(1200))
+  const autoStart = test.calls.length
+  await send(automatic.sessionID, "TRIGGER_AUTOMATIC_CAPACITY_CHECK")
+  assert.equal((await test.client.session.get({ sessionID: automatic.sessionID })).outcome, "failed")
+  const autoCalls = test.calls.slice(autoStart)
+  assert.equal(autoCalls.length, 1, "Neither the over-capacity automatic helper follow-up nor the held main request may reach the provider")
+  assert.equal(autoCalls[0].scope.parentID, automatic.sessionID)
+  assert.equal((await automatic.load()).policy.operations.length, 0)
+  checks.push("automatic helpers still reject provider-anchored oversized follow-ups and never release an oversized main request")
   passed = true
 } finally {
   for (const sessionID of sessions) await test.client.session.remove({ sessionID }).catch(() => {})

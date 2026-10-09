@@ -57,16 +57,32 @@ test("idle and stale draft guards reject unsafe updates", async (t) => {
   assert.equal(readPolicy(data.session).operations.length, 0)
 })
 
-test("overflow and model failure never alter main context; helper cleaned", async (t) => {
+test("manual compaction leaves input-size decisions to the provider and cleans failed helpers", async (t) => {
   const { data, host, controller, ids } = await setup(t)
   data.model.limit.context = 100
-  await assert.rejects(controller.summarize("compact", ids), /may not fit/)
-  assert.equal(data.jobs, 0)
-  data.model.limit.context = 200000
+  const draft = await controller.summarize("brief", ids)
+  assert.equal(data.calls.length, 1)
+  assert.match(data.calls[0].text, /Question 2/)
+  await controller.discard()
   host.generate = async () => { throw new Error("provider overflow") }
   await assert.rejects(controller.summarize("compact", ids), /provider overflow/)
-  assert.equal(data.removed.length, 1)
+  assert.equal(data.removed.length, 2)
+  assert.ok(data.removed.includes(draft.jobID))
   assert.equal(readPolicy(data.session).operations.length, 0)
+})
+
+test("automatic compaction retains input preflight and marks its helper as automatic", async (t) => {
+  const { data, host, storage, ids } = await setup(t)
+  const controller = new Controller(host, data.session.id, settings(), storage, "summary", "auto")
+  t.after(() => controller.dispose())
+  data.model.limit.context = 100
+  await assert.rejects(controller.summarize("brief", ids), /may not fit/)
+  assert.equal(data.jobs, 0)
+  data.model.limit.context = 200000
+  const create = host.createJob
+  host.createJob = async (...args) => { assert.equal(args[2], "auto"); return create(...args) }
+  await controller.summarize("brief", ids)
+  assert.equal(data.calls.length, 1)
 })
 
 test("input fit does not subtract a configured or model-derived output reserve", async (t) => {
@@ -82,6 +98,7 @@ test("input fit does not subtract a configured or model-derived output reserve",
 
 test("compact requests one expansion on the same helper and accepts an overshort second result", async (t) => {
   const { data, controller, ids } = await setup(t)
+  data.model.limit = { context: 100, input: 50, output: 50 }
   data.responses = ["Very short.", "No further useful facts."]
   const draft = await controller.summarize("compact", ids)
   assert.equal(data.calls.length, 2)
@@ -191,16 +208,16 @@ test("manual revisions retain the first full context, edited draft and conversat
   assert.deepEqual(data.removed, [draft.jobID])
 })
 
-test("a smaller revision model must fit accumulated history, not just the change request", async (t) => {
+test("manual revisions send accumulated history even when the selected model is estimated too small", async (t) => {
   const { data, host, controller, ids } = await setup(t)
   const small = { ...data.model, id: "small", limit: { context: 6000, output: 1000 } }
   host.models = async () => [data.model, small]
   const draft = await controller.summarize("brief", ids)
-  await assert.rejects(controller.refine(draft, "Short draft", "Tidy wording", { providerID: "test", modelID: "small" }), /conversation may not fit/)
-  assert.equal(data.calls.length, 1)
+  const revised = await controller.refine(draft, "Short draft", "Tidy wording", { providerID: "test", modelID: "small" })
+  assert.equal(data.calls.length, 2)
+  assert.equal(data.calls[1].choice.modelID, "small")
   assert.equal(data.jobs, 1)
   assert.equal(data.removed.length, 0)
-  const revised = await controller.refine(draft, "Short draft", "Tidy wording")
   assert.equal(revised.jobID, draft.jobID)
 })
 

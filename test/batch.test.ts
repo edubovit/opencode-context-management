@@ -31,6 +31,7 @@ async function until(check: () => boolean) {
 
 test("five disjoint ranges generate concurrently from the same full frozen context and apply in one metadata write", async (t) => {
   const { host, data, batch, controller, ranges } = await setup(t, 9)
+  data.model.limit = { context: 100, input: 50, output: 50 }
   const original = structuredClone(data.messages)
   let release!: () => void
   const gate = new Promise<void>((resolve) => { release = resolve })

@@ -9,6 +9,10 @@ import { AGENT, EDIT_AGENT } from "../src/config.ts"
 import { SUMMARY_EDIT_SYSTEM, SUMMARIZER_SYSTEM } from "../src/summarize.ts"
 import { nativeFixture } from "./native-fixtures.ts"
 import { mockContext } from "./host-mock.ts"
+import { Message } from "@opencode/ai"
+import { AUTO_KEY } from "../src/auto-state.ts"
+
+const call = { signal: new AbortController().signal, error: (...args: unknown[]) => { throw new Error(String(args[1])) } }
 
 async function setup(t: { after(run: () => Promise<void>): void }, version = "2.0.24") {
   const dir = await mkdtemp(path.join(tmpdir(), "cm-native-server-"))
@@ -58,6 +62,51 @@ test("V2 summary helpers receive isolated system context and no advertised tools
   assert.deepEqual(event.system, [{ type: "text", text: SUMMARY_EDIT_SYSTEM }])
   assert.deepEqual(event.tools, {})
   assert.deepEqual(event.options, { maxTokens: 4096 })
+})
+
+test("manual RPC generation leaves oversized input to the provider for summaries and edits", async (t) => {
+  const mock = await setup(t)
+  const list = mock.context.model.list
+  mock.context.model.list = async () => {
+    const result = await list()
+    return { ...result, data: result.data.map((model) => ({ ...model, limit: { context: 100, input: 50, output: 50 } })) }
+  }
+  for (const strategy of ["MANUAL", "AUTO_PER_TURN", "AUTO_SESSION"]) for (const purpose of ["summary", "edit"] as const) {
+    mock.sessions.get("ses_native")!.metadata![AUTO_KEY] = { strategy }
+    const id = await mock.rpc.createJob({ sessionID: "ses_native", purpose }, call)
+    assert.equal(typeof id, "string")
+    if (typeof id !== "string") throw new Error("Missing job")
+    const text = "Full manual request must reach the provider. ".repeat(1000)
+    assert.equal(await mock.rpc.generate({ sessionID: "ses_native", jobID: id, model: { providerID: "fixture", modelID: "model" }, text, purpose }, call), "Answer only")
+    assert.equal(mock.state.prompts.at(-1), text)
+  }
+})
+
+test("only live owned manual helpers bypass the hook budget, regardless of parent strategy", async (t) => {
+  const mock = await setup(t)
+  const text = "Full manual request. ".repeat(400)
+  const list = mock.context.model.list
+  mock.context.model.list = async () => {
+    const result = await list()
+    return { ...result, data: result.data.map((model) => ({ ...model, limit: { context: 100, input: 50, output: 50 } })) }
+  }
+  for (const purpose of ["summary", "edit"] as const) {
+    const id = await mock.rpc.createJob({ sessionID: "ses_native", purpose }, call)
+    if (typeof id !== "string") throw new Error("Missing job")
+    mock.messages.set(id, [{ id: "msg_input", type: "user", text, time: { created: 1 } }])
+    const event = { sessionID: id, agent: purpose === "edit" ? EDIT_AGENT : AGENT, model: { providerID: "fixture", id: "model" }, messages: [Message.make({ id: "msg_input", role: "user", content: text })], system: [{ type: "text", text: "Unrelated system" }], tools: { shell: {} }, options: { maxTokens: 32 } }
+    const before = JSON.stringify(event.messages)
+    await mock.hooks.get("context")!(event)
+    assert.equal(JSON.stringify(event.messages), before)
+    assert.deepEqual(event.tools, {})
+    assert.deepEqual(event.options, { maxTokens: 32 })
+    assert.equal(await mock.store.budget(id), undefined)
+    assert.equal(await mock.store.capture("ses_native"), undefined)
+    await mock.rpc.removeJob({ sessionID: "ses_native", jobID: id }, call)
+    mock.sessions.set(id, { ...mock.sessions.get("ses_native")!, id, metadata: { context_manager_job: true, context_manager_manual: true } })
+    mock.messages.set(id, [{ id: "msg_input", type: "user", text, time: { created: 1 } }])
+    await assert.rejects(mock.hooks.get("context")!(event), /exceeds helper input capacity/)
+  }
 })
 
 test("V2 fresh spilling preserves structured output and attachments and owns the truncation marker", async (t) => {
