@@ -82,7 +82,7 @@ test("active-prefix checkpoint replays after tool continuation, nesting, revisio
   const range = lastResortRange(project(active, policy), 1, FALLBACK_BASIS)
   const checkpoint = { ...operation("compact", range.selected), checkpoint: true as const, summary: "Unfinished task: preserve ROOT_FACT and continue validation" }
   policy = append(policy, checkpoint)
-  assert.equal(policy.version, 9)
+  assert.equal(policy.version, 10)
   assert.deepEqual(readPolicy({ id: session.id, metadata: { [KEY]: policy } }), policy)
   const output = projectRequest(native, raw, canonical, policy)
   assert.equal(output.at(-1), canonical.at(-1))

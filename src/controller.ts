@@ -38,10 +38,11 @@ export type RestorePreview = {
   afterChars: number
   afterTokens: number
   summaries: number
+  prunings: number
 }
 export type MultiRestorePreview = {
   mode: RestoreMode; operations: Operation[]; revision: number; fingerprint: string; ranges: string[][]
-  before: Block[]; after: Block[]; beforeTokens: number; afterTokens: number; tokenizer: TokenBasis; summaries: number
+  before: Block[]; after: Block[]; beforeTokens: number; afterTokens: number; tokenizer: TokenBasis; summaries: number; prunings: number
 }
 
 export class Controller {
@@ -91,7 +92,7 @@ export class Controller {
   }
 
   async prepareRestoreRanges(mode: RestoreMode, ranges: string[][]): Promise<MultiRestorePreview> {
-    if (mode !== "expand") throw new Error("Only summary expansion is supported; pruning is final")
+    if (mode !== "expand") throw new Error("Only one-layer context restoration is supported")
     if (this.job) throw new Error("Apply or discard the summary draft before restoring context")
     await this.requireIdle()
     const loaded = await this.load()
@@ -100,8 +101,8 @@ export class Controller {
     this.requireUnprotected(loaded, ranges.flat())
     const before = groups.flat()
     const status = toolStatus(before, loaded.pruneRule, loaded.tokenizer)
-    const operations = groups.filter((blocks) => blocks.some((block) => block.summaryID)).map((blocks) => operation(mode, blocks, undefined, loaded.tokenizer))
-    if (!operations.length) throw new Error("No expandable plugin summaries in the selection")
+    const operations = groups.map((blocks) => operation(mode, blocks, undefined, loaded.tokenizer)).filter((op) => op.summaryIDs?.length || op.pruneTargets?.length)
+    if (!operations.length) throw new Error("No restorable summaries or pruning in the selection")
     const next = operations.reduce(append, loaded.policy)
     const projected = project(activeMessages(loaded.raw, loaded.session.revert), next)
     const after = resolveRanges(projected, ranges).flat()
@@ -109,7 +110,7 @@ export class Controller {
       mode, operations, revision: loaded.policy.revision, fingerprint: loaded.fingerprint, ranges, before, after,
       beforeTokens: contentTokens(before.flatMap((block) => block.messages), loaded.tokenizer),
       afterTokens: contentTokens(after.flatMap((block) => block.messages), loaded.tokenizer), tokenizer: loaded.tokenizer,
-      summaries: status.summaries,
+      summaries: status.summaries, prunings: status.prunings,
     }
   }
 
@@ -166,7 +167,7 @@ export class Controller {
   }
 
   async prepareRestore(mode: RestoreMode, ids: string[]): Promise<RestorePreview> {
-    if (mode !== "expand") throw new Error("Only summary expansion is supported; pruning is final")
+    if (mode !== "expand") throw new Error("Only one-layer context restoration is supported")
     if (this.job) throw new Error("Apply or discard the summary draft before restoring context")
     await this.requireIdle()
     const loaded = await this.load()
@@ -174,7 +175,7 @@ export class Controller {
     const before = this.selection(loaded.blocks, ids)
     this.requireUnprotected(loaded, ids)
     const status = toolStatus(before, loaded.pruneRule, loaded.tokenizer)
-    if (!status.summaries) throw new Error("No expandable plugin summaries in the selected range")
+    if (!status.summaries && !status.prunings) throw new Error("No restorable summaries or pruning in the selected range")
     const op = { ...operation(mode, before, undefined, loaded.tokenizer), mode }
     const projected = project(activeMessages(loaded.raw, loaded.session.revert), append(loaded.policy, op))
     const after = this.selection(projected, ids)
@@ -182,12 +183,12 @@ export class Controller {
       operation: op, revision: loaded.policy.revision, fingerprint: loaded.fingerprint, before, after,
       afterChars: chars(serialize(after.flatMap((block) => block.messages))),
       afterTokens: contentTokens(after.flatMap((block) => block.messages), loaded.tokenizer),
-      summaries: status.summaries,
+      summaries: status.summaries, prunings: status.prunings,
     }
   }
 
   async applyRestore(preview: RestorePreview) {
-    if (preview.operation.mode !== "expand") throw new Error("Only summary expansion is supported; pruning is final")
+    if (preview.operation.mode !== "expand") throw new Error("Only one-layer context restoration is supported")
     await this.requireIdle()
     const loaded = await this.load()
     this.requireNotReverted(loaded.session)

@@ -21,7 +21,7 @@ test("200 deterministic mixed ledgers preserve source, round-trip replay, and ex
       const current = blocks()
       const index = choose(current.length)
       const selected = current.slice(index, index + 1 + choose(current.length - index))
-      if (selected.some((block) => block.summaryID) && choose(3) === 0) {
+      if (selected.some((block) => block.summaryID || block.pruning?.length) && choose(3) === 0) {
         policy = append(policy, operation("expand", selected))
       } else if (selected.length === 1 && selected[0].summaryID && choose(2) === 0) {
         policy = append(policy, { ...operation("revise", selected), targetID: selected[0].summaryID, summary: `Revised ${seed}/${step}` })

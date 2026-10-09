@@ -98,9 +98,16 @@ export function projectRequest(native: readonly SessionMessageInfo[], raw: Envel
         entries = entries.filter((entry) => entry.summaryID !== id)
         entries.push(...previous)
       }
+      for (const target of op.pruneTargets ?? []) {
+        const previous = saved.get(target.operationID)
+        if (!previous) throw new Error("Pruning restoration layer unavailable")
+        entries = entries.filter((entry) => !entry.sourceIDs.some((id) => target.sourceIDs.includes(id)))
+        entries.push(...previous.filter((entry) => entry.sourceIDs.length && entry.sourceIDs.every((id) => target.sourceIDs.includes(id))))
+      }
       return
     }
     const ids = selected.filter((block) => block.kind === "turn").flatMap((block) => block.sourceIDs)
+    saved.set(op.id, selectedEntries(ids))
     const reason = op.pruneReason || op.mode === "prune-reason"
     const signature = op.mode === "tool-prune" ? hash(op.rule) : "all"
     entries = entries.flatMap((entry): Entry[] => {

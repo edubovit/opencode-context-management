@@ -75,6 +75,29 @@ test("manual gate permits checked earlier-history edits, protects active turn an
   assert.equal(data.messages.filter((message) => message.info.role === "user").length, 3)
 })
 
+test("restoring pruning during a manual pause recounts growth and cannot release an oversized request", async (t) => {
+  const { data, auto, maintenance } = await setup(t)
+  let resumed = false
+  const waiting = auto.beforeRequest(data.messages).then(() => { resumed = true })
+  await until(async () => !!(await auto.state(data.session.id)).pause)
+  const before = await maintenance.load()
+  const first = before.blocks[0].sourceIDs
+  await maintenance.prune(before.blocks.slice(0, 2).flatMap((block) => block.sourceIDs), { reasoning: true, tools: "all" })
+  const reduced = (await auto.state(data.session.id)).pause!
+  assert.ok(reduced.tokens <= reduced.threshold)
+  await maintenance.applyRestore(await maintenance.prepareRestore("expand", first))
+  const restored = (await auto.state(data.session.id)).pause!
+  assert.ok(restored.tokens > restored.threshold)
+  await assert.rejects(auto.command(data.session.id, { action: "resume", pauseID: restored.id }), /Resume blocked/)
+  await assert.rejects(maintenance.prepareRestore("expand", before.blocks[2].sourceIDs), /protected/)
+  assert.equal(resumed, false)
+  assert.equal(data.calls.length, 0)
+  await maintenance.prune(first, { reasoning: true, tools: "all" })
+  await auto.command(data.session.id, { action: "resume", pauseID: restored.id })
+  await waiting
+  assert.equal(resumed, true)
+})
+
 for (const mode of ["AUTO_PER_TURN", "AUTO_SESSION"] as const) test(`${mode} reduces only older history and resumes automatically`, async (t) => {
   const { data, auto } = await setup(t, mode)
   const last = structuredClone(data.messages.slice(-2))
@@ -214,7 +237,7 @@ for (const mode of ["AUTO_PER_TURN", "AUTO_SESSION"] as const) test(`${mode} las
   const original = structuredClone(data.messages)
   await auto.beforeRequest(data.messages)
   const policy = readPolicy(data.session)
-  assert.equal(policy.version, 9)
+  assert.equal(policy.version, 10)
   assert.equal(policy.operations.length, 1)
   assert.equal(policy.operations[0].checkpoint, true)
   assert.ok(!policy.operations[0].sourceIDs.includes(original.at(-1)!.info.id))

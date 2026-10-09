@@ -36,13 +36,13 @@ The runner prints its temporary root under the OS temporary directory's `opencod
 
 The optional PTY driver connects explicitly to that private server. It exercises actual slash-command loading, range editing, native dialog focus, readers, summarization, model-edit proposals/application, expansion, and resize. Xterm decodes cursor updates into the screen buffer; concatenated ANSI output is not a reliable screen representation. The terminal log and last screen are saved on exit, including failures.
 
-To verify a real upgrade from plugin 3.2.0, install its dependencies in a separate checkout and run:
+To verify a real upgrade, unpack an archived 3.2.0 or 4.0.0 source snapshot under ignored `.local/`, install its dependencies, and run:
 
 ```sh
-npm run test:upgrade -- /absolute/path/to/opencode /absolute/path/to/3.2.0/src
+npm run test:upgrade -- /absolute/path/to/opencode /absolute/path/to/baseline/src
 ```
 
-This optional test creates genuine format-7/8 operations under the old plugin, restarts only its private host with the new source, and verifies the next same-model requests, expansion, format-9 writes and another restart. Default checks need no old checkout. The duplicate prototype host fixture and projection/gate implementations have been removed; tests exercise production code.
+This optional test creates genuine format-7/8 or format-9 operations under the old plugin, restarts only its private host with the new source, and verifies the next same-model requests, summary expansion, restoration of old pruning, format-10 writes and another restart. It needs no new development branch/worktree. Default checks need no old source snapshot. Tests exercise production projection code, not a duplicate converter.
 
 All default tests use synthetic content. Fake-provider success proves protocol/flow, not semantic summary quality or arbitrary signed-reasoning/provider compatibility. Live tests require explicit permission for provider/model and request bounds; no live-provider runner is enabled by default.
 
@@ -57,6 +57,17 @@ All default tests use synthetic content. Fake-provider success proves protocol/f
 - Lockfile audit: **0 known vulnerabilities**; `git diff --check` clean.
 
 This matrix is Windows validation with fake providers. It does not claim Linux/macOS PTY validation, live-provider summary quality or universal signed-reasoning/stateful-transport compatibility. The live OpenCode service and host source were not changed.
+
+### Version 4.1.0 validation
+
+- Typecheck and **220 unit/adapter tests** on Node 22/24; **36 renderer tests** on bundled Bun.
+- Production server/Windows ConPTY smoke: **33 checks** on OpenCode **2.0.24, 2.0.25 and 2.0.26**, including each pruning mode followed by restoration and an immediate same-model request.
+- Provider-usage smoke: **11 checks** on 2.0.26, including restoring a held request above its threshold, refusing Resume, then pruning again and continuing the same request. Subagent smoke: **11 checks**.
+- Real upgrades from archived **3.2.0** (formats 7/8; 4 checks) and **4.0.0** (format 9; 3 checks), restoring old pruning and verifying the restored wire context after another private restart.
+- Frozen source/request hashes, 200 mixed-operation replay sequences, upstream-redaction preservation, error/file restoration, checkpoint-tail scoping, stale/foreign/overlapping targets and hidden-provenance exclusion are covered.
+- A fresh public-file installation passed the full checks without ignored research artifacts. Current dependency audit: **0 known vulnerabilities**; version/lockfile consistency and whitespace checks passed.
+
+These checks use synthetic providers and owned private servers. No shared-service restart or host-source modification is needed. Archive dependencies intentionally reproduce the older release; audit the current package separately rather than force-upgrading compatibility fixtures.
 
 ## Architecture
 
@@ -93,13 +104,17 @@ Stored transcript, normalized effective projection, hook capture, and final prov
 
 ### Persistence and migration
 
-The ledger remains in session metadata under `opencode_context_manager`; strategy/status uses a separate namespace. All writes use append-only **format 9**, with no runtime cursor. The decoder accepts complete V2 formats 7/8 and returns the same operations in a format-9 view without persisting it. It rejects truncated cursors, invalid revisions, foreign owners and formats 1–6. The next checked write upgrades the stored envelope. Package version, ledger format, budget-cache format and export schema are independent.
+The ledger remains in session metadata under `opencode_context_manager`; strategy/status uses a separate namespace. All writes use append-only **format 10**, with no runtime cursor. The decoder accepts V2 formats 7/8/9 and returns the same operations in a format-10 view without persisting it. It rejects truncated cursors, invalid revisions, foreign owners and formats 1–6. The next checked write upgrades the stored envelope. Package version, ledger format, budget-cache format and export schema are independent.
 
 `historyHash` preserves the established V2 fingerprint representation, including the fixed tool discriminator `nativeVersion: 2` **inside the hash only**. It is not a runtime version switch. Frozen 3.2.0 source/request hashes in `test/ledger.test.ts` protect nested summaries, revision, expansion and partial-turn checkpoint compatibility. Never change that representation casually or regenerate expected hashes to hide a regression. Budget bootstrap replays an explicit operation prefix; this is not Undo.
 
 The `checkpoint: true` compact operation splits a USER block after its final source message before replay, so later continuations cannot move that boundary. Ordinary fresh children (parentID, no fork) receive an empty own ledger only after validating any copied ledger belongs to an ancestor; unrelated metadata is retained and inherited live-pause notices removed. Own ledgers, forks and unrelated/corrupt copies are never silently reset. Initialization is coalesced and pending writes drain on unload.
 
-Expansion provenance is replay-only. It must not enter provider metadata, helper input, or effective exports. New revisions target stable summary IDs without creating another expansion layer. Pruning is token-only and final; Unprune is not a valid operation. RPC commits use the same strict ledger schema as persistence.
+Expansion provenance is replay-only. It must not enter provider metadata, helper input, or effective exports. New revisions target stable summary IDs without creating another expansion layer. RPC commits use the same strict ledger schema as persistence.
+
+Pruning keeps a per-turn stack of effective layers during replay, using immutable message/part replacements. Format-10 `expand` operations explicitly name summary IDs and/or `pruneTargets` (operation ID plus exact visible turn source IDs). A summary expands first without restoring its hidden pruning; an ordinary turn restores only its latest effective prune. Combined modes restore together. Restoration of part of a wider prune must leave the other turns unchanged. Split checkpoint tails filter pre-pruning messages to their own source IDs and must never resurrect the hidden prefix. Old saved `expand` operations with only summary IDs keep their old semantics.
+
+Canonical restoration uses snapshots from the current incoming hook messages, not stored unredacted content. Restore dropped wrappers, attachments, error content, reasoning and pruning-rule state together. Reconstruct layers on each replay, so no bulky original content is added to the ledger. Exclude both `previous` and `pruning` provenance from exports and helpers. Model/source drift, busy/protected turns and stale previews still fail closed. Restoring while paused can increase the guard; it never grants permission to resume above the threshold.
 
 Native `session.context` exposes the active window, not arbitrary pre-checkpoint history. Host checkpoints are read-only. Later turns can be edited without discarding a checkpoint or restoring history behind it. The plugin does not reconstruct the host's history selection or private model converter.
 

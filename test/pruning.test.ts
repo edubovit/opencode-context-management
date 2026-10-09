@@ -45,7 +45,7 @@ test("all-output pruning replaces small, empty, errored and interrupted results 
     assert.deepEqual(after.metadata, tool.metadata)
     assert.equal(after.state.status, tool.state.status)
     assert.equal(rangeToolStats(toolStatus([blocks[0]], pruneRule())), "1 pruned")
-    assert.doesNotMatch(JSON.stringify(blocks[0]), /REMOVED/)
+    assert.doesNotMatch(JSON.stringify(snapshot("ses_test", "fixture", blocks, policy)), /REMOVED/)
     assert.match(JSON.stringify(blocks[0]), /Tool output pruned/)
     assert.deepEqual(blocks[1].messages, raw.slice(2, 4))
     const repeated = project(raw, append(policy, operation("tool-prune-all", [blocks[0]])))
@@ -60,7 +60,7 @@ test("tool deletion removes complete calls, including pending calls, and reasoni
   assert.ok(pending.type === "tool")
   pending.state = { status: "running", input: { original: "kept in storage" } }
   const policy = append(emptyPolicy("ses_test"), { ...operation("tool-delete", [turns(raw)[0]]), pruneReason: true })
-  assert.equal(readPolicy({ id: "ses_test", metadata: { [KEY]: policy } }).version, 9)
+  assert.equal(readPolicy({ id: "ses_test", metadata: { [KEY]: policy } }).version, 10)
   const blocks = project(raw, policy)
   assert.deepEqual(blocks[0].messages, raw.slice(0, 2).map((message) => ({ ...message, parts: message.parts.filter((p) => p.type !== "tool" && p.type !== "reasoning") })))
   assert.equal(rangeToolStats(toolStatus([blocks[0]], pruneRule())), "Tools removed · reasoning removed")
@@ -69,7 +69,7 @@ test("tool deletion removes complete calls, including pending calls, and reasoni
   assert.throws(() => readPolicy({ id: "ses_test", metadata: { [KEY]: { ...policy, version: 5 } } }), /Unsupported/)
 })
 
-test("nested summary expansion retains final pruning, flags and untouched gaps", () => {
+test("nested summary expansion retains earlier pruning, flags and untouched gaps", () => {
   const raw = messages()
   let policy = append(emptyPolicy("ses_test"), { ...operation("tool-prune-all", [turns(raw)[0]]), pruneReason: true })
   const pruned = project(raw, policy)

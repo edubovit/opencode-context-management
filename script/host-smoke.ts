@@ -52,7 +52,7 @@ try {
     assert.ok(loaded.runtime?.tools?.some((tool) => tool.id === "fixture_tool"))
     assert.ok(JSON.stringify(loaded.raw).includes("HEAD_FIXTURE") && JSON.stringify(loaded.raw).includes("TAIL_FIXTURE"))
     await controller.prune(loaded.blocks[0].sourceIDs, options)
-    assert.equal((await controller.load()).policy.version, 9)
+    assert.equal((await controller.load()).policy.version, 10)
     await send(controller, "Immediate next request after context edit")
     const request = JSON.stringify(test.requests.at(-1)?.messages)
     assert.ok(request.includes("BACKGROUND_SHELL_RESULT"))
@@ -66,6 +66,19 @@ try {
     assert.deepEqual(stored.filter((message) => original.some((before) => before.id === message.id)), original)
     assert.equal((await test.client.session.get({ sessionID: controller.sessionID })).metadata?.unrelated, "keep")
     checks.push(`actual RPC/controller ${JSON.stringify(options)} with omitted background shell; unchanged stored transcript`)
+    const requestsBeforeRestore = test.requests.length
+    const preview = await controller.prepareRestore("expand", loaded.blocks[0].sourceIDs)
+    assert.equal(preview.summaries, 0)
+    assert.equal(preview.prunings, 1)
+    await controller.applyRestore(preview)
+    assert.equal(test.requests.length, requestsBeforeRestore, "Pruning restoration must not invoke a model")
+    assert.deepEqual((await controller.load()).blocks[0].messages, loaded.blocks[0].messages)
+    await send(controller, "Immediate next same-model request after restoring pruning")
+    const restoredRequest = JSON.stringify(test.requests.at(-1)?.messages)
+    assert.ok(restoredRequest.includes("REASONING_FIXTURE") && restoredRequest.includes("HEAD_FIXTURE") && restoredRequest.includes("TAIL_FIXTURE"))
+    assert.ok(restoredRequest.includes("call_fixture") && restoredRequest.includes("BACKGROUND_SHELL_RESULT"))
+    assert.ok(!restoredRequest.includes("Tool output pruned") && !restoredRequest.includes("middle omitted from tool output"))
+    checks.push(`one-layer restoration ${JSON.stringify(options)}; original content and calls on the next request`)
   }
   const controller = await make()
   await send(controller, "ROOT_FACT " + "Selected information. ".repeat(400) + " EXERCISE_TOOL")
@@ -127,6 +140,7 @@ try {
   assert.equal(dump.hostVersion, test.hostVersion)
   assert.equal(dump.schemaVersion, 4)
   assert.ok(!JSON.stringify(dump.blocks).includes('"previous"'))
+  assert.ok(!JSON.stringify(dump.blocks).includes('"pruning"'))
   checks.push("server-owned effective export excludes expansion layers")
 
   for (const strategy of ["MANUAL", "AUTO_PER_TURN", "AUTO_SESSION"] as const) {

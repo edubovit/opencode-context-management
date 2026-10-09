@@ -4,13 +4,14 @@ import { FALLBACK_BASIS, tokenCount, type TokenBasis } from "./tokens.ts"
 
 export function toolStatus(blocks: Block[], rule: PruneRule, basis: TokenBasis = FALLBACK_BASIS) {
   const users = blocks.filter((block) => block.kind === "turn")
-  const result = { total: 0, pruned: 0, eligible: 0, pending: 0, fileBacked: 0, summaries: 0, pruneDelta: 0, pruneCharDelta: 0,
+  const result = { total: 0, pruned: 0, eligible: 0, pending: 0, fileBacked: 0, summaries: 0, prunings: 0, pruneDelta: 0, pruneCharDelta: 0,
     noReason: users.length > 0 && users.every((block) => block.reasonPruned),
     noTools: users.length > 0 && users.every((block) => block.toolsDeleted),
     allPruned: users.length > 0 && users.every((block) => block.allToolsPruned) }
   const signature = hash(rule)
   for (const block of blocks) {
     if (block.summaryID) result.summaries++
+    if (block.kind === "turn" && block.pruning?.length) result.prunings++
     for (const message of block.messages) for (const part of message.parts) {
       if (part.type !== "tool") continue
       result.total++
@@ -45,6 +46,6 @@ export function rangeLabel(sourceIDs: string[], index: ReadonlyMap<string, numbe
 
 export function operationLabel(op: Operation | undefined, index: ReadonlyMap<string, number>) {
   if (!op) return "nothing"
-  const name = op.mode === "expand" ? "expand summaries" : op.mode === "revise" ? "edit summary" : op.mode
+  const name = op.mode === "expand" ? op.pruneTargets?.length ? "restore context" : "expand summaries" : op.mode === "revise" ? "edit summary" : op.mode
   return `${name}: ${rangeLabel(op.sourceIDs, index)}`
 }

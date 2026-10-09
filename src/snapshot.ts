@@ -23,6 +23,6 @@ export function snapshot(sessionID: string, hostVersion: string, blocks: Block[]
     ],
     distribution: distribution(blocks, runtime, tokenizer),
     characterDistribution: distribution(blocks, runtime, tokenizer, "characters"),
-    blocks: blocks.map(({ previous: _previous, ...visible }) => visible), text: serialize(messages),
+    blocks: blocks.map(({ previous: _previous, pruning: _pruning, ...visible }) => visible), text: serialize(messages),
   }
 }

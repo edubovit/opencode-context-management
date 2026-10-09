@@ -221,6 +221,33 @@ test("compaction configuration combines pruning, forces reasoning for deletion a
   assert.deepEqual((await controller.load()).blocks[1].messages, data.messages.slice(2, 4))
 })
 
+for (const mode of [0, 1, 2, 3]) test(`Ctrl+E previews, cancels and restores pruning mode ${mode} without a model call`, async (t) => {
+  const view = await setup(t, 100, 30)
+  await view.until(() => view.frame().includes("Ready."))
+  const original = structuredClone(view.data.messages)
+  await view.type("  ")
+  await view.compact(mode)
+  await view.until(() => view.frame().includes("Pruning applied"))
+  assert.equal(readPolicy(view.data.session).revision, 1)
+  view.key("e", { ctrl: true })
+  await view.until(() => view.frame().includes("Restore preview") && view.frame().includes("1 pruning"))
+  assert.equal(readPolicy(view.data.session).revision, 1)
+  view.esc()
+  await view.until(() => !view.frame().includes("Restore preview"))
+  assert.equal(readPolicy(view.data.session).revision, 1)
+  view.key("e", { ctrl: true })
+  await view.until(() => view.frame().includes("1 pruning"))
+  view.key("s", { ctrl: true })
+  await view.until(() => view.frame().includes("context layers restored"))
+  assert.equal(readPolicy(view.data.session).revision, 2)
+  assert.deepEqual((await view.controller.load()).blocks[0].messages, original.slice(0, 2))
+  assert.equal(view.data.jobs, 0)
+  assert.deepEqual(view.data.messages, original)
+  view.key("e", { ctrl: true })
+  await view.until(() => view.frame().includes("No restorable"))
+  assert.equal(readPolicy(view.data.session).revision, 2)
+})
+
 test("configuration picker consumes model keys, keeps selection and fits a small terminal", async (t) => {
   const { data, screen, frame, until, type, key } = await setup(t, 80, 24, ({ data, host }) => {
     host.models = async () => [data.model, { ...data.model, id: "other", providerID: "alternate", name: "Other", variants: [{ id: "low" }] }]

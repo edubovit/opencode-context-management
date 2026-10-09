@@ -170,7 +170,7 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
     const ids = selectedIDs()
     await props.controller.pruneRanges(ids, value)
     await refresh(ids)
-    setNotice("Pruning applied. Final in effective context; stored history is unchanged.")
+    setNotice("Pruning applied. Ctrl+E restores one layer; stored history is unchanged.")
   }
   const openReader = async () => {
     const block = blocks()[cursor()]
@@ -197,7 +197,7 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
     await props.controller.applyOperations(preview.operations, preview)
     setRestoring(undefined)
     await refresh(preview.ranges)
-    setNotice(`${preview.mode} applied to selected ranges. Unselected gaps are unchanged.`)
+    setNotice("Selected context layers restored. Unselected history is unchanged.")
   }
   const pickerOptions = createMemo(() => {
     const current = choice()
@@ -366,7 +366,7 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
         ...(requestBudget().note ? [requestBudget().note!] : []),
         ...(budget.reported ? ["Provider baseline:", `Input+cache: ${budget.reported.input.toLocaleString()}`, `Output+reasoning: ${budget.reported.output.toLocaleString()}`, "Removed local text is not exact provider savings."]
           : [`No matching usage; local fallback ×${budget.multiplier}.`, "This is not a provider token count."])] : []),
-      "Historical usage is not a recount. Large = eligible under current rules; file previews are separate. Pruning is final.",
+      "Historical usage is not a recount. Large = eligible under current rules; file previews are separate. Ctrl+E restores one layer.",
     ].join("\n")
   })
   const hints = (): HotkeyLine[] => exitDialog() ? [[{ key: "s/Esc", label: "stay" }, { key: "r", label: "resume if below threshold" }, { key: "a", label: "abort run and exit" }]]
@@ -380,10 +380,10 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
     : configuring() ? [[{ key: "Up/Down", label: "mode" }, { key: "Space", label: "toggle" }, { key: "Enter", label: "run" }], [{ key: "m/t", label: "model/effort" }, { key: "Esc", label: "cancel" }]]
     : narrow() ? [
       [{ key: "Space", label: "select" }, { key: "c", label: "reduce" }, { key: "Enter", label: "read" }],
-      [{ key: "Ctrl+E", label: "expand" }, { key: "v", label: "details" }, { key: "Tab", label: "pane" }],
+      [{ key: "Ctrl+E", label: "restore" }, { key: "v", label: "details" }, { key: "Tab", label: "pane" }],
       [{ key: "a", label: "auto" }, { key: "m/t", label: "model" }, { key: "?", label: "help" }, { key: "Esc", label: "back" }],
     ] : [
-      [{ key: "Space", label: "select" }, { key: "c", label: "reduce" }, { key: "Enter", label: "read" }, { key: "Ctrl+E", label: "expand" }],
+      [{ key: "Space", label: "select" }, { key: "c", label: "reduce" }, { key: "Enter", label: "read" }, { key: "Ctrl+E", label: "restore" }],
       [{ key: "v", label: "details" }, { key: "Tab", label: "pane" }, { key: "a", label: "auto" }, { key: "m/t", label: "model" }, { key: "?", label: "help" }, { key: "Esc", label: "back" }],
     ]
   const batchStatus = () => { epoch(); return summaries.entries.map((entry, index) => `R${index + 1} ${rangeLabel(entry.ids, sourceTurns())}: ${entry.status}${entry.error ? `\n${entry.error}` : ""}`).join("\n\n") }
@@ -417,7 +417,7 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
                 </Show>
               }>{(preview) => <>
                 <text height={2} fg={api.theme.text.base}>Restore preview — {preview.operations.map((op) => operationLabel(op, sourceTurns())).join("; ")}</text>
-                <text height={2}>{`Expand ${preview.summaries} summaries by one layer.`}{` Context delta: ${signed(preview.afterTokens - preview.beforeTokens)} tokens`}</text>
+                <text height={2}>{`Restore ${[preview.summaries ? `${preview.summaries} summary` : "", preview.prunings ? `${preview.prunings} pruning` : ""].filter(Boolean).join(" + ")} layers. Text delta: ${signed(preview.afterTokens - preview.beforeTokens)} tokens`}</text>
                 <scrollbox flexGrow={1} minHeight={0} focused={!busy()}><text selectable>{limited(`BEFORE\n\n${serialize(blockMessages(preview.before))}\n\nAFTER\n\n${serialize(blockMessages(preview.after))}`)}</text></scrollbox>
               </>}</Show>
             </box>
@@ -487,11 +487,15 @@ In configuration: arrows choose, Space toggles, Enter runs.
 m/t selects the summary model/effort, also from the main view.
 Reasoning combines with one tool mode. Tool deletion requires reasoning removal.
 Summaries cannot combine with pruning. Parallel summaries apply together.
-Pruning is final in effective context. Stored history is unchanged.
+Pruning changes effective context only. Stored history is unchanged.
 
 READ & EXPAND
 Enter reads the hovered USER or SUMMARY fullscreen.
-Ctrl+E previews one-layer summary expansion, retaining earlier pruning.
+Ctrl+E previews one-layer restoration for each selected item; Ctrl+S confirms.
+Summaries expand first, retaining their prior pruning. Pruned turns restore
+their latest pruning action; earlier layers stay applied. Combined tool/reasoning
+pruning restores together. This also restores deleted calls and results.
+Restoration makes no model call and can increase context; resume stays budget-checked.
 Readers: arrows move 10 lines; PageUp/PageDown move one screen.
 Summary reader: e edits manually; r requests a model edit; Ctrl+S applies.
 Model edits remain proposals until applied.
@@ -513,7 +517,7 @@ Paused exit: s/Esc stays; r resumes only below threshold; a aborts.
 Manual edits protect the active turn. AUTO last resort may summarize its prefix,
 preserving the configured recent tail. Subagents cannot use MANUAL.
 Incomplete batch: g retries failed ranges; m/t changes model/effort; Esc discards.
-No Undo, Redo or Unprune.`
+There is no global Undo/Redo or ledger rewind.`
 
 const plugin = Plugin.define({
   id: "context-manager",

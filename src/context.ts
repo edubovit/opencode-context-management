@@ -20,6 +20,12 @@ export type Block = {
   allToolsPruned?: boolean
   summaryID?: string
   previous?: Block[]
+  pruning?: PruningLayer[]
+}
+
+type PruningLayer = {
+  operationID: string
+  before: Pick<Block, "messages" | "pruned" | "reasonPruned" | "toolsDeleted" | "allToolsPruned">
 }
 
 export function hash(value: unknown) {
@@ -95,11 +101,17 @@ export function select(blocks: Block[], start: number, end: number) {
 
 export function operation(mode: Operation["mode"], selected: Block[], rule?: PruneRule, tokenizer: TokenBasis = FALLBACK_BASIS): Operation {
   const messages = blockMessages(selected)
+  const summaryIDs = selected.flatMap((block) => block.summaryID ? [block.summaryID] : [])
+  const pruneTargets = selected.flatMap((block) => {
+    const layer = block.kind === "turn" && block.pruning?.at(-1)
+    return layer ? [{ operationID: layer.operationID, sourceIDs: [...block.sourceIDs] }] : []
+  })
   return {
     id: randomUUID(), mode, sourceIDs: selected.flatMap((b) => b.sourceIDs),
     beforeHash: historyHash(messages), beforeChars: chars(serialize(messages)), beforeTokens: contentTokens(messages, tokenizer), tokenizer: { ...tokenizer }, created: Date.now(),
     ...(rule ? { rule } : {}),
-    ...(mode === "expand" ? { summaryIDs: selected.flatMap((block) => block.summaryID ? [block.summaryID] : []) } : {}),
+    ...(mode === "expand" && summaryIDs.length ? { summaryIDs } : {}),
+    ...(mode === "expand" && pruneTargets.length ? { pruneTargets } : {}),
   }
 }
 
@@ -164,40 +176,67 @@ export function project(active: Envelope[], policy: Policy, observe?: (op: Opera
     if (["tool-prune", "tool-prune-all", "tool-delete", "prune-reason"].includes(op.mode)) {
       for (const b of selected) {
         if (b.kind !== "turn") continue
+        const before: PruningLayer["before"] = {
+          messages: b.messages, pruned: withPruning([b], pruned)[0].pruned,
+          ...(b.reasonPruned !== undefined ? { reasonPruned: b.reasonPruned } : {}),
+          ...(b.toolsDeleted !== undefined ? { toolsDeleted: b.toolsDeleted } : {}),
+          ...(b.allToolsPruned !== undefined ? { allToolsPruned: b.allToolsPruned } : {}),
+        }
+        let changed = false
         if (op.pruneReason || op.mode === "prune-reason") {
-          for (const m of b.messages) m.parts = m.parts.filter((p) => p.type !== "reasoning")
+          changed ||= !b.reasonPruned
           b.reasonPruned = true
         }
         if (op.mode === "tool-delete") {
-          for (const m of b.messages) m.parts = m.parts.filter((p) => {
-            if (p.type !== "tool") return true
-            pruned.delete(p.id)
-            return false
-          })
+          changed ||= !b.toolsDeleted || !!b.allToolsPruned
           b.toolsDeleted = true
           delete b.allToolsPruned
         }
-        if (op.mode === "tool-prune-all") {
-          for (const m of b.messages) for (const p of m.parts) {
-            if (p.type !== "tool" || (p.state.status !== "completed" && p.state.status !== "error")) continue
-            setToolText(p, TOOL_OUTPUT_PRUNED)
-            p.state.attachments = []
-            if (p.state.status === "error") p.state.error = TOOL_OUTPUT_PRUNED
-            pruned.set(p.id, "all")
-          }
-          if (!b.toolsDeleted) b.allToolsPruned = true
+        if (op.mode === "tool-prune-all" && !b.toolsDeleted) {
+          changed ||= !b.allToolsPruned
+          b.allToolsPruned = true
         }
-        if (op.mode === "tool-prune") for (const m of b.messages) for (const p of m.parts) {
-          if (p.type === "tool" && pruned.get(p.id) !== "all") prunePart(p, op.rule!, pruned)
-        }
+        b.messages = b.messages.map((message) => {
+          const parts = message.parts.flatMap((part): Part[] => {
+            if (part.type === "reasoning" && (op.pruneReason || op.mode === "prune-reason")) return []
+            if (part.type !== "tool") return [part]
+            if (op.mode === "tool-delete") { pruned.delete(part.id); return [] }
+            if (pruned.get(part.id) === "all") return [part]
+            if (op.mode === "tool-prune") return [prunePart(part, op.rule!, pruned)]
+            if (op.mode !== "tool-prune-all" || (part.state.status !== "completed" && part.state.status !== "error")) return [part]
+            const next = withToolText(part, TOOL_OUTPUT_PRUNED)
+            if (next.state.status === "completed" || next.state.status === "error") next.state.attachments = []
+            pruned.set(part.id, "all")
+            return [next]
+          })
+          if (parts.length === message.parts.length && parts.every((part, index) => part === message.parts[index])) return message
+          changed = true
+          return { ...message, parts }
+        })
+        if (changed) b.pruning = [...(b.pruning ?? []), { operationID: op.id, before }]
       }
       continue
     }
     if (op.mode === "expand") {
       const targets = new Set(op.summaryIDs)
-      if (!targets.size || selected.filter((block) => block.summaryID && targets.has(block.summaryID)).length !== targets.size)
+      const pruneTargets = op.pruneTargets ?? []
+      if ((!targets.size && !pruneTargets.length) || selected.filter((block) => block.summaryID && targets.has(block.summaryID)).length !== targets.size)
         throw new Error("Selected summary is no longer available for expansion")
+      if (new Set(pruneTargets.flatMap((target) => target.sourceIDs)).size !== pruneTargets.reduce((sum, target) => sum + target.sourceIDs.length, 0) ||
+          pruneTargets.some((target) => !selected.some((block) => block.kind === "turn" && block.pruning?.at(-1)?.operationID === target.operationID && hash(block.sourceIDs) === hash(target.sourceIDs))))
+        throw new Error("Selected pruning layer is no longer available for restoration")
       const expanded = selected.flatMap((block) => {
+        const pruning = pruneTargets.find((target) => hash(target.sourceIDs) === hash(block.sourceIDs))
+        if (pruning) {
+          const layer = block.pruning!.at(-1)!
+          const { pruning: _pruning, reasonPruned: _reason, toolsDeleted: _tools, allToolsPruned: _all, ...current } = block
+          const messages = layer.before.messages.filter((message) => block.sourceIDs.includes(message.info.id))
+          if (hash(messages.map((message) => message.info.id)) !== hash(block.sourceIDs)) throw new Error("Pruning restoration source changed")
+          const earlier = block.pruning!.slice(0, -1)
+          const restored: Block = { ...current, ...layer.before, messages, ...(earlier.length ? { pruning: earlier } : {}) }
+          restorePruning([restored], pruned)
+          return [restored]
+        }
         if (!block.summaryID || !targets.has(block.summaryID)) return [block]
         if (!block.previous) throw new Error("Summary has no pre-compaction state")
         const previous = structuredClone(block.previous)
@@ -234,23 +273,24 @@ function restorePruning(blocks: Block[], pruned: Map<string, string>) {
 }
 
 function prunePart(part: ToolPart, rule: PruneRule, pruned: Map<string, string>) {
-  if (part.state.status !== "completed" && part.state.status !== "error") return
+  if (part.state.status !== "completed" && part.state.status !== "error") return part
   const signature = hash(rule)
-  if (pruned.get(part.id) === signature) return
+  if (pruned.get(part.id) === signature) return part
   const outputPath = typeof part.state.metadata?.outputPath === "string" ? part.state.metadata.outputPath : undefined
   const original = toolText(part)
   const text = pruneText(original, rule, outputPath)
-  if (text === original) return
-  setToolText(part, text)
+  if (text === original) return part
   pruned.set(part.id, signature)
+  return withToolText(part, text)
 }
 
-function setToolText(part: ToolPart, text: string) {
-  if (part.state.status === "completed") part.state.output = text
-  else if (part.state.status === "error") {
-    part.state.error = text
-    if (typeof part.state.metadata?.output === "string") part.state.metadata.output = text
-  }
+function withToolText(part: ToolPart, text: string): ToolPart {
+  if (part.state.status === "completed") return { ...part, state: { ...part.state, output: text } }
+  if (part.state.status === "error") return { ...part, state: {
+    ...part.state, error: text,
+    ...(typeof part.state.metadata?.output === "string" ? { metadata: { ...part.state.metadata, output: text } } : {}),
+  } }
+  return part
 }
 
 export function splitAfter(blocks: Block[], id: string): Block[] {

@@ -74,14 +74,25 @@ try {
   const prunePause = await test.until(async () => (await pruning.host.auto!.state(pruning.sessionID)).pause, "provider pause before large-output pruning")
   assert.equal(prunePause.accounting?.source, "provider-matched")
   assert.ok(prunePause.accounting!.local < prunePause.threshold)
-  await pruning.prune((await pruning.load()).blocks[0].sourceIDs, { reasoning: false, tools: "large" })
+  const pruneIDs = (await pruning.load()).blocks[0].sourceIDs
+  await pruning.prune(pruneIDs, { reasoning: false, tools: "large" })
   const pruned = (await pruning.host.auto!.state(pruning.sessionID)).pause!
   assert.ok(pruned.tokens < pruned.threshold, JSON.stringify(pruned))
   assert.ok(pruned.accounting!.removed > 0 && pruned.accounting!.added > 0)
+  const heldRequests = test.requests.length
+  await pruning.applyRestore(await pruning.prepareRestore("expand", pruneIDs))
+  const restored = (await pruning.host.auto!.state(pruning.sessionID)).pause!
+  assert.equal(restored.tokens, prunePause.tokens)
+  assert.deepEqual(restored.accounting?.reported, prunePause.accounting?.reported)
+  assert.ok(restored.tokens > restored.threshold)
+  await assert.rejects(pruning.host.auto!.command(pruning.sessionID, { action: "resume", pauseID: prunePause.id }), /Resume blocked/)
+  assert.equal(test.requests.length, heldRequests, "Restoring pruning cannot dispatch a model or bypass the held gate")
+  await pruning.prune(pruneIDs, { reasoning: false, tools: "large" })
   await pruning.host.auto!.command(pruning.sessionID, { action: "resume", pauseID: prunePause.id })
   await test.client.session.wait({ sessionID: pruning.sessionID })
   assert.match(JSON.stringify(test.requests.at(-1)?.messages), /middle omitted/)
   checks.push("large-output pruning lowers a provider-based pause enough to resume without a stale-usage floor")
+  checks.push("pruning restoration returns to the same provider anchor, blocks oversized resume, and makes no model request")
 
   test.usage((wire) => noHelpers(wire) ? undefined : { input: 10000, output: 800, cached: 6000, reasoning: 700 })
   const { controller: legacy } = await make()

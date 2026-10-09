@@ -2,13 +2,13 @@
 
 Choose what stays in your coding session's context. Prune reasoning or tool results, summarize selected turns, and expand summaries later—without deleting the stored conversation.
 
-**Plugin 4.0.0 · OpenCode V2**.
+**Plugin 4.1.0 · OpenCode V2**.
 
 ## Features
 
 - **Range-based editing:** select disjoint ranges, then choose reasoning removal, large/all tool-result pruning, whole-call deletion, or detailed/brief summaries.
 - **Parallel summaries:** each range receives the same frozen effective background. Only a complete successful batch applies; retry just failed ranges.
-- **Expandable summaries:** restore one pre-summary layer, retaining earlier pruning and nested summaries. No Undo, Redo or Unprune.
+- **Reversible reductions:** expand summaries or restore the latest tool/reasoning pruning layer on selected turns. Earlier layers and unrelated ranges stay intact; no global Undo/Redo.
 - **Fullscreen readers:** read turns and saved summaries. Edit summaries manually or with a model; model edits stay proposals until explicitly applied.
 - **Local statistics:** token estimates, tool status, selected-range totals, and effective-context exports. Counting needs no model call.
 - **Near-limit protection:** suspend before a model request and resume the same request after reduction. AUTO_PER_TURN is the default; subagents never require manual recovery. Last resort can summarize an unfinished-turn prefix while retaining the newest 20,000 estimated tokens.
@@ -19,7 +19,7 @@ Initial summaries apply automatically; inspect/edit/expand them afterward. Summa
 
 This is a **source-based, private package**, not a published npm plugin. Requires a compatible local OpenCode **V2 (2.0.24 or newer)** installation and npm. Dependency packages are pinned to **2.0.26** for reproducibility, independently of the host. Startup does not enforce an exact host version. Host API changes may require updates; a different patch or minor version alone does not block loading.
 
-Validated against OpenCode **2.0.24, 2.0.25 and 2.0.26**, including the actual Windows terminal inspector, provider-usage accounting and subagents. See [validation details](CONTRIBUTING.md#version-400-validation).
+Validated against OpenCode **2.0.24, 2.0.25 and 2.0.26**, including the actual Windows terminal inspector. Provider-usage accounting, restoration and subagents are checked on 2.0.26. See [validation details](CONTRIBUTING.md#version-410-validation).
 
 Development checks run on Node.js 22+; renderer tests use the bundled Bun runtime. OpenTUI's Node-backend engine warning on Node 22 does not apply to the bundled Bun renderer. Using its Node backend directly requires Node 26.4+.
 
@@ -81,10 +81,10 @@ Use **Space → move → Space** to close a range; repeat for more ranges. Press
 | Summarize (detailed) | Detailed replacement with at most one soft-size-review follow-up. |
 | Summarize (brief) | Shorter, single-pass replacement. |
 
-Reasoning removal combines with one tool mode. Summary modes cannot combine with pruning. Pruning makes no model call and never changes past tool execution or disables future tools.
+Reasoning removal combines with one tool mode. Summary modes cannot combine with pruning. Pruning and restoration make no model calls and never change past tool execution or disable future tools.
 
 - **Enter:** read a turn or summary. Readers exclude tool activity/reasoning and label unfinished answers.
-- **Ctrl+E, then Ctrl+S:** preview and confirm summary expansion.
+- **Ctrl+E, then Ctrl+S:** preview and confirm one-layer restoration. A summary expands to its pre-summary view. A pruned ordinary turn restores its latest effective pruning action. Combined tool/reasoning pruning restores together, including deleted calls/results; separate actions restore one at a time. Expand a summary before restoring pruning hidden inside it.
 - **e/r** inside a summary: manual edit / model request. **Ctrl+S** saves, sends, or applies according to the current editor mode.
 - **a:** save autocompaction strategy. **g:** retry failed batch jobs, or explicitly run AUTO while paused.
 - **v:** cycle Overview → Details → Content → Runtime. **n:** local token/character counts; the guard stays in tokens. **Tab:** switch panes. **f:** reload. **o:** export. **?:** help.
@@ -92,6 +92,8 @@ Reasoning removal combines with one tool mode. Summary modes cannot combine with
 - **Esc:** cancel an open range/editor or go back. A paused exit offers Stay, Resume only if within budget, or Abort.
 
 Rows show USER/SUMMARY with compact, right-aligned sizes; filled circles and R labels mark selected ranges. Host checkpoint context is labeled separately and is read-only. Tool statistics distinguish large-output eligibility, pruning, removed tools/reasoning, and unfinished/protected turns. Exact numbers remain in Details and exports.
+
+Restoration affects only selected turns, even when an earlier prune covered a wider range. It preserves earlier pruning layers, survives restart, and also works with pruning saved by earlier V2 releases. The preview shows how much estimated text context will return. Restoring during a manual pause can put the request over budget again; Resume stays blocked until it fits. Restoration does not recover data already removed by the host or expand an ingestion-time spill preview into its full output file.
 
 ## Options
 
@@ -159,9 +161,9 @@ Queued inputs are not silently discarded. Oversized synthetic-only context witho
 
 ## Upgrading and limits
 
-**Version 4 is V2-native.** Existing V2 ledgers in formats **7 and 8** remain readable, including nested summaries, revisions, pruning and partial-turn checkpoints. Reading does not rewrite stored metadata. The next ledger write upgrades to append-only **format 9**, without changing existing operations or their fingerprints. Exports use schema 4. Older plugin versions cannot read format 9: back up before upgrading and do not downgrade a modified session.
+**Version 4.1 is V2-native.** Existing V2 ledgers in formats **7, 8 and 9** remain readable, including nested summaries, revisions, pruning and partial-turn checkpoints. Reading does not rewrite stored metadata. The next ledger write upgrades to append-only **format 10**, which records explicit pruning-restoration targets without changing older operations or their fingerprints. Old saved summary expansions retain their original summary-only behavior. Exports still use schema 4. Older plugin versions cannot read format 10: back up before upgrading and do not downgrade a modified session.
 
-Formats 1–6, malformed ledgers and copied-history fork ledgers are preserved and refused, never silently reset. There is no V1 reader, character-pruning mode, Undo/Redo ledger cursor or Unprune implementation. Fresh child sessions are distinct from forks and get their own ledger.
+Formats 1–6, malformed ledgers and copied-history fork ledgers are preserved and refused, never silently reset. There is no V1 reader, character-pruning mode or Undo/Redo ledger cursor. Pruning restoration is a new V2 expansion action, not the old V1 Unprune implementation. Fresh child sessions are distinct from forks and get their own ledger.
 
 Native checkpoints are read-only; edit later USER turns. Historical tools still marked running/streaming must be settled by the host before editing. Opaque provider-executed results cannot be safely pruned; use a summary or whole-call deletion with reasoning instead. Errored or interrupted reasoning that the host converted to visible text is also refused rather than guessed at. Signed/opaque reasoning, encrypted checkpoints and stateful provider transports are not universally validated.
 

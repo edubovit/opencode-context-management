@@ -26,20 +26,20 @@ for (const version of [7, 8]) test(`format ${version} fingerprints and requests 
     const saved = { ...fixture.policy, version, revision: length, cursor: length, operations: fixture.policy.operations.slice(0, length).map((op, i) => ({ ...op, beforeHash: sourceHashes[index][i] })) }
     const before = structuredClone(saved)
     const policy = readPolicy({ id: fixture.session.id, metadata: { [KEY]: saved } })
-    assert.equal(policy.version, 9)
+    assert.equal(policy.version, 10)
     assert.equal("cursor" in policy, false)
     assert.deepEqual(saved, before)
     assert.equal(hash(projectRequest(fixture.native, fixture.raw, fixture.canonical, policy)), requestHashes[index][length - 1])
     assert.deepEqual(readPolicy({ id: fixture.session.id, metadata: { [KEY]: JSON.parse(JSON.stringify(policy)) } }), policy)
     const next = append(policy, operation("prune-reason", [project(activeMessages(fixture.raw), policy).at(-1)!]))
     assert.deepEqual(next.operations.slice(0, length), policy.operations)
-    assert.equal(next.version, 9)
+    assert.equal(next.version, 10)
   }
 })
 
 test("unsupported, foreign and damaged ledgers are refused without resetting metadata", () => {
   const valid = emptyPolicy("ses_test")
-  const values: unknown[] = [null, [], {}, ...[1, 2, 3, 4, 5, 6, 10, "9"].map((version) => ({ ...valid, version })), { ...valid, sessionID: "ses_other" }, { ...valid, revision: 1 }, { ...valid, cursor: 0 }]
+  const values: unknown[] = [null, [], {}, ...[1, 2, 3, 4, 5, 6, 11, "10"].map((version) => ({ ...valid, version })), { ...valid, sessionID: "ses_other" }, { ...valid, revision: 1 }, { ...valid, cursor: 0 }]
   for (const version of [7, 8]) for (const cursor of [-1, 1, 0.5]) values.push({ ...valid, version, cursor })
   for (const value of values) {
     const metadata = { unrelated: "keep", [KEY]: value }

@@ -9,6 +9,7 @@ import { KEY } from "../src/config.ts"
 import { TOKENIZER_ID } from "../src/tokens.ts"
 import { distribution } from "../src/metrics.ts"
 import { toolText } from "../src/text.ts"
+import { snapshot } from "../src/snapshot.ts"
 import { pruneRule } from "./fixtures.ts"
 
 test("native normalization pins source identity, excludes unselectable controls, and retains user spans", () => {
@@ -92,7 +93,7 @@ test("V2 accepts only native-format ledgers and refuses inherited/V1 state witho
   assert.throws(() => readPolicy({ ...sessionView(session), metadata: { [KEY]: legacy } }), /Unsupported/)
   assert.equal(legacy.version, 6)
   assert.throws(() => readPolicy({ ...sessionView(session), metadata: { [KEY]: emptyPolicy("ses_parent") } }), /another session/)
-  assert.equal(readPolicy({ ...sessionView(session), metadata: { [KEY]: emptyPolicy(session.id) } }).version, 9)
+  assert.equal(readPolicy({ ...sessionView(session), metadata: { [KEY]: emptyPolicy(session.id) } }).version, 10)
 })
 
 test("background shell records intentionally omitted by the host do not block saved edits", () => {
@@ -152,8 +153,9 @@ test("native error attachments and interruption text remain visible until all-ou
   const policy = append(emptyPolicy(session.id), operation("tool-prune-all", [blocks[0]]))
   const after = project(activeMessages(raw), policy)
   assert.equal(distribution(after).attachments, 0)
-  assert.ok(!JSON.stringify(after[0]).includes("Visible interrupted output"))
-  assert.ok(!JSON.stringify(after[0]).includes("not model-visible metadata"))
+  const visible = snapshot(session.id, "2.0.26", after, policy)
+  assert.ok(!JSON.stringify(visible).includes("Visible interrupted output"))
+  assert.ok(!JSON.stringify(visible).includes("not model-visible metadata"))
 })
 
 test("native textual attachments remain available to summaries while binary media stays descriptive", () => {

@@ -68,6 +68,12 @@ export async function verifyInspector(test: Awaited<ReturnType<typeof fixture>>,
     await test.until(async () => (await controller.load()).policy.operations.at(-1)?.mode === "expand", "UI summary expansion")
     const loaded = await controller.load()
     assert.equal(loaded.blocks[0].reasonPruned, true)
+    const beforeRestore = test.requests.length
+    await keys("\x05")
+    await seen("1 pruning")
+    await keys("\x13")
+    await test.until(async () => !(await controller.load()).blocks[0].reasonPruned, "UI pruning restoration")
+    assert.equal(test.requests.length, beforeRestore, "UI pruning restoration must not invoke a model")
     child.resize(100, 30)
     await sleep()
     child.resize(80, 24)

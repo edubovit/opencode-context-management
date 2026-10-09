@@ -301,7 +301,7 @@ test("range restore previews are read-only until confirmed and use no model", as
   const loaded = await controller.load()
   assert.deepEqual(loaded.blocks[1].messages, data.messages.slice(2, 4))
   assert.equal(readPolicy(data.session).operations.length, 2)
-  assert.equal(readPolicy(data.session).version, 9)
+  assert.equal(readPolicy(data.session).version, 10)
   assert.equal(data.calls.length, calls)
 })
 
@@ -323,7 +323,7 @@ test("restore confirmation rejects a busy session or changed source/revision", a
 
 test("restore and prune no-ops do not add misleading history entries", async (t) => {
   const { data, controller, ids } = await setup(t)
-  await assert.rejects(controller.prepareRestore("expand", ids), /No expandable/)
+  await assert.rejects(controller.prepareRestore("expand", ids), /No restorable/)
   await controller.prune(ids)
   await assert.rejects(controller.prune(ids), /No eligible/)
   assert.equal(readPolicy(data.session).operations.length, 1)
@@ -342,4 +342,29 @@ test("summary expansion through the controller restores pre-summary pruning with
   await controller.applyRestore(preview)
   assert.deepEqual((await controller.load()).blocks[0].messages, before)
   assert.equal(data.calls.length, count)
+})
+
+test("pruning restoration previews token growth, rejects busy/stale confirmation, and makes no model calls", async (t) => {
+  const { data, controller, ids } = await setup(t)
+  const original = structuredClone(data.messages)
+  await controller.prune(ids, { reasoning: true, tools: "delete" })
+  const preview = await controller.prepareRestoreRanges("expand", [ids])
+  assert.equal(preview.summaries, 0)
+  assert.equal(preview.prunings, 1)
+  assert.ok(preview.afterTokens > preview.beforeTokens)
+  assert.equal(readPolicy(data.session).revision, 1)
+  data.idle = false
+  await assert.rejects(controller.applyOperations(preview.operations, preview), /idle/)
+  data.idle = true
+  await controller.prune(data.messages.slice(2, 4).map((message) => message.info.id))
+  await assert.rejects(controller.applyOperations(preview.operations, preview), /changed/)
+  const fresh = await controller.prepareRestore("expand", ids)
+  assert.equal(fresh.prunings, 1)
+  await controller.applyRestore(fresh)
+  const after = await controller.load()
+  assert.deepEqual(after.blocks[0].messages, original.slice(0, 2))
+  assert.ok(after.blocks[1].pruning?.length)
+  await assert.rejects(controller.prepareRestore("expand", ids), /No restorable/)
+  assert.equal(data.calls.length, 0)
+  assert.deepEqual(data.messages, original)
 })
