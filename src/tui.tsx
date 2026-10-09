@@ -4,6 +4,7 @@ import { inputBlocked, type InspectorUI } from "./ui.ts"
 import type { Model } from "./model.ts"
 import { createMemo, createSignal, onCleanup, onMount, Show } from "solid-js"
 import { useKeyboard, useTerminalDimensions } from "@opentui/solid"
+import type { ScrollBoxRenderable } from "@opentui/core"
 import { Controller, type Loaded, type ModelChoice, type MultiRestorePreview } from "./controller.ts"
 import { blockMessages, activeMessages, serialize, type Block, type RestoreMode } from "./context.ts"
 import { SummaryBatch } from "./batch.ts"
@@ -11,6 +12,8 @@ import { SummaryEditor } from "./summary-editor.ts"
 import { SummaryReader } from "./summary-reader.tsx"
 import { TurnReader } from "./turn-reader.tsx"
 import { RangeList } from "./range-list.tsx"
+import { ContextOverview } from "./context-overview.tsx"
+import { budgetView, compactCount } from "./inspector-view.ts"
 import { CompactionMenu } from "./compaction-menu.tsx"
 import { COMPACTION_MODES, selectedModes, toggleMode, type Compaction } from "./compaction.ts"
 import { rangePreview, rangeToolStats } from "./range-rows.ts"
@@ -24,6 +27,8 @@ import { FALLBACK_BASIS, tokenLabel } from "./tokens.ts"
 import { AUTO_KEY, STRATEGIES, type AutoState, type AutoControl } from "./auto-state.ts"
 import { remoteHost } from "./control.ts"
 
+const views = ["overview", "details", "content", "runtime"] as const
+
 export function Inspector(props: { api: InspectorUI; sessionID: string; controller: Controller }) {
   const api = props.api
   const dimensions = useTerminalDimensions()
@@ -33,7 +38,8 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
   const [busy, setBusy] = createSignal(false)
   const [pane, setPane] = createSignal<"list" | "content">("list")
   const [notice, setNotice] = createSignal("Loading active session context…")
-  const [view, setView] = createSignal<"distribution" | "content" | "runtime">("distribution")
+  const [noticeError, setNoticeError] = createSignal(false)
+  const [view, setView] = createSignal<typeof views[number]>("overview")
   const summaries = new SummaryBatch(props.controller)
   const [runningBatch, setRunningBatch] = createSignal(false)
   const [reader, setReader] = createSignal<{ kind: "summary"; editor: SummaryEditor } | { kind: "turn"; block: Block; label: string }>()
@@ -53,17 +59,24 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
   const [configuring, setConfiguring] = createSignal(false)
   const [compaction, setCompaction] = createSignal<Compaction>({ kind: "summary", mode: "compact" })
   const [compactionIndex, setCompactionIndex] = createSignal(4)
+  let detailsScroll: ScrollBoxRenderable | undefined
   const automatic = () => auto().pause?.phase === "auto"
   const canResume = () => auto().pause?.phase === "manual" && auto().pause!.tokens <= auto().pause!.threshold
   const basis = () => loaded()?.tokenizer ?? FALLBACK_BASIS
   const rule = () => loaded()?.pruneRule ?? bindPruneRule(props.controller.config.prune, basis())
   const size = (value: number) => unit() === "tokens" ? `≈${value.toLocaleString()} tokens` : `${value.toLocaleString()} chars`
+  const shortSize = (value: number) => `${unit() === "tokens" ? "≈" : ""}${compactCount(value)}`
+  const narrow = () => dimensions().width < 80
+  const sidebarWidth = () => narrow() ? dimensions().width - 2 : Math.min(48, Math.max(30, Math.floor((dimensions().width - 3) * 0.4)))
   const popMode = api.keymap.mode.push("context-manager")
   onCleanup(() => { popMode(); void Promise.all([summaries.dispose(), props.controller.dispose()]).catch((error) => api.ui.toast.show({ message: String(error), variant: "warning" })) })
   const blocks = () => loaded()?.blocks ?? []
   const sourceTurns = createMemo(() => turnIndex(activeMessages(loaded()?.raw ?? [], loaded()?.session.revert)))
   const ranges = () => visibleRanges(selection(), cursor())
   const inspected = () => selectedBlocks(blocks(), ranges())
+  const localCounts = createMemo(() => distribution(blocks(), loaded()?.runtime, basis(), unit()))
+  const selectedCounts = createMemo(() => distribution(inspected(), undefined, basis(), unit()))
+  const requestBudget = createMemo(() => budgetView(loaded(), auto(), props.controller.config.autocompaction.headroom))
   const selectedIDs = () => rangeIDs(blocks(), selection())
   const touch = () => setEpoch((value) => value + 1)
   const refresh = async (anchor?: string[][], focus?: string[]) => {
@@ -76,13 +89,14 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
     setSelection(selected)
     const focused = focus ? next.blocks.findIndex((block) => block.sourceIDs[0] === focus[0]) : -1
     setCursor(focused >= 0 ? focused : selected.ranges[0]?.start ?? 0)
-    setNotice("Ready. Context counts are local estimates; missing overhead is not zero.")
+    setNotice("Ready.")
   }
   const run = async (task: () => Promise<void>) => {
     if (busy()) return
     setBusy(true)
+    setNoticeError(false)
     try { await task() }
-    catch (error) { setNotice(error instanceof Error ? error.message : String(error)) }
+    catch (error) { setNoticeError(true); setNotice(error instanceof Error ? error.message : String(error)) }
     finally { setBusy(false) }
   }
   onMount(() => void run(refresh))
@@ -145,6 +159,7 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
   const openCompaction = () => {
     try { selectedIDs() } catch (error) { setNotice(error instanceof Error ? error.message : String(error)); return }
     setCompactionIndex(selectedModes(compaction())[0] ?? 0)
+    setPane("list")
     setConfiguring(true)
   }
   const runCompaction = async () => {
@@ -295,8 +310,10 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
       c: openCompaction,
       f: () => run(refresh),
       o: () => run(async () => { setNotice(`Snapshot saved: ${await props.controller.dump(api.app.version)}`) }),
-      v: () => { setView(view() === "distribution" ? "content" : view() === "content" ? "runtime" : "distribution") },
+      v: () => { setView(views[(views.indexOf(view()) + 1) % views.length]); if (!narrow() || pane() === "content") detailsScroll?.scrollTo(0); if (narrow()) setPane("content") },
       n: () => { setUnit(unit() === "tokens" ? "characters" : "tokens") },
+      m: () => openPicker("model"),
+      t: () => openPicker("effort"),
     }
     const action = actions[key.name]
     if (action) { key.preventDefault(); void action() }
@@ -305,9 +322,11 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
     const selected = ranges().some((range) => index >= range.start && index <= range.end)
     const tag = rangeTag(selection(), cursor(), index)
     const status = toolStatus([block], rule(), basis())
+    const protectedTurn = auto().pause && block.sourceIDs.some((id) => (auto().pause!.protectedIDs ?? [auto().pause!.userID]).includes(id))
     return {
-      title: `${selected ? "[+]" : "[ ]"} ${tag ? `${tag} · ` : ""}${rangeLabel(block.sourceIDs, sourceTurns())} · ${block.kind === "turn" ? block.messages[0]?.info.role === "user" ? "USER" : block.messages[0]?.info.kind === "assistant" ? "CONTINUATION" : "HOST CONTEXT" : "SUMMARY"} · ${size(distribution([block], undefined, basis(), unit()).total)}${block.closed ? "" : " · unfinished"}${auto().pause && block.sourceIDs.some((id) => (auto().pause!.protectedIDs ?? [auto().pause!.userID]).includes(id)) ? " · PROTECTED" : ""}`,
-      stats: block.kind === "turn" ? rangeToolStats(status) : undefined,
+      title: `${selected ? "●" : "○"} ${tag ? `${tag} · ` : ""}${rangeLabel(block.sourceIDs, sourceTurns())} · ${block.kind === "turn" ? block.messages[0]?.info.role === "user" ? "USER" : block.messages[0]?.info.kind === "assistant" ? "CONTINUATION" : "HOST CONTEXT" : "SUMMARY"}`,
+      size: shortSize(distribution([block], undefined, basis(), unit()).total),
+      stats: [protectedTurn ? "PROTECTED" : !block.closed ? "Unfinished" : "", block.kind === "turn" ? rangeToolStats(status) : ""].filter(Boolean).join(" · ") || undefined,
       preview: rangePreview(block, loaded()!.policy),
     }
   }))
@@ -317,9 +336,9 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
     const status = toolStatus(items, rule(), basis())
     const value = (key: string) => data.unavailableCategories.includes(key) ? "unavailable" : data.counts[key].toLocaleString()
     return [
-      selected ? `SELECTED RANGES (${selection().ranges.length}${selection().anchor !== undefined ? " + open" : ""})` : "WHOLE EFFECTIVE CONTEXT",
+      selected ? `SELECTED RANGES (${selection().ranges.length}${selection().anchor !== undefined ? " + open" : ""})` : "LOCAL CONTEXT",
       `Total categorized text: ${size(data.total)}`,
-      statusLabel(status),
+      rangeToolStats(status),
       `user: ${value("user")} · assistant: ${value("assistant")} · summaries: ${value("summaries")}`,
       `reasoning: ${value("reasoning")} · toolInputs: ${value("toolInputs")}`,
       `toolOutputs: ${value("toolOutputs")} · loadedSkills: ${value("loadedSkills")}`,
@@ -327,20 +346,26 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
       `Attachments: ${data.attachments} (token cost unknown) · Prune delta: ${signed(unit() === "tokens" ? status.pruneDelta : status.pruneCharDelta)}`,
     ].join("\n")
   }
-  const globalStats = createMemo(() => loaded() ? stats(false) : "WHOLE EFFECTIVE CONTEXT\nUnavailable: session history not loaded")
+  const globalStats = createMemo(() => loaded() ? stats(false) : "LOCAL CONTEXT\nUnavailable: session history not loaded")
   const selectionStats = createMemo(() => stats(true))
   const panel = createMemo(() => {
     if (view() === "runtime") return limited(JSON.stringify(loaded()?.runtime ?? { unavailable: "No runtime capture yet. Send a normal session message first." }, null, 2))
     if (view() === "content") return limited(serialize(blockMessages(ranges().length ? inspected() : blocks())))
     const usage = loaded()?.usage
-    const budget = auto().pause?.accounting ?? loaded()?.runtime?.budget
+    const budget = auto().pause ? auto().pause!.accounting : loaded()?.runtime?.budget
     return [
+      `Session: ${props.sessionID} · revision ${loaded()?.policy.revision ?? "?"}`,
+      `Context tokenizer: ${tokenLabel(basis())}`,
+      `Auto: ${auto().strategy} · headroom ${props.controller.config.autocompaction.headroom.toLocaleString()} tokens`,
       `Limits: >${rule().threshold} tokens; retain up to ${rule().head} head + ${rule().tail} tail (notice/link extra).`,
       ...selection().ranges.map((range, index) => `R${index + 1}: ${rangeLabel(blocks().slice(range.start, range.end + 1).flatMap((block) => block.sourceIDs), sourceTurns())}`),
       "Runtime inventory may be stale/incomplete; missing is not zero. Session overhead is not assigned to selected ranges.",
       usage ? `Last reported usage: ${usage.total.toLocaleString()} tokens · ${usage.providerID}/${usage.modelID}` : "Last reported usage: unavailable",
-      ...(budget ? [`${auto().pause ? "Live guard" : "Last request guard"}: ≈${budget.tokens.toLocaleString()} (${budget.source}); local ≈${budget.local.toLocaleString()}`,
-        budget.reported ? `Provider baseline: ${budget.reported.input.toLocaleString()} input + ${budget.reported.output.toLocaleString()} output/reasoning. Removed local text is not exact provider savings.` : `No matching usage; local fallback ×${budget.multiplier}. Still an estimate, not a provider token count.`] : []),
+      ...(budget ? [`${auto().pause ? "Live guard" : "Last request guard"}: ≈${budget.tokens.toLocaleString()}`,
+        `Source: ${budget.source}`, `Guard local: ≈${budget.local.toLocaleString()}`,
+        ...(requestBudget().note ? [requestBudget().note!] : []),
+        ...(budget.reported ? ["Provider baseline:", `Input+cache: ${budget.reported.input.toLocaleString()}`, `Output+reasoning: ${budget.reported.output.toLocaleString()}`, "Removed local text is not exact provider savings."]
+          : [`No matching usage; local fallback ×${budget.multiplier}.`, "This is not a provider token count."])] : []),
       "Historical usage is not a recount. Large = eligible under current rules; file previews are separate. Pruning is final.",
     ].join("\n")
   })
@@ -353,23 +378,34 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
     : restoring() ? [[{ key: "Ctrl+S", label: "confirm restore" }, { key: "Esc", label: "cancel" }], ["Selected ranges only; no model call. Restoring increases context size."]]
     : runningBatch() ? [[{ key: "g", label: "retry failed ranges" }, { key: "m", label: "model" }, { key: "t", label: "effort" }, { key: "Esc", label: "discard batch" }], ["Successful results stay pending until the entire batch can autoapply."]]
     : configuring() ? [[{ key: "Up/Down", label: "mode" }, { key: "Space", label: "toggle" }, { key: "Enter", label: "run" }], [{ key: "m/t", label: "model/effort" }, { key: "Esc", label: "cancel" }]]
-    : [
-      [{ key: "?", label: "help" }, { key: "Space", label: "range" }, { key: "c", label: "configure compaction" }, { key: "Enter", label: "read" }],
-      [{ key: "Ctrl+E", label: "expand summary" }, { key: "Tab", label: "pane" }, { key: "Esc", label: "back" }],
+    : narrow() ? [
+      [{ key: "Space", label: "select" }, { key: "c", label: "reduce" }, { key: "Enter", label: "read" }],
+      [{ key: "Ctrl+E", label: "expand" }, { key: "v", label: "details" }, { key: "Tab", label: "pane" }],
+      [{ key: "a", label: "auto" }, { key: "m/t", label: "model" }, { key: "?", label: "help" }, { key: "Esc", label: "back" }],
+    ] : [
+      [{ key: "Space", label: "select" }, { key: "c", label: "reduce" }, { key: "Enter", label: "read" }, { key: "Ctrl+E", label: "expand" }],
+      [{ key: "v", label: "details" }, { key: "Tab", label: "pane" }, { key: "a", label: "auto" }, { key: "m/t", label: "model" }, { key: "?", label: "help" }, { key: "Esc", label: "back" }],
     ]
   const batchStatus = () => { epoch(); return summaries.entries.map((entry, index) => `R${index + 1} ${rangeLabel(entry.ids, sourceTurns())}: ${entry.status}${entry.error ? `\n${entry.error}` : ""}`).join("\n\n") }
   return <box width="100%" height="100%" flexDirection="column" overflow="hidden">
     <Show when={reader()} keyed fallback={
       <box width="100%" height="100%" flexDirection="column" padding={1} overflow="hidden">
-        <text height={1} wrapMode="none" truncate fg={api.theme.text.base}>Context manager · {props.sessionID} · revision {loaded()?.policy.revision ?? "?"}{busy() ? " · WORKING" : ""}</text>
-        <text height={1} wrapMode="none" truncate>{`Compaction model: ${choice() ? `${choice()!.providerID}/${choice()!.modelID}` : "not selected"} · Effort: ${choice()?.variant ?? "default"}`}</text>
-        <text height={1} wrapMode="none" truncate>Context tokenizer: {tokenLabel(basis())}</text>
-        <text height={1} flexShrink={0} wrapMode="none" truncate>{`Auto: ${auto().strategy} · headroom ${props.controller.config.autocompaction.headroom.toLocaleString()} · a strategy · g Run AUTO when paused`}</text>
+        <box height={1} flexShrink={0} flexDirection="row" justifyContent="space-between">
+          <text fg={api.theme.text.base}><b>Context manager</b>{busy() ? " · working" : ""}</text>
+          <text fg={api.theme.text.muted}>{auto().strategy === "MANUAL" ? "Manual" : auto().strategy === "AUTO_PER_TURN" ? "Auto / turn" : "Auto / session"}</text>
+        </box>
+        <box height={narrow() ? 2 : 1} flexShrink={0} flexDirection={narrow() ? "column" : "row"} gap={narrow() ? 0 : 2}>
+          <text id="cm-context-total" height={1} flexGrow={1} minWidth={0} wrapMode="none" truncate fg={api.theme.text.base}>{`Local text  ${loaded() ? `${shortSize(localCounts().total)} ${unit() === "tokens" ? "tokens" : "chars"}` : "unavailable"}`}</text>
+          <text id="cm-selected-total" height={1} flexShrink={0} wrapMode="none" truncate fg={ranges().length ? api.theme.text.formfield.selected : api.theme.text.muted}>{ranges().length ? `Selected (${selection().ranges.length}${selection().anchor !== undefined ? " + open" : ""})  ${shortSize(selectedCounts().total)} ${unit() === "tokens" ? "tokens" : "chars"}` : "No selection"}</text>
+        </box>
+        <text height={1} flexShrink={0} wrapMode="none" truncate fg={api.theme.text.muted}>{`Summary  ${choice() ? `${choice()!.providerID}/${choice()!.modelID}` : "choose a model with m"} · Effort: ${choice()?.variant ?? "default"}`}</text>
         <Show when={auto().pause}>{(pause) => <text height={2} flexShrink={0} overflow="hidden" fg={api.theme.text.feedback.warning.base}>{`PAUSED (${pause().phase}) ≈${pause().tokens.toLocaleString()} / ${pause().threshold.toLocaleString()} tokens · input limit ${pause().derived ? "derived" : "advertised"}\n${pause().message}`}</text>}</Show>
-        <text height={2} overflow="hidden">{notice()}</text>
         <Show when={help()} fallback={
           <box flexDirection="row" flexGrow={1} minHeight={0} gap={1} overflow="hidden">
-            <box width="45%" flexDirection="column" minHeight={0} overflow="hidden">
+            <Show when={!narrow() || pane() === "list"}>
+            <box id="cm-conversation-panel" flexGrow={1} flexBasis={0} minWidth={0} flexDirection="column" minHeight={0} overflow="hidden"
+              border borderStyle="rounded" borderColor={pane() === "list" ? api.theme.text.formfield.focused : api.theme.border.base}
+              title={`Conversation · ${unit() === "tokens" ? "tokens" : "chars"}`} paddingLeft={1} paddingRight={1}>
               <Show when={restoring()} keyed fallback={
                 <Show when={runningBatch()} fallback={
                   <Show when={configuring()} fallback={<RangeList api={api} rows={rows()} maxLines={props.controller.config.ui.maxLinesPerTurn} selectedIndex={cursor()} onChange={setCursor} focused={!busy() && !automatic() && !exitDialog() && !strategyPicker() && !picker() && pane() === "list"} />}>
@@ -385,17 +421,25 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
                 <scrollbox flexGrow={1} minHeight={0} focused={!busy()}><text selectable>{limited(`BEFORE\n\n${serialize(blockMessages(preview.before))}\n\nAFTER\n\n${serialize(blockMessages(preview.after))}`)}</text></scrollbox>
               </>}</Show>
             </box>
-            <box width="55%" flexDirection="column" minHeight={0} overflow="hidden">
-              <text height={2} flexShrink={0} wrapMode="none" truncate>{globalStats().split("\n").slice(0, 2).join("\n")}</text>
-              <Show when={ranges().length}><text height={2} flexShrink={0} wrapMode="none" truncate>{selectionStats().split("\n").slice(0, 2).join("\n")}</text></Show>
-              <scrollbox flexGrow={1} minHeight={0} focused={!configuring() && !runningBatch() && !busy() && !picker() && !restoring() && pane() === "content"}>
-                <text selectable>{globalStats().split("\n").slice(2).join("\n")}{ranges().length ? `\n\nSELECTED RANGE DETAILS\n${selectionStats().split("\n").slice(2).join("\n")}` : ""}{`\n\n${panel()}`}</text>
+            </Show>
+            <Show when={!narrow() || pane() === "content"}>
+            <box id="cm-context-panel" width={narrow() ? "100%" : sidebarWidth()} flexShrink={0} flexDirection="column" minHeight={0} overflow="hidden"
+              border borderStyle="rounded" borderColor={pane() === "content" ? api.theme.text.formfield.focused : api.theme.border.base}
+              title={view().charAt(0).toUpperCase() + view().slice(1)} paddingLeft={1} paddingRight={1}>
+              <scrollbox id="cm-context-scroll" ref={(value) => { detailsScroll = value }} flexGrow={1} minHeight={0} focused={!configuring() && !runningBatch() && !busy() && !picker() && !restoring() && !help() && !exitDialog() && !strategyPicker() && pane() === "content"}>
+                <Show when={view() === "overview"} fallback={<text id="cm-diagnostics" selectable>{view() === "details" ? `${globalStats()}${ranges().length ? `\n\n${selectionStats()}` : ""}\n\n` : ""}{panel()}</text>}>
+                  <Show when={loaded()} fallback={<text fg={api.theme.text.muted}>Context unavailable.</text>}>
+                    <ContextOverview api={api} budget={requestBudget()} counts={ranges().length ? selectedCounts() : localCounts()} selected={ranges().length > 0} width={sidebarWidth() - 4} />
+                  </Show>
+                </Show>
               </scrollbox>
             </box>
+            </Show>
           </box>
         }>
-          <scrollbox flexGrow={1} minHeight={0} focused={!picker()}><text>{`RANGE MENU HOTKEYS\n\nSpace: start/finish a range; inside a closed range, remove it.\nArrows: move cursor. Esc: cancel open range, then return.\nc: configure compaction for selected ranges.\nConfiguration: arrows choose mode; Space toggles; Enter runs; m/t picks model/effort.\nReasoning can combine with one tool mode. Tool deletion requires reasoning removal. Summaries cannot combine with pruning.\nPruning is final in effective context. No Undo, Redo or Unprune. Stored history is unchanged.\nSummaries run in parallel and autoapply together.\nEnter: read the hovered USER or SUMMARY fullscreen.\nOrdinary turns show user text and final assistant response without reasoning or tools.\nCtrl+E: preview one-layer summary expansion, retaining earlier pruning.\na: save per-session autocompaction strategy (does not execute).\ng: explicitly run selected AUTO strategy while suspended.\nPaused exit: s/Esc stays; r resumes only below threshold; a aborts.\nManual edits protect the active turn. AUTO last resort may summarize its prefix, preserving the configured recent tail.\nAUTO_PER_TURN is the default; subagents cannot use MANUAL.\nf: refresh. v: cycle details/content/runtime. n: tokens/characters.\nTab: switch list/details focus. o: export effective snapshot.\n\nIncomplete batch: g retries failed ranges; m/t changes model/effort; Esc discards.\nReaders: arrows move 10 lines; PageUp/PageDown move one screen.\nSummary reader: e manual editing; r model edit; Ctrl+S applies an edit; m/t chooses model/effort.\n? opens this help.`}</text></scrollbox>
+          <scrollbox flexGrow={1} minHeight={0} focused={!picker()}><text>{helpText}</text></scrollbox>
         </Show>
+        <text id="cm-notice" height={notice() === "Ready." ? 1 : 2} flexShrink={0} overflow="hidden" fg={noticeError() ? api.theme.text.feedback.error.base : api.theme.text.muted}>{notice()}</text>
         <Hotkeys api={api} lines={hints()} />
       </box>
     }>{(value) => value.kind === "summary"
@@ -425,10 +469,6 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
   </box>
 }
 
-function statusLabel(status: ReturnType<typeof toolStatus>) {
-  return rangeToolStats(status)
-}
-
 function signed(value: number) {
   return `${value >= 0 ? "+" : ""}${value.toLocaleString()}`
 }
@@ -436,6 +476,44 @@ function signed(value: number) {
 function limited(text: string) {
   return text.length > 120000 ? `${text.slice(0, 120000)}\n[Display limited to 120,000 UTF-16 units. Select a smaller range or export the full effective snapshot.]` : text
 }
+
+const helpText = `RANGE MENU HOTKEYS
+
+SELECT & REDUCE
+Space starts/finishes a range; inside a closed range, removes it.
+Arrows move the cursor. Esc cancels an open range, then returns.
+c configures actions for selected ranges.
+In configuration: arrows choose, Space toggles, Enter runs.
+m/t selects the summary model/effort, also from the main view.
+Reasoning combines with one tool mode. Tool deletion requires reasoning removal.
+Summaries cannot combine with pruning. Parallel summaries apply together.
+Pruning is final in effective context. Stored history is unchanged.
+
+READ & EXPAND
+Enter reads the hovered USER or SUMMARY fullscreen.
+Ctrl+E previews one-layer summary expansion, retaining earlier pruning.
+Readers: arrows move 10 lines; PageUp/PageDown move one screen.
+Summary reader: e edits manually; r requests a model edit; Ctrl+S applies.
+Model edits remain proposals until applied.
+
+VIEWS & COUNTS
+v cycles Overview → Details → Content → Runtime.
+Details has full counts, tokenizer/model identity, usage and warnings.
+n switches local token/character counts. The guard always uses tokens.
+Tab switches panes; below 80 columns, shows one pane at a time.
+The overview meter compares a request estimate to the cleanup threshold.
+Last request is historical, not a recount. Live guard is a held request.
+Local text, provider usage and guard forecasts are different measures.
+Counts are estimates; media and opaque overhead are not fully known.
+f refreshes. o exports effective context. Exports can contain private data.
+
+AUTOMATIC CLEANUP
+a saves a strategy without running it. g runs AUTO while paused.
+Paused exit: s/Esc stays; r resumes only below threshold; a aborts.
+Manual edits protect the active turn. AUTO last resort may summarize its prefix,
+preserving the configured recent tail. Subagents cannot use MANUAL.
+Incomplete batch: g retries failed ranges; m/t changes model/effort; Esc discards.
+No Undo, Redo or Unprune.`
 
 const plugin = Plugin.define({
   id: "context-manager",

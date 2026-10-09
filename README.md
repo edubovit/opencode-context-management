@@ -66,6 +66,10 @@ See [V2 plugin configuration](https://opencode.ai/v2/docs/plugins) and [developm
 
 ## Controls and modes
 
+The inspector opens with a compact overview: aligned turn sizes, local/selected totals, a request-budget meter, and a small text breakdown. Selecting ranges switches the breakdown to selected text. Full counts, model/tokenizer identity, accounting details and warnings are under **v → Details**; they are not removed.
+
+The meter is labeled **Last request guard** when historical and **Live guard** only during a pause. It compares estimated tokens with the cleanup threshold, not the model's full context window. Missing samples or changed models do not get an invented percentage. Below 80 columns, **Tab** switches between full-width panes.
+
 Use **Space → move → Space** to close a range; repeat for more ranges. Press **c** to configure compaction: arrows navigate, Space toggles a mode, Enter runs, **m/t** selects model/effort, and Esc cancels. The initial mode is detailed summarization; choices last for that inspector.
 
 | Mode | Effect |
@@ -83,10 +87,11 @@ Reasoning removal combines with one tool mode. Summary modes cannot combine with
 - **Ctrl+E, then Ctrl+S:** preview and confirm summary expansion.
 - **e/r** inside a summary: manual edit / model request. **Ctrl+S** saves, sends, or applies according to the current editor mode.
 - **a:** save autocompaction strategy. **g:** retry failed batch jobs, or explicitly run AUTO while paused.
-- **v/n:** detail view / token-character estimates. **Tab:** pane focus. **f:** reload. **o:** export. **?:** help.
+- **v:** cycle Overview → Details → Content → Runtime. **n:** local token/character counts; the guard stays in tokens. **Tab:** switch panes. **f:** reload. **o:** export. **?:** help.
+- **m/t:** choose summary model/effort from the main view or compaction menu.
 - **Esc:** cancel an open range/editor or go back. A paused exit offers Stay, Resume only if within budget, or Abort.
 
-Rows show USER/SUMMARY; host checkpoint context is labeled separately and is read-only. USER statistics distinguish tools, large-output eligibility, pruning, `no reason`, and `no tools`.
+Rows show USER/SUMMARY with compact, right-aligned sizes; filled circles and R labels mark selected ranges. Host checkpoint context is labeled separately and is read-only. Tool statistics distinguish large-output eligibility, pruning, removed tools/reasoning, and unfinished/protected turns. Exact numbers remain in Details and exports.
 
 ## Options
 

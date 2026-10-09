@@ -77,6 +77,7 @@ This matrix is Windows validation with fake providers. It does not claim Linux/m
 | Token rules, metrics and display status | `src/text.ts`, `src/tokens.ts`, `src/metrics.ts`, `src/status.ts` |
 | Server-local files and effective export | `src/storage.ts`, `src/snapshot.ts` |
 | Inspector, public TUI capability type and input guard | `src/tui.tsx`, `src/ui.ts`, list/menu/reader/help TSX modules |
+| Compact overview, display-only budget and breakdown helpers | `src/context-overview.tsx`, `src/inspector-view.ts` |
 
 ### Data flow
 
@@ -157,6 +158,8 @@ Preserve range controls, keyboard navigation, reader selection/cursor state, vis
 Components use public V2 theme tokens, router destinations, data events and keymap modes directly. Input guards use `base`, our `context-manager` mode, and native modal ownership. There is no synthetic `theme.current`, route wrapper or private `dialog.open` cast. Use semantic action/formfield/feedback colors, not raw hues. Native dialogs/model pickers must never trigger actions underneath them.
 
 Keep content-sized rows capped by `maxLinesPerTurn`, measured cursor reveal/paging, fixed headers/footers, and 80×24/short-terminal coverage. Textarea data comes from `.plainText`. Send text and Return separately in real-terminal tests so autocomplete can update.
+
+The default view is an overview, not a diagnostic dump. Keep local/selected totals visible in every main view, sizes aligned separately from turn titles, and full diagnostics reachable with `v`. Below 80 columns, switch full-width panes with Tab without losing ranges or cursor. The overview meter always uses tokens, even when local counts show characters. A paused request uses its frozen threshold; a historical request is labeled as such and compared only with a matching model/variant's current threshold. Missing/invalid limits or a changed model omit the percentage. These are display helpers, never new resume authority or provider accounting.
 
 ## Evidence and change workflow
 

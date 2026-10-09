@@ -12,19 +12,23 @@ import { themeFixture } from "./theme-fixture.ts"
 import { Inspector, watchSuspensions } from "../src/tui.tsx"
 import { Controller } from "../src/controller.ts"
 import { Storage } from "../src/storage.ts"
+import type { RuntimeCapture } from "../src/storage.ts"
 import { KEY, settings } from "../src/config.ts"
 import { append, emptyPolicy, operation, readPolicy, select, turns } from "../src/context.ts"
 import { fixtureHost, messages, pruneRule } from "./fixtures.ts"
 import { distribution } from "../src/metrics.ts"
+import { compactCount } from "../src/inspector-view.ts"
 import { Hotkeys } from "../src/tui-help.tsx"
 import { AUTO_KEY, type AutoCommand, type AutoControl, type AutoState } from "../src/auto-state.ts"
 
-async function setup(t: { after(fn: () => Promise<void>): void }, width = 140, height = 40, prepare?: (fixture: ReturnType<typeof fixtureHost>) => void, options: unknown = {}) {
+async function setup(t: { after(fn: () => Promise<void>): void }, width = 140, height = 40, prepare?: (fixture: ReturnType<typeof fixtureHost>) => void, options: unknown = {}, runtime?: RuntimeCapture) {
   const dir = await mkdtemp(path.join(tmpdir(), "cm-tui-"))
   const fixture = fixtureHost()
   prepare?.(fixture)
   const { data, host } = fixture
-  const controller = new Controller(host, data.session.id, settings(options), new Storage(dir, dir))
+  const storage = new Storage(dir, dir)
+  if (runtime) await storage.saveCapture(runtime)
+  const controller = new Controller(host, data.session.id, settings(options), storage)
   const navigations: string[] = []
   let inputMode = "context-manager"
   const api = {
@@ -77,12 +81,86 @@ test("native modal input ownership blocks inspector actions and resumes cleanly"
   await view.until(() => !!view.screen.renderer.root.findDescendantById("cm-compaction-config"))
 })
 
+test("overview stays quiet, keeps totals visible, and exposes complete diagnostics through v", async (t) => {
+  const runtime: RuntimeCapture = {
+    sessionID: "ses_test", time: 1, model: { providerID: "test", modelID: "model" }, variant: "high", warnings: [], system: [], tools: [],
+    budget: { tokens: 100000, local: 80000, source: "provider-matched", multiplier: 1.3, added: 0, removed: 0 },
+  }
+  const view = await setup(t, 120, 30, undefined, {}, runtime)
+  await view.until(() => view.frame().includes("Ready."))
+  const find = (id: string) => view.screen.renderer.root.findDescendantById(id)
+  assert.ok(view.frame().includes("Overview") && view.frame().includes("68%"))
+  assert.ok(view.frame().includes("Text breakdown") && view.frame().includes("Provider-based estimate"))
+  for (const text of ["ses_test", "revision", "Context tokenizer", "Runtime inventory", "Last reported usage", "provider-matched"])
+    assert.ok(!view.frame().includes(text), text)
+  await view.type("  ")
+  await view.until(() => view.frame().includes("Selected (1)") && view.frame().includes("Selected text"))
+  assert.ok(find("cm-context-total") && find("cm-selected-total"))
+  const guard = (find("cm-guard-count") as TextRenderable).plainText
+  await view.type("n")
+  await view.until(() => view.frame().includes("Conversation · chars"))
+  assert.equal((find("cm-guard-count") as TextRenderable).plainText, guard, "Guard units must remain tokens")
+  await view.type("v")
+  await view.until(() => !!find("cm-diagnostics"))
+  const details = (find("cm-diagnostics") as TextRenderable).plainText
+  for (const text of ["LOCAL CONTEXT", "SELECTED RANGES (1)", "Session: ses_test", "Context tokenizer", "provider-matched", "missing is not zero"])
+    assert.ok(details.includes(text), text)
+  await view.type("v")
+  await view.until(() => (find("cm-diagnostics") as TextRenderable).plainText.startsWith("[user"))
+  await view.type("v")
+  await view.until(() => (find("cm-diagnostics") as TextRenderable).plainText.includes('"sessionID"'))
+  await view.type("v")
+  await view.until(() => !!find("cm-overview") && !find("cm-diagnostics"))
+  assert.equal(view.data.jobs, 0)
+  assert.equal(readPolicy(view.data.session).revision, 0)
+})
+
+test("narrow terminals switch panes without losing ranges or cursor and keep the footer visible", async (t) => {
+  const view = await setup(t, 60, 18, ({ data }) => { data.messages = messages(data.session.id, 20) })
+  await view.until(() => view.frame().includes("Ready."))
+  await view.type(" ")
+  view.key(KeyCodes.ARROW_DOWN)
+  await view.type(" ")
+  await view.until(() => view.frame().includes("Selected (1)"))
+  view.key(KeyCodes.END)
+  await view.until(() => view.frame().includes("Turn 20"))
+  view.key(KeyCodes.TAB)
+  await view.until(() => view.frame().includes("Overview") && !view.screen.renderer.root.findDescendantById("cm-ranges"))
+  assert.ok(view.frame().includes("Local text") && view.frame().includes("Selected (1)"))
+  view.key(KeyCodes.TAB)
+  await view.until(() => view.frame().includes("Turn 20") && !!view.screen.renderer.root.findDescendantById("cm-ranges"))
+  await view.type("v")
+  await view.until(() => view.frame().includes("Details") && !view.screen.renderer.root.findDescendantById("cm-ranges"))
+  view.key(KeyCodes.TAB)
+  await view.until(() => view.frame().includes("Turn 20"))
+  view.screen.renderer.resize(80, 24)
+  await view.until(() => !!view.screen.renderer.root.findDescendantById("cm-context-panel"))
+  for (const [width, height] of [[80, 18], [120, 32], [60, 18]]) {
+    view.screen.renderer.resize(width, height)
+    await view.until(() => {
+      const footer = view.screen.renderer.root.findDescendantById("cm-hotkeys")!
+      return footer.y + footer.height <= height
+    })
+    assert.ok(view.frame().includes("Local text") && view.frame().includes("Selected (1)"))
+  }
+  assert.equal(view.data.jobs, 0)
+})
+
+test("empty conversations show an honest empty state without an invented budget", async (t) => {
+  const view = await setup(t, 80, 24, ({ data }) => { data.messages = [] })
+  await view.until(() => view.frame().includes("Ready."))
+  assert.ok(view.frame().includes("No turns to show") && view.frame().includes("No request estimate yet"))
+  assert.equal(view.screen.renderer.root.findDescendantById("cm-budget-meter"), undefined)
+  view.esc()
+  await view.until(() => view.navigations.includes("session"))
+})
+
 test("Space ranges use configured pruning and compaction autoapplies without recovery shortcuts", async (t) => {
   const { data, frame, until, type, key, compact } = await setup(t)
   await until(() => frame().includes("Ready."))
-  assert.ok(frame().includes("WHOLE EFFECTIVE CONTEXT"))
+  assert.ok(frame().includes("Local text"))
   await type("n")
-  await until(() => /Total categorized text: .* chars/.test(frame()))
+  await until(() => /Local text.* chars/.test(frame()))
   await type("n ")
   key(KeyCodes.ARROW_DOWN)
   await type(" ")
@@ -108,7 +186,7 @@ test("compaction configuration combines pruning, forces reasoning for deletion a
   assert.equal(screen.renderer.root.findDescendantById("cm-compaction-config"), undefined)
   await type("  c")
   await until(() => frame().includes("Compaction configuration"))
-  assert.ok(frame().includes("WHOLE EFFECTIVE CONTEXT") && frame().includes("SELECTED RANGES (1)"))
+  assert.ok(frame().includes("Local text") && frame().includes("Selected (1)"))
   for (const label of ["Prune reasoning", "Prune tools (large)", "Prune tools (all)", "Prune tools (delete)", "Summarize (detailed)", "Summarize (brief)"]) assert.ok(frame().includes(label))
   key(KeyCodes.HOME)
   await type(" ")
@@ -124,7 +202,7 @@ test("compaction configuration combines pruning, forces reasoning for deletion a
   await until(() => frame().includes("Pruning applied"))
   assert.equal(readPolicy(data.session).operations.length, 1)
   assert.equal(data.jobs, 0)
-  assert.equal((screen.renderer.root.findDescendantById("cm-range-stats-0") as TextRenderable).plainText, "pruned:1 · no reason")
+  assert.equal((screen.renderer.root.findDescendantById("cm-range-stats-0") as TextRenderable).plainText, "1 pruned · reasoning removed")
   assert.match((screen.renderer.root.findDescendantById("cm-range-title-0") as TextRenderable).plainText, /USER/)
   await type("c")
   key(KeyCodes.HOME)
@@ -139,7 +217,7 @@ test("compaction configuration combines pruning, forces reasoning for deletion a
   await type("c")
   key("return")
   await until(() => frame().includes("Pruning applied") && readPolicy(data.session).operations.length === 2)
-  assert.equal((screen.renderer.root.findDescendantById("cm-range-stats-0") as TextRenderable).plainText, "tools:0 · no tools · no reason")
+  assert.equal((screen.renderer.root.findDescendantById("cm-range-stats-0") as TextRenderable).plainText, "Tools removed · reasoning removed")
   assert.deepEqual((await controller.load()).blocks[1].messages, data.messages.slice(2, 4))
 })
 
@@ -186,7 +264,7 @@ test("fullscreen summary is read-only until manual edit; save appends a revision
   key("return")
   await until(() => frame().includes("Summary reader"))
   assert.ok(frame().includes("READ-ONLY"))
-  assert.ok(!frame().includes("WHOLE EFFECTIVE CONTEXT"))
+  assert.ok(!frame().includes("Local text"))
   await type("m")
   await until(() => frame().includes("Choose compaction model"))
   esc()
@@ -318,12 +396,12 @@ test("multi-range statistics stay visible and failed batches autoapply only afte
   key(KeyCodes.ARROW_DOWN)
   key(KeyCodes.ARROW_DOWN)
   await type(" ")
-  await until(() => frame().includes("SELECTED RANGES (1 + open)"))
+  await until(() => frame().includes("Selected (1 + open)"))
   await type(" ")
   const blocks = turns(data.messages)
-  await until(() => frame().includes("SELECTED RANGES (2)"))
-  assert.ok(frame().includes(`≈${distribution(blocks).total.toLocaleString()} tokens`))
-  assert.ok(frame().includes(`≈${distribution([blocks[0], blocks[2]]).total.toLocaleString()} tokens`))
+  await until(() => frame().includes("Selected (2)"))
+  assert.ok(frame().includes(`≈${compactCount(distribution(blocks).total)} tokens`))
+  assert.ok(frame().includes(`≈${compactCount(distribution([blocks[0], blocks[2]]).total)} tokens`))
   await compact(5)
   await until(() => frame().includes("Fixture range failed") && frame().includes("Batch incomplete"))
   assert.equal(readPolicy(data.session).operations.length, 0)
@@ -349,7 +427,7 @@ test("range restore confirmation and contextual help do not overlap the content"
   key("e", { ctrl: true })
   await until(() => frame().includes("Restore preview"))
   assert.ok(frame().includes("Ctrl+S confirm restore"))
-  assert.ok(frame().includes("WHOLE EFFECTIVE CONTEXT"))
+  assert.ok(frame().includes("Local text"))
   key("s", { ctrl: true })
   await until(() => readPolicy(data.session).operations.length === 2)
   const footer = screen.renderer.root.findDescendantById("cm-hotkeys")!
@@ -404,7 +482,7 @@ test("Enter on an ordinary turn opens user/final response fullscreen and preserv
   key("return")
   await until(() => frame().includes("Turn reader · Turn 3"))
   assert.ok(frame().includes("Question 2") && frame().includes("Answer 2"))
-  assert.ok(!frame().includes("Question 1") && !frame().includes("WHOLE EFFECTIVE CONTEXT"))
+  assert.ok(!frame().includes("Question 1") && !frame().includes("Local text"))
   assert.ok(!frame().includes("Visible reasoning") && !frame().includes("HEAD_2") && !frame().includes("echo original input"))
   const rule = screen.renderer.root.findDescendantById("cm-turn-message-rule")!
   assert.ok(frame().split("\n")[rule.y].includes("─".repeat(100)))
@@ -414,7 +492,7 @@ test("Enter on an ordinary turn opens user/final response fullscreen and preserv
   assert.equal(readPolicy(data.session).operations.length, 0)
   assert.deepEqual(data.messages, original)
   esc()
-  await until(() => frame().includes("SELECTED RANGES (0 + open)"))
+  await until(() => frame().includes("Selected (0 + open)"))
   await type(" ")
   await compact(1)
   await until(() => readPolicy(data.session).operations.length === 1 && frame().includes("Pruning applied"))
@@ -484,18 +562,20 @@ test("rows use the default four-line maximum, uppercase kinds and sparse stats",
   assert.equal(next.y - summary.y, 4)
   assert.equal(next.height, 3, "A short USER entry must not be padded to the maximum")
   assert.equal(find("cm-range-stats-0").y, first.y + 1)
-  assert.equal((find("cm-range-stats-0") as TextRenderable).plainText, "tools:1 · large:1")
+  assert.equal((find("cm-range-stats-0") as TextRenderable).plainText, "1 tool · 1 large")
   assert.equal(find("cm-range-preview-0").y, first.y + 2)
   assert.equal(find("cm-range-preview-0").height, 2)
   assert.equal(find("cm-range-preview-1").y, summary.y + 1)
   assert.equal(screen.renderer.root.findDescendantById("cm-range-stats-1"), undefined)
-  assert.match((find("cm-range-title-0") as TextRenderable).plainText, /^\[ \] Turn 1 · USER · ≈/)
-  assert.match((find("cm-range-title-1") as TextRenderable).plainText, / · SUMMARY · /)
+  assert.match((find("cm-range-title-0") as TextRenderable).plainText, /^○ Turn 1 · USER$/)
+  assert.match((find("cm-range-title-1") as TextRenderable).plainText, / · SUMMARY$/)
+  assert.match((find("cm-range-size-0") as TextRenderable).plainText, /^≈/)
   assert.ok(!frame().includes("USER_THIRD") && frame().includes("SUMMARY_THIRD"))
   assert.ok(!frame().includes("USER_FOURTH_HIDDEN") && !frame().includes("SUMMARY_FOURTH_HIDDEN"))
   assert.ok(!frame().includes("Earlier conversation range") && !frame().includes("expand one layer"))
   await type("n")
-  await until(() => (find("cm-range-title-0") as TextRenderable).plainText.includes("chars"))
+  await until(() => frame().includes("Conversation · chars"))
+  assert.ok(!(find("cm-range-size-0") as TextRenderable).plainText.includes("≈"))
   assert.equal(find("cm-range-1").y - find("cm-range-0").y, 4)
 })
 
@@ -558,7 +638,7 @@ for (const limit of [3, 6]) test(`configured ${limit}-line rows shrink to conten
   assert.equal(summary.height, 2)
   assert.equal(summary.y, row.y + row.height)
   assert.equal(next.y, summary.y + summary.height)
-  assert.match((screen.renderer.root.findDescendantById("cm-range-title-1") as TextRenderable).plainText, / · SUMMARY · /)
+  assert.match((screen.renderer.root.findDescendantById("cm-range-title-1") as TextRenderable).plainText, / · SUMMARY$/)
 })
 
 test("R labels identify closed/open ranges and unfinished endpoints remain selectable while busy", async (t) => {
@@ -574,7 +654,7 @@ test("R labels identify closed/open ranges and unfinished endpoints remain selec
   await until(() => title(0).includes("R1*"))
   await type(" ")
   await until(() => title(0).includes("R1 ·"))
-  assert.match(title(0), /\[\+\] R1 · Turn 1 · USER/)
+  assert.match(title(0), /● R1 · Turn 1 · USER/)
   key(KeyCodes.END)
   await type(" ")
   await until(() => title(2).includes("R2*"))
@@ -582,7 +662,7 @@ test("R labels identify closed/open ranges and unfinished endpoints remain selec
   await type(" ")
   await until(() => title(1).includes("R2 ·") && title(2).includes("R2 ·"))
   assert.ok(title(1).includes("R2 ·") && title(2).includes("R2 ·"))
-  assert.equal((screen.renderer.root.findDescendantById("cm-range-stats-2") as TextRenderable).plainText, "tools:0")
+  assert.equal((screen.renderer.root.findDescendantById("cm-range-stats-2") as TextRenderable).plainText, "Unfinished · 0 tools")
   await compact(5)
   await until(() => frame().includes("Wait for the main session to become idle"))
   assert.equal(data.calls.length, 0)
@@ -659,12 +739,22 @@ test("paused inspector distinguishes provider guard, local count, and inclusive 
   const { state, control, calls } = pausedControl()
   state.pause!.tokens = 670000
   state.pause!.threshold = 600000
+  state.pause!.inputLimit = 620000
   state.pause!.accounting = { tokens: 670000, local: 530000, source: "provider-matched", multiplier: 1.3, added: 0, removed: 0, reported: { messageID: "msg_report", input: 660000, output: 10000 } }
-  const { frame, until, esc, type } = await setup(t, 220, 45, ({ host }) => { host.auto = control })
+  const { frame, screen, until, esc, type } = await setup(t, 120, 32, ({ host }) => { host.auto = control })
+  await until(() => frame().includes("Provider-based estimate"))
+  assert.ok(frame().includes("112%"))
+  assert.ok(frame().includes("≈670k / 600k tokens"))
+  assert.ok(!frame().includes("provider-matched"))
+  await type("v")
+  const scroll = screen.renderer.root.findDescendantById("cm-context-scroll") as ScrollBoxRenderable
+  await until(() => scroll.scrollHeight > scroll.viewport.height)
+  scroll.scrollTo(scroll.scrollHeight)
   await until(() => frame().includes("provider-matched"))
   assert.ok(frame().includes("Live guard: ≈670,000"))
-  assert.ok(frame().includes("local ≈530,000"))
-  assert.ok(frame().includes("660,000 input + 10,000 output/reasoning"))
+  assert.ok(frame().includes("Guard local: ≈530,000"))
+  assert.ok(frame().includes("Input+cache: 660,000"))
+  assert.ok(frame().includes("Output+reasoning: 10,000"))
   esc()
   await until(() => frame().includes("Resume blocked"))
   await type("r")
@@ -674,10 +764,17 @@ test("paused inspector distinguishes provider guard, local count, and inclusive 
 test("uncalibrated guard is labeled as a padded local fallback, not a provider count", async (t) => {
   const { state, control } = pausedControl()
   state.pause!.accounting = { tokens: 130, local: 100, source: "local-fallback", multiplier: 1.3, added: 100, removed: 0 }
-  const { frame, until } = await setup(t, 220, 45, ({ host }) => { host.auto = control })
+  const { frame, screen, until, type } = await setup(t, 120, 32, ({ host }) => { host.auto = control })
+  await until(() => frame().includes("Local estimate ×1.3"))
+  assert.ok(!frame().includes("local-fallback"))
+  await type("v")
+  const scroll = screen.renderer.root.findDescendantById("cm-context-scroll") as ScrollBoxRenderable
+  await until(() => scroll.scrollHeight > scroll.viewport.height)
+  scroll.scrollTo(scroll.scrollHeight)
   await until(() => frame().includes("local-fallback"))
-  assert.ok(frame().includes("local fallback ×1.3"))
-  assert.ok(frame().includes("not a provider token count"))
+  const details = (screen.renderer.root.findDescendantById("cm-diagnostics") as TextRenderable).plainText
+  assert.ok(details.includes("local fallback ×1.3"))
+  assert.ok(details.includes("not a provider token count"))
 })
 
 test("paused exit requires confirmation, blocks over-budget resume, and stays within 80x24", async (t) => {

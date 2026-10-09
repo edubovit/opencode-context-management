@@ -47,13 +47,17 @@ export function RangeList(props: {
   })
   return <scrollbox id="cm-ranges" flexGrow={1} minHeight={0} focused={props.focused}
     ref={(value) => { scroll = value }} renderBefore={revealCursor} onSizeChange={() => { reveal = true }}
-    contentOptions={{ flexDirection: "column" }}>
+    contentOptions={{ flexDirection: "column", paddingRight: 1 }}>
+    <Show when={!props.rows.length}><text fg={props.api.theme.text.muted}>No turns to show.</text></Show>
     <Index each={props.rows}>{(row, index) =>
       <box id={`cm-range-${index}`} maxHeight={props.maxLines} flexShrink={0} flexDirection="column" overflow="hidden"
         backgroundColor={props.selectedIndex === index ? props.api.theme.background.formfield.selected : undefined}
         onMouseUp={() => { if (props.focused && !inputBlocked(props.api)) props.onChange(index) }}>
-        <text id={`cm-range-title-${index}`} height={1} flexShrink={0} wrapMode="none" truncate
-          fg={props.api.theme.text.formfield.state({ focused: props.focused && props.selectedIndex === index })}>{row().title}</text>
+        <box height={1} flexShrink={0} flexDirection="row" gap={1}>
+          <text id={`cm-range-title-${index}`} flexGrow={1} minWidth={0} wrapMode="none" truncate
+            fg={props.api.theme.text.formfield.state({ focused: props.focused && props.selectedIndex === index })}>{row().title}</text>
+          <text id={`cm-range-size-${index}`} flexShrink={0} fg={props.api.theme.text.muted}>{row().size}</text>
+        </box>
         <Show when={row().stats}>{(stats) => <text id={`cm-range-stats-${index}`} height={1} flexShrink={0} wrapMode="none" truncate fg={props.api.theme.text.muted}>{stats()}</text>}</Show>
         <box id={`cm-range-preview-${index}`} maxHeight={props.maxLines - (row().stats ? 2 : 1)} flexShrink={0} overflow="hidden">
           <text id={`cm-range-preview-text-${index}`} flexShrink={0} wrapMode="word" fg={props.api.theme.text.muted}>{row().preview}</text>

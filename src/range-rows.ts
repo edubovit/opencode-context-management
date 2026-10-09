@@ -2,7 +2,7 @@ import type { Block, Policy } from "./context.ts"
 import { messageText } from "./turn-view.ts"
 import type { toolStatus } from "./status.ts"
 
-export type RangeRow = { title: string; stats?: string; preview: string }
+export type RangeRow = { title: string; size: string; stats?: string; preview: string }
 
 export function rangePreview(block: Block, policy: Policy) {
   return previewText(block, policy).replace(/\r\n?/g, "\n").split("\n").filter((line) => line.trim()).join("\n") || "[No text recorded]"
@@ -20,12 +20,11 @@ function previewText(block: Block, policy: Policy) {
 
 export function rangeToolStats(status: ReturnType<typeof toolStatus>) {
   return [
-    status.allPruned ? `pruned:${status.pruned}` : `tools:${status.total}`,
-    ...(!status.allPruned && status.pruned ? [`pruned:${status.pruned}`] : []),
-    ...(status.eligible ? [`large:${status.eligible}`] : []),
-    ...(status.fileBacked ? [`files:${status.fileBacked}`] : []),
-    ...(status.pending ? [`pending:${status.pending}`] : []),
-    ...(status.noTools ? ["no tools"] : []),
-    ...(status.noReason ? ["no reason"] : []),
+    status.noTools ? "Tools removed" : status.allPruned ? `${status.pruned} pruned` : `${status.total} tool${status.total === 1 ? "" : "s"}`,
+    ...(!status.allPruned && status.pruned ? [`${status.pruned} pruned`] : []),
+    ...(status.eligible ? [`${status.eligible} large`] : []),
+    ...(status.fileBacked ? [`${status.fileBacked} file${status.fileBacked === 1 ? "" : "s"}`] : []),
+    ...(status.pending ? [`${status.pending} pending`] : []),
+    ...(status.noReason ? ["reasoning removed"] : []),
   ].join(" · ")
 }

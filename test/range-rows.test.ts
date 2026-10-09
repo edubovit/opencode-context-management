@@ -27,9 +27,9 @@ test("summary previews use applied revisions, not the synthetic user introductio
 
 test("row tool stats hide zeros except total calls and preview text drops blank lines", () => {
   const status = toolStatus([], pruneRule())
-  assert.equal(rangeToolStats(status), "tools:0")
+  assert.equal(rangeToolStats(status), "0 tools")
   assert.equal(rangeToolStats({ ...status, total: 6, pruned: 2, eligible: 3, fileBacked: 1, pending: 1 }),
-    "tools:6 · pruned:2 · large:3 · files:1 · pending:1")
+    "6 tools · 2 pruned · 3 large · 1 file · 1 pending")
   const block = turns(messages())[0]
   const text = block.messages[0].parts[0]
   assert.ok(text.type === "text")
