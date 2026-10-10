@@ -2,7 +2,7 @@
 
 Choose what stays in your coding session's context. Prune reasoning or tool results, summarize selected turns, and expand summaries later—without deleting the stored conversation.
 
-**Plugin 4.1.0 · OpenCode V2**.
+**Plugin 4.1.2 · OpenCode V2**.
 
 ## Features
 
@@ -97,43 +97,149 @@ Restoration affects only selected turns, even when an earlier prune covered a wi
 
 ## Options
 
-Options belong on the single server plugin entry. Unknown options are rejected. Defaults:
+Configure the plugin through the `options` object on its entry in **`opencode.json` or `opencode.jsonc`**. Use your project configuration for project-specific settings, or the global OpenCode configuration for shared defaults. Keep one plugin registration pointing to the `src` directory; the server and inspector use the same options. These options do not belong in `cli.json`.
+
+- **Project:** `opencode.json` or `opencode.jsonc` in your project directory.
+- **Global:** normally `~/.config/opencode/opencode.json` or `opencode.jsonc`. On Windows this is usually under `%USERPROFILE%\.config\opencode\`; `XDG_CONFIG_HOME` can change the configuration root.
+
+### Complete configuration example
+
+This example includes **every configurable plugin parameter**. The numeric settings and `fallbackEncoding` use their defaults. The summary model and tokenizer override are illustrative: replace `my-provider` / `my-model` with IDs available in your OpenCode installation. Remove the `summarizer` object to inherit the main session's model and effort, and use `"overrides": {}` unless you need an encoding override.
 
 ```jsonc
 {
-  "plugins": [{
-    "package": "file:///absolute/path/opencode-context-management/src",
-    "options": {
-      "ui": { "maxLinesPerTurn": 4 },
-      "autocompaction": { "headroom": 20000, "estimateMultiplier": 1.3, "lastResortKeepTokens": 20000 },
-      "spill": { "maxLines": 2000, "maxBytes": 51200, "headShare": 0.5 },
-      "prune": { "threshold": 5000, "head": 1000, "tail": 1000 },
-      "tokenizer": { "fallbackEncoding": "o200k_base", "overrides": {} }
+  "$schema": "https://opencode.ai/config.json",
+
+  // OpenCode setting, not a plugin option. Required for this plugin.
+  "compaction": { "auto": false },
+
+  "plugins": [
+    {
+      "package": "file:///absolute/path/opencode-context-management/src",
+      "options": {
+        "ui": {
+          "maxLinesPerTurn": 4
+        },
+        "autocompaction": {
+          "headroom": 20000,
+          "estimateMultiplier": 1.3,
+          "lastResortKeepTokens": 20000
+        },
+        "spill": {
+          "maxLines": 2000,
+          "maxBytes": 51200,
+          "headShare": 0.5
+        },
+        "prune": {
+          "threshold": 5000,
+          "head": 1000,
+          "tail": 1000
+        },
+        "tokenizer": {
+          "fallbackEncoding": "o200k_base",
+          "overrides": {
+            "my-provider/my-model": "o200k_base"
+          }
+        },
+        "summarizer": {
+          "providerID": "my-provider",
+          "modelID": "my-model",
+          "variant": "default"
+        }
+      }
     }
-  }]
+  ]
 }
 ```
 
-| Option | Meaning |
-| --- | --- |
-| `ui.maxLinesPerTurn` | Maximum lines per list entry; integer ≥3. Short entries shrink. |
-| `autocompaction.headroom` | Pause above input capacity minus this nonnegative margin. Must leave a positive threshold; never changes output caps. |
-| `autocompaction.estimateMultiplier` | Conservative uplift for main-request guards and automatic helpers: default `1.3`, finite number ≥1. Used for missing-usage fallback and as the minimum multiplier on new content. Does not veto manually requested summaries or edits. |
-| `autocompaction.lastResortKeepTokens` | Newest conversation content exempt from last-resort compaction; nonnegative integer, default `20000`. Whole messages/tool pairs and existing summaries stay intact, so the actual retained tail can be larger. `0` permits summarizing the entire effective conversation. |
-| `spill.maxLines` / `maxBytes` | Fresh output limits; minimum 2 lines / 8 UTF-8 bytes. Full captured text is saved before previewing. |
-| `spill.headShare` | `0.5` half head/half tail, `1` head only, `0` tail only. Notice/path are extra. |
-| `prune.threshold` | Large mode affects only results strictly larger than this token count. |
-| `prune.head` / `tail` | Nonnegative retained token budgets; sum must be below threshold. Non-saving changes are skipped. |
-| `tokenizer.fallbackEncoding` | `o200k_base` or `cl100k_base`; fallback estimates are labeled. |
-| `tokenizer.overrides` | Encoding per `providerID/modelID`, e.g. `{ "my-provider/my-model": "cl100k_base" }`. |
+Merge this into your existing configuration rather than replacing unrelated providers, permissions or plugins. Replace the package path with your checkout's directory URL; see [Install](#install) for generating it, including on Windows. The example uses JSONC comments for explanation; remove those comment lines if you need strict JSON.
 
-Helpers inherit the main session model/effort unless these optional defaults are set:
+### Defaults and validation
 
-```json
-"summarizer": { "providerID": "my-provider", "modelID": "my-model", "variant": "default" }
-```
+- **Every plugin option is optional.** `"options": {}` uses all built-in defaults. You can supply only the groups or individual fields you want to change.
+- Omitted fields keep their defaults; they are not automatically adjusted to fit other values you changed. For example, lowering `prune.threshold` to `2000` requires lowering `head` and/or `tail`, because their default sum is already `2000`.
+- Use JSON numbers for numeric settings. Limits expressed as integers must be whole numbers within the ranges below. Model/provider/variant values must be nonempty strings.
+- Unknown keys are rejected, including keys nested inside an option group. Invalid settings fail visibly rather than being silently ignored. There is no `prune.unit`, `outputReserve`, plugin output-token cap, or general `enabled` option.
+- The cleanup **strategy** is a per-session choice made with **a** in the inspector, not an `options.autocompaction.strategy` field. Its default is AUTO_PER_TURN. OpenCode's required `compaction.auto: false` disables native compaction, **not this plugin's automatic cleanup**.
 
-Set both model fields or neither. Inspector choices override defaults for that inspector, not the main session. Use a helper model large enough for the full background; nothing is silently dropped or switched. There is no `prune.unit`, `outputReserve`, or plugin-imposed output cap.
+### Inspector layout: `ui`
+
+| Parameter | Default | Allowed values and effect |
+| --- | --- | --- |
+| `ui.maxLinesPerTurn` | `4` | Integer ≥ `3`. Maximum height of a conversation-list row, including its heading, status and preview. Short entries use less space. |
+
+Increase this for longer previews, or use `3` to fit more rows on screen. This affects only the inspector layout: it does not truncate conversation data or change what the model receives. **Enter** opens the full turn or summary reader.
+
+### Cleanup budgets: `autocompaction`
+
+| Parameter | Default | Allowed values and effect |
+| --- | --- | --- |
+| `autocompaction.headroom` | `20000` | Integer ≥ `0`, in estimated input tokens. Subtracted from the active model's input capacity to determine when cleanup starts. Must be smaller than that capacity. |
+| `autocompaction.estimateMultiplier` | `1.3` | Finite number ≥ `1`. Conservative multiplier for missing-usage estimates and the minimum multiplier on newly added content. Used by main-request guards and automatic helpers, not to veto manual summaries or edits. |
+| `autocompaction.lastResortKeepTokens` | `20000` | Integer ≥ `0`, in estimated local tokens. Amount of newest conversation to retain unchanged during last-resort cleanup. Whole messages/tool pairs and existing summaries remain intact, so the actual retained tail can be larger. |
+
+The main cleanup threshold is **input capacity − headroom**. The plugin uses a positive explicit model input limit when available; otherwise it derives input capacity from **context limit − output limit**. For example, input capacity `922000` and headroom `20000` give a cleanup threshold of `902000`. An estimate equal to the threshold fits; an estimate above it triggers the selected cleanup strategy. Headroom does not change the host/provider output cap.
+
+A larger headroom starts cleanup earlier. A larger multiplier is more cautious when local counts miss provider overhead, but can also trigger cleanup sooner. The multiplier is **not** blindly added to every reported token count: provider-anchored accounting treats already measured context and new content separately. An observed provider/local ratio can exceed the configured multiplier; setting it to `1` does not disable the guard.
+
+`lastResortKeepTokens` applies only after ordinary automatic attempts fail to make the request fit. Lowering it leaves more of the conversation eligible for an emergency summary, at the cost of retaining less recent detail verbatim. `0` requests no retained tail; normal source, checkpoint and unsettled-tool safeguards still apply. It does not change which ranges a manually requested summary includes.
+
+### New tool-output previews: `spill`
+
+Spilling handles **new successful tool results as they arrive**, before they become oversized context. If their combined text exceeds either limit, the plugin saves the full captured text to a server-local `output-*.txt` file and returns a shorter preview with that file's path. Non-text attachments are preserved.
+
+| Parameter | Default | Allowed values and effect |
+| --- | --- | --- |
+| `spill.maxLines` | `2000` | Integer ≥ `2`. Maximum retained text-line budget across the preview's beginning and end. Also triggers spilling when the incoming text has more lines than this. |
+| `spill.maxBytes` | `51200` | Integer ≥ `8`, in UTF-8 bytes (`51200` = 50 KiB). Byte budget across the retained beginning and end; exceeding it also triggers spilling, even for a single long line. |
+| `spill.headShare` | `0.5` | Number from `0` through `1`. Fraction of both budgets assigned to the beginning; the remainder goes to the end. `0.5` splits evenly, `1` keeps only the beginning, and `0` keeps only the end. |
+
+Each retained section must fit both its line and byte budgets. Omission notices and the full-output path are added afterward, so the complete preview can be larger than the configured retained-text budget. UTF-8 characters are not split mid-character.
+
+Lower these limits to keep future tool output smaller; raise them when long results are useful in full. They do not retroactively shorten existing history. Spilling is different from reversible pruning: restoring a later prune restores the stored preview, not the full external file. Spill files older than seven days are cleaned during plugin startup for that working directory, so they are not permanent archives.
+
+### Existing tool-result pruning: `prune`
+
+These limits control **Prune tools (large)** on selected existing history. They do not automatically run when you change configuration, and do not apply to **Prune tools (all)** or **Prune tools (delete)**.
+
+| Parameter | Default | Allowed values and effect |
+| --- | --- | --- |
+| `prune.threshold` | `5000` | Integer ≥ `1`, in locally estimated tokens per tool result. Only results **strictly larger** than this value are eligible. |
+| `prune.head` | `1000` | Integer ≥ `0`. Maximum tokens retained from the beginning of an eligible result. `0` keeps no beginning text. |
+| `prune.tail` | `1000` | Integer ≥ `0`. Maximum tokens retained from the end of an eligible result. `0` keeps no ending text. |
+
+**`head + tail` must be strictly less than `threshold`.** With the defaults, a result above 5,000 tokens is reduced to up to 1,000 beginning tokens plus 1,000 ending tokens, with an omission notice and any full-output path added. These notices are extra; if the resulting text would not be smaller, the operation is skipped.
+
+Use more tail budget when final errors or conclusions matter most, or more head budget when headers and initial context matter most. Inputs and attachments stay intact in large-output mode. Each saved pruning operation pins its rule and tokenizer, so changing these defaults later does not reinterpret earlier cuts. **Ctrl+E** restores an applied pruning layer; it does not restore an external spill file's full contents into the conversation.
+
+### Local token estimates: `tokenizer`
+
+| Parameter | Default | Allowed values and effect |
+| --- | --- | --- |
+| `tokenizer.fallbackEncoding` | `"o200k_base"` | `"o200k_base"` or `"cl100k_base"`. Used when neither an explicit override nor a built-in model-name mapping selects an encoding. |
+| `tokenizer.overrides` | `{}` | Map of exact `"providerID/modelID"` keys to either supported encoding, for example `{ "my-provider/my-model": "cl100k_base" }`. Overrides take priority over built-in mappings. |
+
+The encoding determines how text is split into tokens for local estimates and pruning. An override is useful for custom model IDs or aliases whose encoding the plugin cannot identify. Use the model ID selected in OpenCode, not a display name. A summary helper can use a different encoding from the main session; pruning rules use the consuming main-session model's basis.
+
+Changing an encoding does not change a model's real context limit or make the provider use that tokenizer. Counts remain estimates, especially for unknown models, media and provider-specific framing. The inspector labels the chosen encoding and whether it came from a mapping, override or fallback. **n** changes the displayed local unit only; guards and pruning still use tokens.
+
+### Summary model and effort: `summarizer`
+
+| Parameter | Default | Allowed values and effect |
+| --- | --- | --- |
+| `summarizer.providerID` | Omitted: inherit the main session's provider. | Nonempty provider ID available in OpenCode. Must be supplied together with `modelID`. |
+| `summarizer.modelID` | Omitted: inherit the main session's model. | Nonempty model ID under that provider. Must be supplied together with `providerID`. |
+| `summarizer.variant` | Inherit effort when inheriting the main model; otherwise use the selected helper model's default. | `"default"` or a variant supported by the selected model. Variant names are model-specific; not every model offers `"low"`, `"high"`, etc. |
+
+- Omit the entire `summarizer` group, or set it to `{}`, to follow the main session's model and effort.
+- Set **both** `providerID` and `modelID` to choose a dedicated helper model for summarization and model-assisted summary editing. This does not switch the main session's model.
+- If you choose a dedicated helper model but omit `variant`, the main model's effort is **not** copied to it; the helper uses its own default.
+- You can set only `variant` to override effort while still inheriting the main model. `"variant": "default"` explicitly selects the model's default rather than inheriting the main session's effort.
+- Inspector **m/t** selections override these defaults for that inspector. They do not rewrite configuration or switch the main session's model.
+
+Choose a model with enough input capacity for the **full effective background**, not just the selected range. Every initial batch helper sees that same frozen background. A cheaper helper may reduce cost, but a smaller context window can reject the request. Nothing is silently dropped or switched to another model.
+
+These IDs select an existing OpenCode provider/model; they do not configure a provider or supply credentials. Provider setup and model context/output limits belong in OpenCode's provider configuration, not this plugin's options.
 
 **Manual compaction lets the provider decide whether the input fits.** User-started summaries, batch ranges, refinements and saved-summary edits have no plugin token-size preflight, safety multiplier or usage-based veto. This also applies in AUTO sessions and during manual cleanup pauses. Each batch range still sends the full frozen background; splitting ranges does not split request size. Host/provider limits and errors still apply, and failed or incomplete results are never applied. Automatic cleanup—including Run from a pause—and main-request Resume keep their budget guards.
 
