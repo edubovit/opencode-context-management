@@ -1,6 +1,6 @@
 import { isEncoding, type Encoding, type TokenOptions } from "./tokens.ts"
 
-export const VERSION = "4.1.1"
+export const VERSION = "4.1.2"
 export const KEY = "opencode_context_manager"
 export const AGENT = "context-manager-summarizer"
 export const EDIT_AGENT = "context-manager-editor"

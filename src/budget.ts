@@ -13,10 +13,12 @@ const anchorSchema = z.object({
   input: count, output: count, inputLocal: count, matched: z.boolean(),
 })
 export const budgetStateSchema = z.object({
-  version: z.literal(1), scope: z.string(), excludedReports: z.array(z.string()).optional(),
+  version: z.union([z.literal(1), z.literal(2)]), scope: z.string(), excludedReports: z.array(z.string()).optional(),
   pending: z.object({ prefix: prefixSchema, policy: z.string(), units: z.array(unitSchema) }).optional(),
   anchor: anchorSchema.optional(),
-})
+}).transform((state) => state.version === 1
+  ? { version: 2 as const, scope: state.scope, ...(state.excludedReports ? { excludedReports: state.excludedReports } : {}) }
+  : state)
 export type BudgetState = z.infer<typeof budgetStateSchema>
 export type BudgetUnit = z.infer<typeof unitSchema>
 export type BudgetReading = {
@@ -31,12 +33,21 @@ function unit(kind: string, id: string, value: unknown, text: string, basis: Tok
   return { key: hash([kind, id, value]), tokens: tokenCount(text, basis.encoding) }
 }
 
+function mediaTokens(mime: string) {
+  return mime.startsWith("image/") ? 1500 : mime === "application/pdf" ? 2000 : 0
+}
+
 function partUnit(part: ContentPart, id: string, basis: TokenBasis): BudgetUnit {
   if (part.type === "text" || part.type === "reasoning") return unit(part.type, id, part.text, part.text, basis)
   if (part.type === "tool-call") return unit(part.type, id, { id: part.id, name: part.name, input: part.input }, JSON.stringify(part.input) ?? "", basis)
-  if (part.type === "tool-result") return unit(part.type, id, { id: part.id, name: part.name, result: part.result }, JSON.stringify(part.result), basis)
+  if (part.type === "tool-result") return {
+    key: hash([part.type, id, { id: part.id, name: part.name, result: part.result }]),
+    tokens: part.result.type === "content"
+      ? part.result.value.reduce((sum, item) => sum + (item.type === "text" ? tokenCount(item.text, basis.encoding) : mediaTokens(item.mime)), 0)
+      : tokenCount(JSON.stringify(part.result), basis.encoding),
+  }
   if (part.type === "compaction") return unit(part.type, id, part, part.text ?? "", basis)
-  const tokens = part.type === "media" ? part.media.mediaType.startsWith("image/") ? 1500 : part.media.mediaType === "application/pdf" ? 2000 : 0 : 0
+  const tokens = part.type === "media" ? mediaTokens(part.media.mediaType) : 0
   return { key: hash([part.type, id, part]), tokens }
 }
 
@@ -81,7 +92,7 @@ function outputUnits(message: Assistant, basis: TokenBasis) {
 
 export function prepareBudget(identity: BudgetIdentity, native: readonly SessionMessageInfo[], current: readonly Message[], system: readonly { text: string }[], tools: Record<string, unknown>, basis: TokenBasis, policy: string, saved?: BudgetState, bootstrap?: (response: Assistant) => { messages: readonly Message[]; policy: string }): BudgetState {
   const changedScope = saved !== undefined && saved.scope !== identity.scope
-  const state: BudgetState = changedScope ? { version: 1, scope: identity.scope, excludedReports: native.filter((message) => message.type === "assistant").map((message) => message.id) } : saved ? structuredClone(saved) : { version: 1, scope: identity.scope }
+  const state: BudgetState = changedScope ? { version: 2, scope: identity.scope, excludedReports: native.filter((message) => message.type === "assistant").map((message) => message.id) } : saved ? structuredClone(saved) : { version: 2, scope: identity.scope }
   const boundary = native.findLastIndex((message) => message.type === "compaction" && message.status === "completed")
   if (state.anchor) {
     const index = native.findIndex((message) => message.id === state.anchor!.reportID)

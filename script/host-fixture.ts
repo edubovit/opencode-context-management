@@ -86,7 +86,7 @@ export async function fixture(executable = "opencode", destination?: string, opt
     permissions: [{ action: "*", resource: "*", effect: "deny" }, { action: "fixture_tool", resource: "*", effect: "allow" }, ...(options.subagents ? [{ action: "subagent", resource: "*", effect: "allow" }] : [])],
     ...(options.subagents ? { experimental: { subagent_depth: 4 }, agents: { "fixture-worker": { mode: "subagent", permissions: [{ action: "*", resource: "*", effect: "deny" }, { action: "fixture_tool", resource: "*", effect: "allow" }, { action: "subagent", resource: "*", effect: "allow" }] } } } : {}),
     providers: { fixture: { package: "@opencode/ai/providers/openai-compatible", settings: { apiKey: "synthetic-not-a-secret", baseURL: `http://127.0.0.1:${address.port}/v1` }, models: {
-      fixture: { limit: { context: 200000, input: 168000, output: 32000 }, capabilities: { tools: true, input: ["text"], output: ["text"] }, variants: [{ id: "high", settings: { reasoningEffort: "high" } }] },
+      fixture: { limit: { context: 200000, input: 168000, output: 32000 }, capabilities: { tools: true, input: ["text", "image"], output: ["text"] }, variants: [{ id: "high", settings: { reasoningEffort: "high" } }] },
       small: { limit: { context: 24000, input: 12000, output: 12000 }, capabilities: { tools: true, input: ["text"], output: ["text"] } },
     } } },
   }

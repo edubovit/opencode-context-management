@@ -17,7 +17,7 @@ function reply(): Extract<SessionMessageInfo, { type: "assistant" }> {
 function paired() {
   const response = reply()
   const messages = [prompt, Message.make({ id: response.id, role: "assistant", content: "Answer" })]
-  const pending = recordRequest({ version: 1, scope: "scope" }, [user], budgetUnits([prompt], system, tools, FALLBACK_BASIS), "policy0")
+  const pending = recordRequest({ version: 2, scope: "scope" }, [user], budgetUnits([prompt], system, tools, FALLBACK_BASIS), "policy0")
   const state = prepareBudget(identity, [user, response], messages, system, tools, FALLBACK_BASIS, "policy0", pending)
   return { response, messages, state, pending }
 }
@@ -33,7 +33,7 @@ test("provider matching adds cache subsets and output/reasoning exactly once", (
 })
 
 test("670k provider versus 530k local exceeds a 600k threshold; reduction and expansion recount", () => {
-  const state: BudgetState = { version: 1, scope: "scope", anchor: { reportID: "msg_report", prefix: { length: 0, hash: "" }, policy: "original", input: 670000, output: 0, inputLocal: 530000, matched: true, units: [{ key: "history", tokens: 530000 }] } }
+  const state: BudgetState = { version: 2, scope: "scope", anchor: { reportID: "msg_report", prefix: { length: 0, hash: "" }, policy: "original", input: 670000, output: 0, inputLocal: 530000, matched: true, units: [{ key: "history", tokens: 530000 }] } }
   const original = estimateBudget([{ key: "history", tokens: 530000 }], state, 1.3)
   assert.equal(original.tokens, 670000)
   assert.ok(original.local < 600000 && original.tokens > 600000)
@@ -172,7 +172,7 @@ test("native checkpoints and changed raw history invalidate old prefix evidence"
 })
 
 test("missing usage has a visible configurable safety uplift, including invalid multiplier rejection", () => {
-  const state: BudgetState = { version: 1, scope: "scope" }
+  const state: BudgetState = { version: 2, scope: "scope" }
   assert.deepEqual(estimateBudget([{ key: "one", tokens: 100 }], state, 1.3), { source: "local-fallback", tokens: 130, local: 100, multiplier: 1.3, added: 100, removed: 0 })
   assert.equal(settings().autocompaction.estimateMultiplier, 1.3)
   assert.equal(settings({ autocompaction: { estimateMultiplier: 1.6 } }).autocompaction.estimateMultiplier, 1.6)
@@ -191,4 +191,40 @@ test("scope hashing covers route/model/tokenizer configuration without persistin
   for (const secret of ["PRIVATE_CREDENTIAL", "Question", "System instructions"]) assert.ok(!saved.includes(secret))
   assert.throws(() => budgetStateSchema.parse({ ...pending, version: 99 }))
   assert.throws(() => budgetStateSchema.parse({ ...pending, pending: { ...pending.pending, units: [{ key: "corrupt", tokens: -1 }] } }))
+})
+
+test("old budget counts and pending samples are discarded, then usage is reconstructed without false removal credit", () => {
+  const { state, pending, response, messages } = paired()
+  const old = { ...state, version: 1, pending: pending.pending, anchor: { ...state.anchor!, inputLocal: 1_500_000, units: [{ key: "old-image-count", tokens: 1_500_000 }] } }
+  const before = JSON.stringify(old)
+  const migrated = budgetStateSchema.parse(old)
+  assert.deepEqual(migrated, { version: 2, scope: "scope" })
+  assert.equal(JSON.stringify(old), before, "Reading must not rewrite or mutate stored data")
+  const reconstructed = prepareBudget(identity, [user, response], messages, system, tools, FALLBACK_BASIS, "policy0", migrated)
+  const reading = estimateBudget(budgetUnits(messages, system, tools, FALLBACK_BASIS), reconstructed, 1.3)
+  assert.equal(reading.source, "provider-unpaired")
+  assert.equal(reading.tokens, 720)
+  assert.equal(reading.removed, 0)
+  assert.deepEqual(reading.reported, { messageID: response.id, input: 670, output: 50 })
+  const nextUser = { ...user, id: "msg_next", time: { created: 4 } }
+  const nextMessages = [...messages, Message.make({ id: nextUser.id, role: "user", content: nextUser.text })]
+  const nextPending = recordRequest(reconstructed, [user, response, nextUser], budgetUnits(nextMessages, system, tools, FALLBACK_BASIS), "policy0")
+  const nextReply = { ...response, id: "msg_next_reply", time: { created: 5, completed: 6 } }
+  const matched = prepareBudget(identity, [user, response, nextUser, nextReply], [...nextMessages, Message.make({ id: nextReply.id, role: "assistant", content: "Answer" })], system, tools, FALLBACK_BASIS, "policy0", nextPending)
+  assert.equal(matched.anchor?.matched, true)
+  assert.equal(matched.anchor?.reportID, nextReply.id)
+  assert.deepEqual(budgetStateSchema.parse(JSON.parse(JSON.stringify(matched))), matched)
+})
+
+test("budget cache upgrade preserves report exclusions and scope invalidation", () => {
+  const { pending, response, messages } = paired()
+  for (const scope of ["scope", "old-route"]) {
+    const migrated = budgetStateSchema.parse({ ...pending, version: 1, scope, excludedReports: [response.id] })
+    assert.deepEqual(migrated.excludedReports, [response.id])
+    const updated = prepareBudget(identity, [user, response], messages, system, tools, FALLBACK_BASIS, "policy0", migrated)
+    assert.equal(updated.anchor, undefined)
+    assert.equal(estimateBudget(budgetUnits(messages, system, tools, FALLBACK_BASIS), updated, 1.3).source, "local-fallback")
+  }
+  const migrated = budgetStateSchema.parse({ ...pending, version: 1, scope: "old-route" })
+  assert.equal(prepareBudget(identity, [user, response], messages, system, tools, FALLBACK_BASIS, "policy0", migrated).anchor, undefined)
 })

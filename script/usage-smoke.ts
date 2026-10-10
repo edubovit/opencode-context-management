@@ -9,6 +9,9 @@ import { settings } from "../src/config.ts"
 import { fixture } from "./host-fixture.ts"
 import { SummaryBatch } from "../src/batch.ts"
 import { inputEstimate, summaryPrompt } from "../src/summarize.ts"
+import { Message } from "@opencode/ai"
+import { budgetUnits } from "../src/budget.ts"
+import { FALLBACK_BASIS, tokenCount } from "../src/tokens.ts"
 
 const test = await fixture(process.argv[2])
 const checks: string[] = []
@@ -231,6 +234,60 @@ try {
   assert.equal(autoCalls[0].scope.parentID, automatic.sessionID)
   assert.equal((await automatic.load()).policy.operations.length, 0)
   checks.push("automatic helpers still reject provider-anchored oversized follow-ups and never release an oversized main request")
+
+  for (const reported of [false, true]) {
+    const { controller: media } = await make("AUTO_PER_TURN")
+    await test.client.session.switchModel({ sessionID: media.sessionID, model: { providerID: "fixture", id: "fixture" } })
+    test.usage(() => reported ? { input: 26959, output: 53, cached: 24704 } : undefined)
+    test.respond((wire, scope) => scope.sessionID === media.sessionID && !wire.messages.some((message) => message.role === "tool")
+      ? { tool: { name: "fixture_tool", input: { image: true } } } : undefined)
+    const start = test.calls.length
+    await send(media.sessionID, "MEDIA_BUDGET_IMAGE " + "Earlier useful facts. ".repeat(6000))
+    assert.equal((await test.client.session.get({ sessionID: media.sessionID })).outcome, "succeeded")
+    const calls = test.calls.slice(start)
+    assert.equal(calls.length, 2, "Only the initial call and its image-bearing continuation may run; no compaction helpers")
+    assert.ok(calls.every((call) => call.scope.sessionID === media.sessionID))
+    const native = await test.client.session.context({ sessionID: media.sessionID })
+    const tool = native.flatMap((message) => message.type === "assistant" ? message.content.filter((part) => part.type === "tool") : []).find((part) => part.name === "fixture_tool")!
+    assert.equal(tool.state.status, "completed")
+    if (tool.state.status !== "completed") throw new Error("Missing screenshot result")
+    const image = tool.state.content.find((part) => part.type === "file")
+    assert.ok(image?.type === "file")
+    assert.equal(image.mime, "image/png")
+    assert.ok(image.uri.length > 2_000_000)
+    assert.ok(JSON.stringify(calls[1].wire.messages).includes(image.uri), "Stored image bytes must reach the provider unchanged")
+    const measured = await accounting(media)
+    assert.equal(measured?.source, reported ? "provider-matched" : "local-fallback")
+    assert.ok(measured!.tokens < 50000, JSON.stringify(measured))
+    assert.ok(measured!.local < 40000)
+    assert.equal((await media.load()).policy.operations.length, 0)
+    checks.push(`large tool image reaches the next request intact without false AUTO or tail failure (${reported ? "provider-matched" : "local-fallback"})`)
+
+    if (reported) {
+      const state = (await storage.budget(media.sessionID))!
+      const result = { type: "content" as const, value: tool.state.content }
+      const imageUnit = budgetUnits([Message.tool({ id: tool.id, name: tool.name, result })], [], {}, FALLBACK_BASIS).at(-1)!
+      assert.ok(state.pending?.units.some((unit) => unit.key === imageUnit.key))
+      const oldUnits = state.pending!.units.map((unit) => unit.key === imageUnit.key ? { ...unit, tokens: tokenCount(JSON.stringify(result)) } : unit)
+      assert.ok(oldUnits.some((unit) => unit.tokens > 1_000_000))
+      await storage.write(`budget-${hash(media.sessionID)}.json`, { ...state, version: 1, pending: { ...state.pending, units: oldUnits } })
+      test.respond(() => undefined)
+      await test.restart()
+      const remote = remoteHost(test.client, media.sessionID)
+      const current = await test.until(async () => { try { return await remote.load() } catch { return undefined } }, "media cache upgrade after restart")
+      const controller = new Controller(remote.host, media.sessionID, settings(current.settings), remote.artifacts)
+      await send(media.sessionID, "Continue with the same screenshot after the counting upgrade")
+      const migrated = await accounting(controller)
+      assert.equal(migrated?.source, "provider-unpaired")
+      assert.equal(migrated?.reported?.input, 26959)
+      assert.ok(migrated!.tokens >= 27012 && migrated!.tokens < 50000, JSON.stringify(migrated))
+      assert.equal((await storage.read<{ version: number }>(`budget-${hash(media.sessionID)}.json`))?.version, 2)
+      assert.equal((await controller.load()).policy.operations.length, 0)
+      await send(media.sessionID, "Pair a fresh request using the corrected image count")
+      assert.equal((await accounting(controller))?.source, "provider-matched")
+      checks.push("version-1 image count cache is rebuilt after restart without false removal credit, retaining usage and regaining matched accounting")
+    }
+  }
   passed = true
 } finally {
   for (const sessionID of sessions) await test.client.session.remove({ sessionID }).catch(() => {})

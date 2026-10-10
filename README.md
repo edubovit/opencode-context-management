@@ -147,6 +147,8 @@ The inspector shows **Live guard** while paused or **Last request guard** otherw
 
 Accounting survives restart. Model, variant, agent, configured route or tokenizer changes invalidate incompatible measurements; a changed model/provider configuration also prevents resuming a stale live pause. The files contain hashes/counts, not request text or credentials.
 
+Images and PDFs in typed tool-result content use the same rough media allowances as direct attachments, not the text-token cost of their base64 bytes. Text parts are counted separately and the image/file payload stays unchanged. Genuine text, JSON and error payloads remain text-counted; arbitrary base64-looking strings are not silently ignored.
+
 **This is still a forecast, not an exact provider count or a hard limit guarantee.** Reports describe earlier requests; changed text, later hooks, media and opaque state can differ. Image/PDF allowances are rough estimates. Unpaired reconstruction assumes normal operation timestamps/history ordering. Unknown residual overhead can prevent release after substantial cleanup; AUTO fails rather than forcing an oversized request through. Keep headroom, and increase `estimateMultiplier` if your unmeasured additions are consistently underestimated.
 
 - **MANUAL:** pause for cleanup; resume only when the estimate fits. Available for top-level sessions only.
@@ -164,6 +166,8 @@ Queued inputs are not silently discarded. Oversized synthetic-only context witho
 ## Upgrading and limits
 
 **Version 4.1 is V2-native.** Existing V2 ledgers in formats **7, 8 and 9** remain readable, including nested summaries, revisions, pruning and partial-turn checkpoints. Reading does not rewrite stored metadata. The next ledger write upgrades to append-only **format 10**, which records explicit pruning-restoration targets without changing older operations or their fingerprints. Old saved summary expansions retain their original summary-only behavior. Exports still use schema 4. Older plugin versions cannot read format 10: back up before upgrading and do not downgrade a modified session.
+
+**4.1.2 fixes false overloads caused by tool-returned images.** Accounting cache format 2 replaces format 1 automatically on the next request. Old local counts and pending matches are discarded; compatible native usage is reconstructed as `provider-unpaired` until a fresh response supplies a new match. Session history and operations are untouched, and previously excluded reports stay excluded. No manual cache deletion is needed. Historical guard snapshots refresh on the next request. Older plugin releases cannot read format-2 caches.
 
 Formats 1–6, malformed ledgers and copied-history fork ledgers are preserved and refused, never silently reset. There is no V1 reader, character-pruning mode or Undo/Redo ledger cursor. Pruning restoration is a new V2 expansion action, not the old V1 Unprune implementation. Fresh child sessions are distinct from forks and get their own ledger.
 

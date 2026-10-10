@@ -76,6 +76,13 @@ These checks use synthetic providers and owned private servers. No shared-servic
 - Production server/Windows ConPTY smoke: **33 checks** on 2.0.26; subagents/automatic recovery: **11 checks**. All private hosts stopped cleanly. Synthetic providers only; no live-provider capacity guarantee.
 - Version/lockfile agreement and whitespace checks passed. No dependency, RPC-schema or ledger-format change.
 
+### Version 4.1.2 validation
+
+- Typecheck, **230 unit/adapter tests** and **36 renderer tests** passed.
+- Provider-budget suite: **17 checks** on each of OpenCode **2.0.24, 2.0.25 and 2.0.26**, including large decoded tool images reaching the next request intact, no false compaction under fallback/matched accounting, and format-1 cache migration across restart.
+- Production server/Windows ConPTY: **33 checks** on 2.0.26; subagents/automatic recovery: **11 checks**. Successful private fixtures all stopped cleanly.
+- Synthetic tests cover image/PDF allowances, text/JSON/error distinctions, identity hashes, conservative removal credit, cache exclusions and fresh matching. No exact vision-token or live-provider capacity guarantee. Dependencies and operation fingerprints are unchanged; only the accounting cache advances to format 2.
+
 ## Architecture
 
 | Area | Files |
@@ -164,6 +171,7 @@ Native `session.context` exposes the active window, not arbitrary pre-checkpoint
 - Bootstrap without a captured request is explicitly unpaired. Reconstruct a historical policy prefix excluding operations created after the response began or selecting that response/future messages. This is not proof of historical request identity; timestamps/configuration can be uncertain. New matched observations supersede it.
 - Native checkpoint/raw-prefix changes and model/provider/variant/agent/tokenizer/route changes invalidate incompatible anchors. Do not immediately bootstrap from the very historical reports just invalidated by a scope change. Live gate validation checks current route/model configuration and capacity before maintenance/resume.
 - Missing usage falls back to a visible configurable local uplift (default 1.3). Unknown overhead remains uncertain; no universal media/opaque-state/provider bound is claimed. Keep local content totals, historical reported usage and the actual guard forecast clearly separate in the UI/export.
+- Typed `tool-result.content` is not raw JSON text: count its text parts and image/PDF allowances separately, never base64 file bytes or long file URLs as prose. Preserve full payload identity in unit hashes and leave requests unchanged. Plain text/JSON/error results keep serialized-text counting because those paths can genuinely send the bytes as text. Direct media and tool files share allowances; they remain rough estimates, not provider/image-resolution guarantees. Test media-bearing continuations with both fallback and reported usage.
 - If oversized context has no USER turn, fail before dispatch instead of skipping the budget guard or inventing a protectable turn.
 - Protect the entire V2 execution span since the last idle boundary for normal edits. Only the live server AUTO owner may create a last-resort checkpoint across that boundary; arbitrary RPC/idle commits cannot grant themselves this exception. Recheck source/revision/configuration and the exact unchanged exempt tail before committing. Queued inputs must be delivered exactly once.
 - A stored pause notice is not authority. Only the current in-memory owner can maintain/resume; source and protected-span fingerprints must still match.
@@ -206,9 +214,11 @@ Server artifacts are under `~/.local/state/opencode-context-manager/<project-has
 
 Native RPC uses host authentication; the plugin creates no control credential file or custom listener. Do not commit or share old credentials or private captures.
 
-`budget-<session-hash>.json` is a versioned accounting cache of scope/history/content hashes and counts. Its version 1 is unrelated to OpenCode V1 or ledger formats. It contains no prompt text or provider credentials. Do not delete accounting state to force a paused request through. The live gate uses its frozen estimator; missing files require conservative bootstrap on subsequent requests.
+`budget-<session-hash>.json` is an accounting cache of scope/history/content hashes and counts, not prompts or credentials. Current format **2** is independent of host/ledger versions. The reader validates format 1 but returns a format-2 view without its old count units or pending match; scope and report exclusions survive. The next request reconstructs compatible native usage as unpaired using the historical policy prefix, then persists format 2. Never reuse inflated old units as removal credit or preserve their invalid input/local calibration. Unknown/corrupt caches still fail validation. Do not delete accounting state to force a paused request through; a live gate keeps its frozen estimator.
 
 `script/usage-smoke.ts` emits deliberately mismatched OpenAI-style SSE usage. It verifies provider-triggered MANUAL/AUTO pauses with low local counts, cached/reasoning normalization, summary and large-prune resume, tool-result growth, restart persistence, pre-upgrade edits, model/endpoint invalidation (including a held gate), and isolated automatic-helper capacity checks. It also sends manual batches above the selected model's advertised input capacity and manual edit follow-ups after oversized usage reports, then checks a real HTTP provider rejection without partial writes. It uses the same owned private host/fake-provider isolation as the production smoke.
+
+The same suite returns a large valid synthetic PNG through a real tool, verifies the next provider request retains the stored image without spurious AUTO/last-resort work, and restarts with a format-1 oversized image-count cache to verify migration and fresh usage matching. `test/media-fixture.ts` generates a decodable noise PNG; arbitrary bytes labeled image/png would be omitted by the host and would not exercise the bug. Compare wire media to native stored content, not an independently compressed Node copy: Node/Bun encoders may produce different bytes for the same pixels.
 
 `script/subagent-smoke.ts` enables the real built-in subagent tool in an isolated fixture with nesting depth4. It tests foreground/background and nested children of edited MANUAL parents, independent ledgers, last-resort same-turn continuation, exact retained tool output, steering/queue delivery, summary failure, ancestor Stop, no manual gates, and persisted checkpoint restart. Fake providers prove mechanics, not semantic summary quality.
 
