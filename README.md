@@ -130,7 +130,7 @@ This example includes **every configurable plugin parameter**. The numeric setti
         "prune": {
           "threshold": 5000,
           "head": 1000,
-          "tail": 1000
+          "tail": 500
         },
         "tokenizer": {
           "fallbackEncoding": "o200k_base",
@@ -154,7 +154,7 @@ Merge this into your existing configuration rather than replacing unrelated prov
 ### Defaults and validation
 
 - **Every plugin option is optional.** `"options": {}` uses all built-in defaults. You can supply only the groups or individual fields you want to change.
-- Omitted fields keep their defaults; they are not automatically adjusted to fit other values you changed. For example, lowering `prune.threshold` to `2000` requires lowering `head` and/or `tail`, because their default sum is already `2000`.
+- Omitted fields keep their defaults; they are not automatically adjusted to fit other values you changed. For example, lowering `prune.threshold` to `1500` requires lowering `head` and/or `tail`, because their default sum is already `1500`.
 - Use JSON numbers for numeric settings. Limits expressed as integers must be whole numbers within the ranges below. Model/provider/variant values must be nonempty strings.
 - Unknown keys are rejected, including keys nested inside an option group. Invalid settings fail visibly rather than being silently ignored. There is no `prune.unit`, `outputReserve`, plugin output-token cap, or general `enabled` option.
 - The cleanup **strategy** is a per-session choice made with **a** in the inspector, not an `options.autocompaction.strategy` field. Its default is AUTO_PER_TURN. OpenCode's required `compaction.auto: false` disables native compaction, **not this plugin's automatic cleanup**.
@@ -203,9 +203,9 @@ These limits control **Prune tools (large)** on selected existing history. They 
 | --- | --- | --- |
 | `prune.threshold` | `5000` | Integer ≥ `1`, in locally estimated tokens per tool result. Only results **strictly larger** than this value are eligible. |
 | `prune.head` | `1000` | Integer ≥ `0`. Maximum tokens retained from the beginning of an eligible result. `0` keeps no beginning text. |
-| `prune.tail` | `1000` | Integer ≥ `0`. Maximum tokens retained from the end of an eligible result. `0` keeps no ending text. |
+| `prune.tail` | `500` | Integer ≥ `0`. Maximum tokens retained from the end of an eligible result. `0` keeps no ending text. |
 
-**`head + tail` must be strictly less than `threshold`.** With the defaults, a result above 5,000 tokens is reduced to up to 1,000 beginning tokens plus 1,000 ending tokens, with an omission notice and any full-output path added. These notices are extra; if the resulting text would not be smaller, the operation is skipped.
+**`head + tail` must be strictly less than `threshold`.** With the defaults, a result above 5,000 tokens is reduced to up to 1,000 beginning tokens plus 500 ending tokens, with an omission notice and any full-output path added. These notices are extra; if the resulting text would not be smaller, the operation is skipped.
 
 Use more tail budget when final errors or conclusions matter most, or more head budget when headers and initial context matter most. Inputs and attachments stay intact in large-output mode. Each saved pruning operation pins its rule and tokenizer, so changing these defaults later does not reinterpret earlier cuts. **Ctrl+E** restores an applied pruning layer; it does not restore an external spill file's full contents into the conversation.
 

@@ -50,7 +50,7 @@ export function settings(input: unknown = {}): Settings {
     prune: {
       threshold: integer(prune.threshold ?? 5000, "prune.threshold", 1),
       head: integer(prune.head ?? 1000, "prune.head", 0),
-      tail: integer(prune.tail ?? 1000, "prune.tail", 0),
+      tail: integer(prune.tail ?? 500, "prune.tail", 0),
     },
     tokenizer: { fallbackEncoding, overrides: { ...overrides } as Record<string, Encoding> },
     summarizer: {
