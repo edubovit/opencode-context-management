@@ -10,7 +10,7 @@ export { toolText } from "./text.ts"
 
 export type Envelope = { info: Message; parts: Part[] }
 export type Block = {
-  kind: "turn" | "compact" | "brief"
+  kind: "turn" | "compact" | "brief" | "deleted"
   sourceIDs: string[]
   messages: Envelope[]
   closed: boolean
@@ -19,6 +19,7 @@ export type Block = {
   toolsDeleted?: boolean
   allToolsPruned?: boolean
   summaryID?: string
+  deletionID?: string
   previous?: Block[]
   pruning?: PruningLayer[]
 }
@@ -102,6 +103,7 @@ export function select(blocks: Block[], start: number, end: number) {
 export function operation(mode: Operation["mode"], selected: Block[], rule?: PruneRule, tokenizer: TokenBasis = FALLBACK_BASIS): Operation {
   const messages = blockMessages(selected)
   const summaryIDs = selected.flatMap((block) => block.summaryID ? [block.summaryID] : [])
+  const deletedIDs = selected.flatMap((block) => block.deletionID ? [block.deletionID] : [])
   const pruneTargets = selected.flatMap((block) => {
     const layer = block.kind === "turn" && block.pruning?.at(-1)
     return layer ? [{ operationID: layer.operationID, sourceIDs: [...block.sourceIDs] }] : []
@@ -111,6 +113,7 @@ export function operation(mode: Operation["mode"], selected: Block[], rule?: Pru
     beforeHash: historyHash(messages), beforeChars: chars(serialize(messages)), beforeTokens: contentTokens(messages, tokenizer), tokenizer: { ...tokenizer }, created: Date.now(),
     ...(rule ? { rule } : {}),
     ...(mode === "expand" && summaryIDs.length ? { summaryIDs } : {}),
+    ...(mode === "expand" && deletedIDs.length ? { deletedIDs } : {}),
     ...(mode === "expand" && pruneTargets.length ? { pruneTargets } : {}),
   }
 }
@@ -120,9 +123,10 @@ export function summaryText(op: Operation, text = op.summary ?? "") {
 }
 
 export function replacement(op: Operation, selected: Block[]): Block {
-  const first = selected[0].messages[0]
-  const last = selected.at(-1)!.messages.at(-1)!
-  if (first.info.role !== "user") throw new Error("Summary range must start with a user message")
+  const messages = blockMessages(selected)
+  const first = messages[0]
+  const last = messages.at(-1)!
+  if (first?.info.role !== "user") throw new Error("Summary range must start with a visible user message")
   const assistant: Envelope = {
     info: last.info.role === "assistant"
       ? { ...last.info, error: undefined, finish: "stop", time: { ...last.info.time, completed: last.info.time.completed ?? op.created } }
@@ -168,9 +172,17 @@ export function project(active: Envelope[], policy: Policy, observe?: (op: Opera
     observe?.(op, selected)
     if (op.mode === "revise") {
       const block = selected[0]
-      if (selected.length !== 1 || block.kind === "turn" || !block.summaryID || block.summaryID !== op.targetID)
+      if (selected.length !== 1 || (block.kind !== "compact" && block.kind !== "brief") || !block.summaryID || block.summaryID !== op.targetID)
         throw new Error("Summary revision target is no longer visible")
       blocks[start] = { ...block, messages: replacement({ ...op, id: block.summaryID, mode: block.kind }, selected).messages }
+      continue
+    }
+    if (op.mode === "delete") {
+      if (selected.every((block) => block.kind === "deleted")) throw new Error("Selected range is already deleted")
+      blocks.splice(start, selected.length, {
+        kind: "deleted", sourceIDs: [...op.sourceIDs], messages: [], closed: true, deletionID: op.id,
+        previous: structuredClone(withPruning(selected, pruned)),
+      })
       continue
     }
     if (["tool-prune", "tool-prune-all", "tool-delete", "prune-reason"].includes(op.mode)) {
@@ -219,9 +231,12 @@ export function project(active: Envelope[], policy: Policy, observe?: (op: Opera
     }
     if (op.mode === "expand") {
       const targets = new Set(op.summaryIDs)
+      const deletions = new Set(op.deletedIDs)
       const pruneTargets = op.pruneTargets ?? []
-      if ((!targets.size && !pruneTargets.length) || selected.filter((block) => block.summaryID && targets.has(block.summaryID)).length !== targets.size)
+      if ((!targets.size && !pruneTargets.length && !deletions.size) || selected.filter((block) => block.summaryID && targets.has(block.summaryID)).length !== targets.size)
         throw new Error("Selected summary is no longer available for expansion")
+      if (selected.filter((block) => block.kind === "deleted" && block.deletionID && deletions.has(block.deletionID)).length !== deletions.size)
+        throw new Error("Selected deletion is no longer available for expansion")
       if (new Set(pruneTargets.flatMap((target) => target.sourceIDs)).size !== pruneTargets.reduce((sum, target) => sum + target.sourceIDs.length, 0) ||
           pruneTargets.some((target) => !selected.some((block) => block.kind === "turn" && block.pruning?.at(-1)?.operationID === target.operationID && hash(block.sourceIDs) === hash(target.sourceIDs))))
         throw new Error("Selected pruning layer is no longer available for restoration")
@@ -237,8 +252,8 @@ export function project(active: Envelope[], policy: Policy, observe?: (op: Opera
           restorePruning([restored], pruned)
           return [restored]
         }
-        if (!block.summaryID || !targets.has(block.summaryID)) return [block]
-        if (!block.previous) throw new Error("Summary has no pre-compaction state")
+        if (!(block.summaryID && targets.has(block.summaryID)) && !(block.deletionID && deletions.has(block.deletionID))) return [block]
+        if (!block.previous) throw new Error("Selected range has no pre-compaction state")
         const previous = structuredClone(block.previous)
         restorePruning(previous, pruned)
         return previous
@@ -297,7 +312,7 @@ export function splitAfter(blocks: Block[], id: string): Block[] {
   return blocks.flatMap((block) => {
     const index = block.sourceIDs.indexOf(id)
     if (index < 0 || index === block.sourceIDs.length - 1) return [block]
-    if (block.kind !== "turn") throw new Error("Cannot split a saved summary")
+    if (block.kind !== "turn") throw new Error("Cannot split a saved summary or deleted range")
     const cut = index + 1
     return [
       { ...block, sourceIDs: block.sourceIDs.slice(0, cut), messages: block.messages.slice(0, cut), closed: false },

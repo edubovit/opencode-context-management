@@ -42,7 +42,7 @@ To verify a real upgrade, unpack an archived 3.2.0 or 4.0.0 source snapshot unde
 npm run test:upgrade -- /absolute/path/to/opencode /absolute/path/to/baseline/src
 ```
 
-This optional test creates genuine format-7/8 or format-9 operations under the old plugin, restarts only its private host with the new source, and verifies the next same-model requests, summary expansion, restoration of old pruning, format-10 writes and another restart. It needs no new development branch/worktree. Default checks need no old source snapshot. Tests exercise production projection code, not a duplicate converter.
+This optional test creates genuine format-7/8 or format-9 operations under the old plugin, restarts only its private host with the new source, and verifies the next same-model requests, summary expansion, restoration of old pruning, format-11 writes and another restart. It needs no new development branch/worktree. Default checks need no old source snapshot. Tests exercise production projection code, not a duplicate converter.
 
 The upgrade runner uses one host executable for both plugins. Unmodified archives with 2.0.26 dependencies cannot load on 2.0.27, and this release no longer targets the older host. It therefore does not cover that host/runtime transition; use the frozen persistence regressions and current-host smoke tests without claiming a real cross-host archive upgrade.
 
@@ -94,6 +94,15 @@ These checks use synthetic providers and owned private servers. No shared-servic
 - Frozen source/request fingerprints, ledger-format compatibility and accounting-cache migration remain covered. Ledger **10**, accounting cache **2**, export schema **4**, tokenizer and UI runtime pins are unchanged. No cross-host archive upgrade or current Windows/macOS validation is claimed.
 - Dependency audit: **0 known vulnerabilities**. Only OpenCode/Effect package versions changed; unrelated dependency versions were retained, and packages no longer required by Effect were removed. No forced peer resolution, private host import, runtime alias or host patch.
 
+### Version 4.2.0 validation
+
+- Typecheck, **242 unit/adapter tests** on Node **24.21.0**, and **38 renderer tests** on bundled Bun **1.4.2** passed, including Delete and Ctrl+E cancellation/confirmation at 80 and 60 columns.
+- OpenCode **2.0.27, Windows x64**: production server/actual ConPTY inspector **35 checks**, provider-budget suite **18 checks**, subagent/automatic recovery **11 checks**. All successful private hosts stopped cleanly; synthetic providers only.
+- Deletion/expansion checks cover immediate same-model requests, complete tool pairs, saved summaries and pruning, nested/mixed layers, zero-content totals, helpers/exports, current-hook redactions, deleted-range restart persistence, protected turns and restoring a held request above its budget. The 200 deterministic mixed-ledger sequences now include deletion.
+- Ledger **11** reads V2 formats **7–10** without rewriting old records on read; frozen source/request fingerprints remain unchanged. Explicit format-10 pruning-restoration compatibility and rejection of deletion in older envelopes are covered. Export schema is **5**, accounting cache remains **2**. Package/source/lockfile versions agree and dependency entries are unchanged.
+- PTY startup waits for the plugin's actual slash-command autocomplete entry rather than assuming the session title means plugin setup completed. Failure screenshots are captured before exit resets the alternate screen.
+- No current Linux/macOS validation, fresh-install run, new dependency audit or real archived-plugin upgrade was performed for this change. No shared-service restart, host-source patch or live-provider call.
+
 ## Architecture
 
 | Area | Files |
@@ -129,7 +138,7 @@ Stored transcript, normalized effective projection, hook capture, and final prov
 
 ### Persistence and migration
 
-The ledger remains in session metadata under `opencode_context_manager`; strategy/status uses a separate namespace. All writes use append-only **format 10**, with no runtime cursor. The decoder accepts V2 formats 7/8/9 and returns the same operations in a format-10 view without persisting it. It rejects truncated cursors, invalid revisions, foreign owners and formats 1–6. The next checked write upgrades the stored envelope. Package version, ledger format, budget-cache format and export schema are independent.
+The ledger remains in session metadata under `opencode_context_manager`; strategy/status uses a separate namespace. All writes use append-only **format 11**, with no runtime cursor. The decoder accepts V2 formats 7/8/9/10 and returns the same operations in a format-11 view without persisting it. It rejects truncated cursors, invalid revisions, foreign owners and formats 1–6. The next checked write upgrades the stored envelope. Package version, ledger format, budget-cache format and export schema are independent. Current export schema is **5**; accounting cache stays **2**.
 
 `historyHash` preserves the established V2 fingerprint representation, including the fixed tool discriminator `nativeVersion: 2` **inside the hash only**. It is not a runtime version switch. Frozen 3.2.0 source/request hashes in `test/ledger.test.ts` protect nested summaries, revision, expansion and partial-turn checkpoint compatibility. Never change that representation casually or regenerate expected hashes to hide a regression. Budget bootstrap replays an explicit operation prefix; this is not Undo.
 
@@ -141,6 +150,8 @@ Pruning keeps a per-turn stack of effective layers during replay, using immutabl
 
 Canonical restoration uses snapshots from the current incoming hook messages, not stored unredacted content. Restore dropped wrappers, attachments, error content, reasoning and pruning-rule state together. Reconstruct layers on each replay, so no bulky original content is added to the ledger. Exclude both `previous` and `pruning` provenance from exports and helpers. Model/source drift, busy/protected turns and stale previews still fail closed. Restoring while paused can increase the guard; it never grants permission to resume above the threshold.
 
+Format 11 adds standalone `delete` operations and explicit `expand.deletedIDs`. Replay collapses each selected range into one `kind: "deleted"` block with its source IDs, `deletionID`, empty `messages` and replay-only `previous` blocks. It contributes no model messages or marker and no local content tokens. Canonical replay saves/removes owned entries, including whole tool pairs; expansion restores current-hook entries and exact prior effective blocks, not raw history or hidden inner layers. Mixed summary/pruning/deletion expansion applies in one checked write. Already-deleted-only ranges cannot create another deletion. Deletions are indivisible like summaries, may be nested inside a wider deletion/summary, and remain absent from helper input. Format-7–10 envelopes cannot contain deletion operations/targets. Existing fingerprints remain unchanged.
+
 Native `session.context` exposes the active window, not arbitrary pre-checkpoint history. Host checkpoints are read-only. Later turns can be edited without discarding a checkpoint or restoring history behind it. The plugin does not reconstruct the host's history selection or private model converter.
 
 ## Invariants
@@ -149,8 +160,8 @@ Native `session.context` exposes the active window, not arbitrary pre-checkpoint
 
 - A USER row starts at a user message; following synthetic/skill/shell context belongs to that effective range. Host control/system/idle records are not editable USER text. Unfinished/user-only snapshots must be labeled honestly.
 - Background shell records (`metadata.background === true`) remain in saved source fingerprints but OpenCode deliberately omits their canonical messages; completion arrives separately as synthetic context. Projection must allow that specific omission without reconstructing the shell or suppressing missing-message/tool-pair checks. Production smoke covers all pruning combinations across a real background shell completion.
-- Ranges are inclusive and disjoint; adjacent ranges remain separate. Existing summaries are indivisible until expanded.
-- Never rewrite transcript messages/parts. Operations alter the request projection only; spills are ingestion-time previews with full captured text saved separately.
+- Ranges are inclusive and disjoint; adjacent ranges remain separate. Existing summaries and DELETED ranges are indivisible until expanded.
+- Never rewrite transcript messages/parts. Operations alter the request projection only; spills are ingestion-time previews with full captured text saved separately. Range deletion removes the entire selected effective content but retains an empty inspector row and replay-only restoration state. Preserve unselected/system context; do not insert a synthetic deletion message.
 - Reasoning removal removes whole reasoning parts, including opaque part metadata, but does not guess that commentary/visible text is reasoning.
 - Large tool pruning changes model-visible result text only, preserves inputs and attachments, keeps Unicode boundaries, pins tokenizer/rule identity, and skips non-saving or duplicate rule applications.
 - All-output pruning replaces every terminal result, including empty/error results and attachments. It must not leave original interruption output in the error/content fields.

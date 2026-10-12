@@ -1,6 +1,6 @@
 export type ToolPruning = "large" | "all" | "delete"
 export type Pruning = { reasoning: boolean; tools?: ToolPruning }
-export type Compaction = ({ kind: "prune" } & Pruning) | { kind: "summary"; mode: "compact" | "brief" }
+export type Compaction = ({ kind: "prune" } & Pruning) | { kind: "summary"; mode: "compact" | "brief" } | { kind: "delete" }
 
 export const COMPACTION_MODES = [
   { name: "Prune reasoning", description: "Remove reasoning; keep prompts, calls and visible responses" },
@@ -9,14 +9,17 @@ export const COMPACTION_MODES = [
   { name: "Prune tools (delete)", description: "Remove entire calls and results; requires reasoning removal" },
   { name: "Summarize (detailed)", description: "Model-written detailed summary; applies automatically" },
   { name: "Summarize (brief)", description: "Model-written brief summary; applies automatically" },
+  { name: "Delete", description: "Remove selected ranges from effective context; Ctrl+E restores them" },
 ] as const
 
 export function selectedModes(value: Compaction): number[] {
+  if (value.kind === "delete") return [6]
   if (value.kind === "summary") return [value.mode === "compact" ? 4 : 5]
   return [...(value.reasoning ? [0] : []), ...(value.tools ? [{ large: 1, all: 2, delete: 3 }[value.tools]] : [])]
 }
 
 export function toggleMode(value: Compaction, index: number): Compaction {
+  if (index === 6) return { kind: "delete" }
   if (index === 4 || index === 5) return { kind: "summary", mode: index === 4 ? "compact" : "brief" }
   const current: Pruning = value.kind === "prune" ? value : { reasoning: false }
   if (index === 0) return { kind: "prune", ...current, reasoning: current.tools === "delete" || !current.reasoning }

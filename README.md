@@ -1,14 +1,14 @@
 # OpenCode Context Manager
 
-Choose what stays in your coding session's context. Prune reasoning or tool results, summarize selected turns, and expand summaries later—without deleting the stored conversation.
+Choose what stays in your coding session's context. Prune reasoning or tool results, summarize or delete selected ranges, and restore them later—without deleting the stored conversation.
 
-**Plugin 4.1.3 · OpenCode V2**.
+**Plugin 4.2.0 · OpenCode V2**.
 
 ## Features
 
-- **Range-based editing:** select disjoint ranges, then choose reasoning removal, large/all tool-result pruning, whole-call deletion, or detailed/brief summaries.
+- **Range-based editing:** select disjoint ranges, then choose reasoning removal, large/all tool-result pruning, whole-call deletion, detailed/brief summaries, or whole-range deletion.
 - **Parallel summaries:** each range receives the same frozen effective background. Only a complete successful batch applies; retry just failed ranges.
-- **Reversible reductions:** expand summaries or restore the latest tool/reasoning pruning layer on selected turns. Earlier layers and unrelated ranges stay intact; no global Undo/Redo.
+- **Reversible reductions:** expand summaries, restore deleted ranges, or restore the latest tool/reasoning pruning layer on selected turns. Earlier layers and unrelated ranges stay intact; no global Undo/Redo.
 - **Fullscreen readers:** read turns and saved summaries. Edit summaries manually or with a model; model edits stay proposals until explicitly applied.
 - **Local statistics:** token estimates, tool status, selected-range totals, and effective-context exports. Counting needs no model call.
 - **Near-limit protection:** suspend before a model request and resume the same request after reduction. AUTO_PER_TURN is the default; subagents never require manual recovery. Last resort can summarize an unfinished-turn prefix while retaining the newest 20,000 estimated tokens.
@@ -19,7 +19,7 @@ Initial summaries apply automatically; inspect/edit/expand them afterward. Summa
 
 This is a **source-based, private package**, not a published npm plugin. Requires a compatible local OpenCode **V2 (2.0.27 or newer)** installation and npm.
 
-Validated on OpenCode **2.0.27 on Linux x64**, including the actual terminal inspector, provider-usage accounting, restoration and subagents. Windows and macOS have not been validated for the current release. See [validation details](CONTRIBUTING.md#version-413-validation).
+Validated on OpenCode **2.0.27 on Windows x64**, including the actual terminal inspector, provider-usage accounting, deletion/restoration and subagents. Linux and macOS have not been validated for the current release. See [validation details](CONTRIBUTING.md#version-420-validation).
 
 Development checks run on Node.js 22+; renderer tests use the bundled Bun runtime. OpenTUI's Node-backend engine warning on Node 22 does not apply to the bundled Bun renderer. Using its Node backend directly requires Node 26.4+.
 
@@ -74,18 +74,21 @@ Use **Space → move → Space** to close a range; repeat for more ranges. Press
 | Prune tools (delete) | Remove entire calls and results. Requires reasoning removal. |
 | Summarize (detailed) | Detailed replacement with at most one soft-size-review follow-up. |
 | Summarize (brief) | Shorter, single-pass replacement. |
+| Delete | Remove the entire selected range from effective context. Keep one zero-content **DELETED** row per range for restoration. No model call. |
 
-Reasoning removal combines with one tool mode. Summary modes cannot combine with pruning. Pruning and restoration make no model calls and never change past tool execution or disable future tools.
+Reasoning removal combines with one tool mode. Summary modes and **Delete** are standalone choices. Pruning, deletion and restoration make no model calls and never change past tool execution or disable future tools.
 
 - **Enter:** read a turn or summary. Readers exclude tool activity/reasoning and label unfinished answers.
-- **Ctrl+E, then Ctrl+S:** preview and confirm one-layer restoration. A summary expands to its pre-summary view. A pruned ordinary turn restores its latest effective pruning action. Combined tool/reasoning pruning restores together, including deleted calls/results; separate actions restore one at a time. Expand a summary before restoring pruning hidden inside it.
+- **Ctrl+E, then Ctrl+S:** preview and confirm one-layer restoration. A summary expands to its pre-summary view. A **DELETED** range restores its pre-deletion turns, summaries and pruning. A pruned ordinary turn restores its latest effective pruning action. Combined tool/reasoning pruning restores together, including deleted calls/results; separate actions restore one at a time. Expand a summary or deleted range before restoring layers hidden inside it.
 - **e/r** inside a summary: manual edit / model request. **Ctrl+S** saves, sends, or applies according to the current editor mode.
 - **a:** save autocompaction strategy. **g:** retry failed batch jobs, or explicitly run AUTO while paused.
 - **v:** cycle Overview → Details → Content → Runtime. **n:** local token/character counts; the guard stays in tokens. **Tab:** switch panes. **f:** reload. **o:** export. **?:** help.
 - **m/t:** choose summary model/effort from the main view or compaction menu.
 - **Esc:** cancel an open range/editor or go back. A paused exit offers Stay, Resume only if within budget, or Abort.
 
-Rows show USER/SUMMARY with compact, right-aligned sizes; filled circles and R labels mark selected ranges. Host checkpoint context is labeled separately and is read-only. Tool statistics distinguish large-output eligibility, pruning, removed tools/reasoning, and unfinished/protected turns. Exact numbers remain in Details and exports.
+Rows show USER/SUMMARY/DELETED with compact, right-aligned sizes; filled circles and R labels mark selected ranges. Host checkpoint context is labeled separately and is read-only. Tool statistics distinguish large-output eligibility, pruning, removed tools/reasoning, and unfinished/protected turns. Exact numbers remain in Details and exports.
+
+To delete: select a range with **Space → move → Space**, press **c**, choose **Delete**, toggle it with **Space**, then press **Enter**. Multiple selected ranges apply together. A DELETED row contributes no messages or placeholder to model context, no local content tokens, and no hidden text to summary helpers. It remains selectable but indivisible until expanded. Deleting an already-deleted range alone does nothing and reports an error. Deleting a wider range can contain earlier deletions; expansion restores one layer at a time. Stored history and prior operations remain intact.
 
 Restoration affects only selected turns, even when an earlier prune covered a wider range. It preserves earlier pruning layers and survives restart. The preview shows how much estimated text context will return. Restoring during a manual pause can put the request over budget again; Resume stays blocked until it fits. Restoration does not recover data already removed by the host or expand an ingestion-time spill preview into its full output file.
 
@@ -268,6 +271,8 @@ Queued inputs are not silently discarded. Oversized synthetic-only context witho
 Malformed ledgers and copied-history fork ledgers are preserved and refused, never silently reset. Fresh child sessions are distinct from forks and get their own ledger.
 
 Native checkpoints are read-only; edit later USER turns. Historical tools still marked running/streaming must be settled by the host before editing. Opaque provider-executed results cannot be safely pruned; use a summary or whole-call deletion with reasoning instead. Errored or interrupted reasoning that the host converted to visible text is also refused rather than guessed at. Signed/opaque reasoning, encrypted checkpoints and stateful provider transports are not universally validated.
+
+Version 4.2.0 writes ledger format **11** and exports schema **5**. Saved V2 ledgers **7–10** are read without rewriting them until the next checked write; older operations keep their meaning. Do not downgrade the plugin after a format-11 write. Range deletion keeps the same source, idle, protected-turn and native-checkpoint safeguards as other context edits; restoring a range never bypasses the Resume budget check.
 
 Captures, spill files and exports live in `~/.local/state/opencode-context-manager/<project-hash>/` on the server. The ledger and strategy live in OpenCode session metadata. Control uses authenticated native RPC, with no separate control port or credential file.
 

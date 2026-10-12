@@ -93,7 +93,7 @@ test("V2 accepts only native-format ledgers and refuses inherited/V1 state witho
   assert.throws(() => readPolicy({ ...sessionView(session), metadata: { [KEY]: legacy } }), /Unsupported/)
   assert.equal(legacy.version, 6)
   assert.throws(() => readPolicy({ ...sessionView(session), metadata: { [KEY]: emptyPolicy("ses_parent") } }), /another session/)
-  assert.equal(readPolicy({ ...sessionView(session), metadata: { [KEY]: emptyPolicy(session.id) } }).version, 10)
+  assert.equal(readPolicy({ ...sessionView(session), metadata: { [KEY]: emptyPolicy(session.id) } }).version, 11)
 })
 
 test("background shell records intentionally omitted by the host do not block saved edits", () => {

@@ -62,7 +62,7 @@ try {
     const preview = await controller.prepareRestore("expand", before.blocks[0].sourceIDs)
     await controller.applyRestore(preview)
     const after = await controller.load()
-    assert.equal(after.policy.version, 10)
+    assert.equal(after.policy.version, 11)
     assert.equal("cursor" in after.policy, false)
     assert.deepEqual(after.policy.operations.slice(0, 3), saved.policy.operations)
     assert.equal(after.blocks[0].reasonPruned, true)

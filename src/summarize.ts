@@ -23,8 +23,8 @@ export function summaryPrompt(op: Operation, all: Block[], runtime?: string) {
   const ids = selected.flatMap((block) => block.sourceIDs)
   if (start < 0 || end < start || ids.length !== op.sourceIDs.length || ids.some((id, index) => id !== op.sourceIDs[index]))
     throw new Error("Selected summary range does not match contiguous effective blocks; refresh the selection")
-  const render = (blocks: Block[], offset: number, scope: string) => blocks.map((block, index) =>
-    `[${scope} effective block ${offset + index + 1}/${all.length}; ${block.kind}${block.closed ? "" : "; unfinished snapshot"}]\n${serialize(block.messages)}`).join("\n\n") || "(none)"
+  const render = (blocks: Block[], offset: number, scope: string) => blocks.flatMap((block, index) => block.kind === "deleted" ? [] :
+    [`[${scope} effective block ${offset + index + 1}/${all.length}; ${block.kind}${block.closed ? "" : "; unfinished snapshot"}]\n${serialize(block.messages)}`]).join("\n\n") || "(none)"
   const marker = `selected_range_${op.id}`
   const instruction = op.mode === "brief"
     ? "BRIEF MODE: Write a very short summary of ONLY the selected excerpt. One to three paragraphs is a guide, not a quota; a small or low-value excerpt may need only one sentence. Keep its topic, conclusion and useful concrete facts/identifiers. Do not pad it with project-wide goals, progress or tasks from the background. This is an in-place replacement, not a full-session handoff."

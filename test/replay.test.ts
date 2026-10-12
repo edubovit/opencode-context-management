@@ -21,10 +21,16 @@ test("200 deterministic mixed ledgers preserve source, round-trip replay, and ex
       const current = blocks()
       const index = choose(current.length)
       const selected = current.slice(index, index + 1 + choose(current.length - index))
-      if (selected.some((block) => block.summaryID || block.pruning?.length) && choose(3) === 0) {
+      if (selected.every((block) => block.kind === "deleted") || selected.some((block) => block.summaryID || block.deletionID || block.pruning?.length) && choose(3) === 0) {
         policy = append(policy, operation("expand", selected))
       } else if (selected.length === 1 && selected[0].summaryID && choose(2) === 0) {
         policy = append(policy, { ...operation("revise", selected), targetID: selected[0].summaryID, summary: `Revised ${seed}/${step}` })
+      } else if (choose(3) === 0) {
+        const before = request()
+        const deletion = operation("delete", selected)
+        policy = append(policy, deletion)
+        const deleted = blocks().filter((block) => block.deletionID === deletion.id)
+        assert.deepEqual(projectRequest(native, raw, canonical, append(policy, operation("expand", deleted))), before)
       } else if (choose(2) === 0) {
         const before = request()
         const summary = { ...operation(choose(2) ? "compact" : "brief", selected), summary: `Summary ${seed}/${step}` }

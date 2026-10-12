@@ -86,12 +86,23 @@ export function projectRequest(native: readonly SessionMessageInfo[], raw: Envel
       if (block.messages.some((message) => message.info.kind === "compaction")) throw new Error("Native checkpoints cannot be edited as plugin turns")
     }
     if (op.mode === "compact" || op.mode === "brief") { saved.set(op.id, replace(op, selected)); return }
+    if (op.mode === "delete") {
+      const removed = selectedEntries(op.sourceIDs)
+      saved.set(op.id, removed)
+      entries = entries.filter((entry) => !removed.includes(entry))
+      return
+    }
     if (op.mode === "revise") {
       const block = selected[0]
       replace({ ...op, mode: block.kind === "brief" ? "brief" : "compact" }, selected, block.summaryID)
       return
     }
     if (op.mode === "expand") {
+      for (const id of op.deletedIDs ?? []) {
+        const previous = saved.get(id)
+        if (!previous || !selected.some((block) => block.deletionID === id)) throw new Error("Deletion expansion layer unavailable")
+        entries.push(...previous)
+      }
       for (const id of op.summaryIDs ?? []) {
         const previous = saved.get(id)
         if (!previous || !entries.some((entry) => entry.summaryID === id)) throw new Error("Summary expansion layer unavailable")

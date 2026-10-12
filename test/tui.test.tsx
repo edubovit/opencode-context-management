@@ -61,6 +61,34 @@ async function setup(t: { after(fn: () => Promise<void>): void }, width = 140, h
   return { ...fixture, controller, screen, frame, until, navigations, compact, setInputMode: (mode: string) => { inputMode = mode }, type: screen.mockInput.typeText, key, esc: screen.mockInput.pressEscape }
 }
 
+for (const width of [80, 60]) test(`Delete removes a range and Ctrl+E previews/cancels/restores it at ${width} columns`, async (t) => {
+  const view = await setup(t, width, 24)
+  await view.until(() => view.frame().includes("Ready."))
+  const before = await view.controller.load()
+  await view.type(" ")
+  view.key(KeyCodes.ARROW_DOWN)
+  await view.type(" ")
+  await view.compact(6)
+  await view.until(() => view.frame().includes("DELETED") && readPolicy(view.data.session).revision === 1)
+  const deleted = await view.controller.load()
+  assert.deepEqual(deleted.blocks.map((block) => block.kind), ["deleted", "turn"])
+  assert.equal(deleted.blocks[0].messages.length, 0)
+  assert.ok(!view.frame().includes("Question 0") && !view.frame().includes("Question 1"))
+  view.key("return")
+  await view.until(() => view.frame().includes("This range is deleted"))
+  view.key("e", { ctrl: true })
+  await view.until(() => view.frame().includes("1 deletion"))
+  view.esc()
+  await view.until(() => !view.frame().includes("Restore preview"))
+  assert.equal(readPolicy(view.data.session).revision, 1)
+  view.key("e", { ctrl: true })
+  await view.until(() => view.frame().includes("Restore preview"))
+  view.key("s", { ctrl: true })
+  await view.until(() => readPolicy(view.data.session).revision === 2 && !view.frame().includes("DELETED"))
+  assert.deepEqual((await view.controller.load()).blocks, before.blocks)
+  assert.equal(view.data.jobs, 0)
+})
+
 test("native modal input ownership blocks inspector actions and resumes cleanly", async (t) => {
   const view = await setup(t, 80, 24)
   await view.until(() => view.frame().includes("Ready."))
@@ -271,6 +299,7 @@ test("configuration picker consumes model keys, keeps selection and fits a small
   screen.renderer.resize(80, 18)
   await until(() => footer.y + footer.height <= 18)
   key(KeyCodes.END)
+  key(KeyCodes.ARROW_UP)
   await type(" ")
   await until(() => frame().includes("[+] Summarize (brief)"))
   screen.renderer.resize(80, 24)

@@ -168,6 +168,12 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
     setConfiguring(false)
     if (value.kind === "summary") { await beginSummary(value.mode); return }
     const ids = selectedIDs()
+    if (value.kind === "delete") {
+      await props.controller.deleteRanges(ids)
+      await refresh(ids)
+      setNotice("Ranges deleted from effective context. Ctrl+E restores; stored history is unchanged.")
+      return
+    }
     await props.controller.pruneRanges(ids, value)
     await refresh(ids)
     setNotice("Pruning applied. Ctrl+E restores one layer; stored history is unchanged.")
@@ -175,6 +181,7 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
   const openReader = async () => {
     const block = blocks()[cursor()]
     if (!block) throw new Error("Hover a turn or summary and press Enter")
+    if (block.kind === "deleted") { setNotice("This range is deleted from effective context. Select it and press Ctrl+E to restore."); return }
     if (block.summaryID) {
       setReader({ kind: "summary", editor: new SummaryEditor(props.controller, await props.controller.summary(block.summaryID)) })
       return
@@ -324,7 +331,7 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
     const status = toolStatus([block], rule(), basis())
     const protectedTurn = auto().pause && block.sourceIDs.some((id) => (auto().pause!.protectedIDs ?? [auto().pause!.userID]).includes(id))
     return {
-      title: `${selected ? "●" : "○"} ${tag ? `${tag} · ` : ""}${rangeLabel(block.sourceIDs, sourceTurns())} · ${block.kind === "turn" ? block.messages[0]?.info.role === "user" ? "USER" : block.messages[0]?.info.kind === "assistant" ? "CONTINUATION" : "HOST CONTEXT" : "SUMMARY"}`,
+      title: `${selected ? "●" : "○"} ${tag ? `${tag} · ` : ""}${rangeLabel(block.sourceIDs, sourceTurns())} · ${block.kind === "deleted" ? "DELETED" : block.kind === "turn" ? block.messages[0]?.info.role === "user" ? "USER" : block.messages[0]?.info.kind === "assistant" ? "CONTINUATION" : "HOST CONTEXT" : "SUMMARY"}`,
       size: shortSize(distribution([block], undefined, basis(), unit()).total),
       stats: [protectedTurn ? "PROTECTED" : !block.closed ? "Unfinished" : "", block.kind === "turn" ? rangeToolStats(status) : ""].filter(Boolean).join(" · ") || undefined,
       preview: rangePreview(block, loaded()!.policy),
@@ -417,7 +424,7 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
                 </Show>
               }>{(preview) => <>
                 <text height={2} fg={api.theme.text.base}>Restore preview — {preview.operations.map((op) => operationLabel(op, sourceTurns())).join("; ")}</text>
-                <text height={2}>{`Restore ${[preview.summaries ? `${preview.summaries} summary` : "", preview.prunings ? `${preview.prunings} pruning` : ""].filter(Boolean).join(" + ")} layers. Text delta: ${signed(preview.afterTokens - preview.beforeTokens)} tokens`}</text>
+                 <text height={2}>{`Restore ${[preview.summaries ? `${preview.summaries} summary` : "", preview.prunings ? `${preview.prunings} pruning` : "", preview.deletions ? `${preview.deletions} deletion` : ""].filter(Boolean).join(" + ")} layers. Text delta: ${signed(preview.afterTokens - preview.beforeTokens)} tokens`}</text>
                 <scrollbox flexGrow={1} minHeight={0} focused={!busy()}><text selectable>{limited(`BEFORE\n\n${serialize(blockMessages(preview.before))}\n\nAFTER\n\n${serialize(blockMessages(preview.after))}`)}</text></scrollbox>
               </>}</Show>
             </box>
@@ -486,8 +493,9 @@ c configures actions for selected ranges.
 In configuration: arrows choose, Space toggles, Enter runs.
 m/t selects the summary model/effort, also from the main view.
 Reasoning combines with one tool mode. Tool deletion requires reasoning removal.
-Summaries cannot combine with pruning. Parallel summaries apply together.
-Pruning changes effective context only. Stored history is unchanged.
+Summaries and Delete are standalone modes. Parallel summaries apply together.
+Delete removes each selected range entirely, leaving a zero-content DELETED row.
+No model call for deletion/pruning. Stored history is unchanged.
 
 READ & EXPAND
 Enter reads the hovered USER or SUMMARY fullscreen.
@@ -495,6 +503,7 @@ Ctrl+E previews one-layer restoration for each selected item; Ctrl+S confirms.
 Summaries expand first, retaining their prior pruning. Pruned turns restore
 their latest pruning action; earlier layers stay applied. Combined tool/reasoning
 pruning restores together. This also restores deleted calls and results.
+DELETED ranges restore their prior turns, summaries and pruning in one step.
 Restoration makes no model call and can increase context; resume stays budget-checked.
 Readers: arrows move 10 lines; PageUp/PageDown move one screen.
 Summary reader: e edits manually; r requests a model edit; Ctrl+S applies.

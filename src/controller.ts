@@ -41,10 +41,11 @@ export type RestorePreview = {
   afterTokens: number
   summaries: number
   prunings: number
+  deletions: number
 }
 export type MultiRestorePreview = {
   mode: RestoreMode; operations: Operation[]; revision: number; fingerprint: string; ranges: string[][]
-  before: Block[]; after: Block[]; beforeTokens: number; afterTokens: number; tokenizer: TokenBasis; summaries: number; prunings: number
+  before: Block[]; after: Block[]; beforeTokens: number; afterTokens: number; tokenizer: TokenBasis; summaries: number; prunings: number; deletions: number
 }
 
 export class Controller {
@@ -93,6 +94,18 @@ export class Controller {
     await this.applyOperations(operations, { revision: loaded.policy.revision, fingerprint: loaded.fingerprint })
   }
 
+  async deleteRanges(ranges: string[][]) {
+    await this.requireIdle()
+    const loaded = await this.load()
+    this.requireNotReverted(loaded.session)
+    const selected = resolveRanges(loaded.blocks, ranges)
+    this.requireUnprotected(loaded, ranges.flat())
+    const operations = selected.filter((blocks) => blocks.some((block) => block.kind !== "deleted"))
+      .map((blocks) => operation("delete", blocks, undefined, loaded.tokenizer))
+    if (!operations.length) throw new Error("Selected ranges are already deleted")
+    await this.applyOperations(operations, { revision: loaded.policy.revision, fingerprint: loaded.fingerprint })
+  }
+
   async prepareRestoreRanges(mode: RestoreMode, ranges: string[][]): Promise<MultiRestorePreview> {
     if (mode !== "expand") throw new Error("Only one-layer context restoration is supported")
     if (this.job) throw new Error("Apply or discard the summary draft before restoring context")
@@ -103,8 +116,8 @@ export class Controller {
     this.requireUnprotected(loaded, ranges.flat())
     const before = groups.flat()
     const status = toolStatus(before, loaded.pruneRule, loaded.tokenizer)
-    const operations = groups.map((blocks) => operation(mode, blocks, undefined, loaded.tokenizer)).filter((op) => op.summaryIDs?.length || op.pruneTargets?.length)
-    if (!operations.length) throw new Error("No restorable summaries or pruning in the selection")
+    const operations = groups.map((blocks) => operation(mode, blocks, undefined, loaded.tokenizer)).filter((op) => op.summaryIDs?.length || op.pruneTargets?.length || op.deletedIDs?.length)
+    if (!operations.length) throw new Error("No restorable summaries, pruning or deleted ranges in the selection")
     const next = operations.reduce(append, loaded.policy)
     const projected = project(activeMessages(loaded.raw, loaded.session.revert), next)
     const after = resolveRanges(projected, ranges).flat()
@@ -112,7 +125,7 @@ export class Controller {
       mode, operations, revision: loaded.policy.revision, fingerprint: loaded.fingerprint, ranges, before, after,
       beforeTokens: contentTokens(before.flatMap((block) => block.messages), loaded.tokenizer),
       afterTokens: contentTokens(after.flatMap((block) => block.messages), loaded.tokenizer), tokenizer: loaded.tokenizer,
-      summaries: status.summaries, prunings: status.prunings,
+      summaries: status.summaries, prunings: status.prunings, deletions: status.deletions,
     }
   }
 
@@ -177,7 +190,7 @@ export class Controller {
     const before = this.selection(loaded.blocks, ids)
     this.requireUnprotected(loaded, ids)
     const status = toolStatus(before, loaded.pruneRule, loaded.tokenizer)
-    if (!status.summaries && !status.prunings) throw new Error("No restorable summaries or pruning in the selected range")
+    if (!status.summaries && !status.prunings && !status.deletions) throw new Error("No restorable summaries, pruning or deleted ranges in the selected range")
     const op = { ...operation(mode, before, undefined, loaded.tokenizer), mode }
     const projected = project(activeMessages(loaded.raw, loaded.session.revert), append(loaded.policy, op))
     const after = this.selection(projected, ids)
@@ -185,7 +198,7 @@ export class Controller {
       operation: op, revision: loaded.policy.revision, fingerprint: loaded.fingerprint, before, after,
       afterChars: chars(serialize(after.flatMap((block) => block.messages))),
       afterTokens: contentTokens(after.flatMap((block) => block.messages), loaded.tokenizer),
-      summaries: status.summaries, prunings: status.prunings,
+      summaries: status.summaries, prunings: status.prunings, deletions: status.deletions,
     }
   }
 
@@ -211,7 +224,7 @@ export class Controller {
       this.requireNotReverted(loaded.session)
       const selected = this.selection(loaded.blocks, ids)
       this.requireUnprotected(loaded, ids)
-      if (selected[0].messages[0]?.info.role !== "user") throw new Error("Summary range must start with a user message")
+      if (selected.flatMap((block) => block.messages)[0]?.info.role !== "user") throw new Error("Summary range must start with a visible user message")
       const op = operation(mode, selected, undefined, loaded.tokenizer)
       const chosen = override ?? this.defaultModel(loaded)
       if (!chosen) throw new Error("Choose a compaction model first")

@@ -176,7 +176,7 @@ test("format-9 pruning gains restoration without rewriting old operations or old
   assert.ok(blocks.every((block) => block.pruning?.length === 1))
   assert.ok(!JSON.stringify(projectRequest(f.native, f.raw, f.canonical, policy)).includes("HEAD_"))
   const next = append(policy, operation("expand", blocks))
-  assert.equal(next.version, 10)
+  assert.equal(next.version, 11)
   assert.deepEqual(next.operations.slice(0, policy.operations.length), saved.operations)
   assert.equal(JSON.stringify(saved), original)
   assert.deepEqual(projectRequest(f.native, f.raw, f.canonical, next), f.canonical)

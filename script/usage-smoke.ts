@@ -100,6 +100,32 @@ try {
   checks.push("pruning restoration returns to the same provider anchor, blocks oversized resume, and makes no model request")
 
   test.usage((wire) => noHelpers(wire) ? undefined : { input: 10000, output: 800, cached: 6000, reasoning: 700 })
+  const { controller: deleting } = await make()
+  await send(deleting.sessionID, "DELETE_USAGE_SOURCE " + "Earlier useful facts. ".repeat(1200))
+  const deletionSource = await test.client.session.context({ sessionID: deleting.sessionID })
+  const deletionRequests = test.requests.length
+  await test.client.session.prompt({ sessionID: deleting.sessionID, text: "PAUSE_THEN_DELETE" })
+  const deletionPause = await test.until(async () => (await deleting.host.auto!.state(deleting.sessionID)).pause, "provider pause before range deletion")
+  const deletionIDs = (await deleting.load()).blocks[0].sourceIDs
+  await deleting.deleteRanges([deletionIDs])
+  const deletedPause = (await deleting.host.auto!.state(deleting.sessionID)).pause!
+  assert.ok(deletedPause.tokens < deletedPause.threshold)
+  assert.deepEqual(deletedPause.accounting?.reported, deletionPause.accounting?.reported)
+  await deleting.applyRestore(await deleting.prepareRestore("expand", deletionIDs))
+  const expandedPause = (await deleting.host.auto!.state(deleting.sessionID)).pause!
+  assert.equal(expandedPause.tokens, deletionPause.tokens)
+  await assert.rejects(deleting.host.auto!.command(deleting.sessionID, { action: "resume", pauseID: deletionPause.id }), /Resume blocked/)
+  assert.equal(test.requests.length, deletionRequests)
+  await deleting.deleteRanges([deletionIDs])
+  await deleting.host.auto!.command(deleting.sessionID, { action: "resume", pauseID: deletionPause.id })
+  await test.client.session.wait({ sessionID: deleting.sessionID })
+  assert.equal((await test.client.session.get({ sessionID: deleting.sessionID })).outcome, "succeeded")
+  assert.doesNotMatch(JSON.stringify(test.requests.at(-1)?.messages), /DELETE_USAGE_SOURCE/)
+  const deletionStored = await test.client.session.context({ sessionID: deleting.sessionID })
+  assert.deepEqual(deletionStored.filter((message) => deletionSource.some((prior) => prior.id === message.id)), deletionSource)
+  checks.push("deletion lowers a provider-anchored gate, expansion restores its original forecast and blocks resume, then re-deletion resumes the same request")
+
+  test.usage((wire) => noHelpers(wire) ? undefined : { input: 10000, output: 800, cached: 6000, reasoning: 700 })
   const { controller: legacy } = await make()
   await send(legacy.sessionID, "EXISTING_SESSION " + "Earlier useful facts. ".repeat(1200))
   const old = await legacy.load()

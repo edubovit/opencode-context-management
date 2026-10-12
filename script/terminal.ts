@@ -26,13 +26,14 @@ export function terminal(input: { executable: string; url: string; sessionID: st
     keys: (keys: string) => { if (ended) throw new Error("Owned TUI exited before input"); child.write(keys) },
     resize: (cols: number, rows: number) => { screen.resize(cols, rows); child.resize(cols, rows) },
     close: async () => {
+      const lastScreen = await text()
       if (!ended) child.write("\x03\x03")
       const timer = setTimeout(() => { if (!ended) child.kill() }, 8000)
       try {
         const code = await exited
         await pending
         await writeFile(input.output, log)
-        await writeFile(input.output + ".screen.txt", await text())
+        await writeFile(input.output + ".screen.txt", lastScreen)
         return code
       } finally {
         clearTimeout(timer)

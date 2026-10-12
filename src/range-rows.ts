@@ -9,6 +9,7 @@ export function rangePreview(block: Block, policy: Policy) {
 }
 
 function previewText(block: Block, policy: Policy) {
+  if (block.kind === "deleted") return "Removed from effective context. Ctrl+E restores."
   if (block.kind !== "turn") {
     const op = policy.operations.findLast((op) =>
       op.id === block.summaryID || (op.mode === "revise" && op.targetID === block.summaryID))

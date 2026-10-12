@@ -75,6 +75,30 @@ test("manual gate permits checked earlier-history edits, protects active turn an
   assert.equal(data.messages.filter((message) => message.info.role === "user").length, 3)
 })
 
+test("deletion and expansion preserve manual pause ownership, protected turns and budget checks", async (t) => {
+  const { data, auto, maintenance } = await setup(t)
+  const waiting = auto.beforeRequest(data.messages)
+  await until(async () => !!(await auto.state(data.session.id)).pause)
+  const loaded = await maintenance.load()
+  const pause = (await auto.state(data.session.id)).pause!
+  const protectedIDs = loaded.blocks[2].sourceIDs
+  await assert.rejects(maintenance.deleteRanges([protectedIDs]), /protected/)
+  await assert.rejects(auto.commit(data.session.id, { [KEY]: append(loaded.policy, operation("delete", [loaded.blocks[2]])) }, { revision: loaded.policy.revision, fingerprint: loaded.fingerprint }), /protected/)
+  const ids = loaded.blocks.slice(0, 2).flatMap((block) => block.sourceIDs)
+  await maintenance.deleteRanges([ids])
+  assert.ok((await auto.state(data.session.id)).pause!.tokens <= pause.threshold)
+  const restore = await maintenance.prepareRestore("expand", ids)
+  assert.equal(restore.deletions, 1)
+  await maintenance.applyRestore(restore)
+  assert.equal((await auto.state(data.session.id)).pause!.tokens, pause.tokens)
+  await assert.rejects(auto.command(data.session.id, { action: "resume", pauseID: pause.id }), /Resume blocked/)
+  await maintenance.deleteRanges([ids])
+  await auto.command(data.session.id, { action: "resume", pauseID: pause.id })
+  await waiting
+  assert.equal(data.calls.length, 0)
+  assert.equal(data.messages.length, 6)
+})
+
 test("restoring pruning during a manual pause recounts growth and cannot release an oversized request", async (t) => {
   const { data, auto, maintenance } = await setup(t)
   let resumed = false
@@ -237,7 +261,7 @@ for (const mode of ["AUTO_PER_TURN", "AUTO_SESSION"] as const) test(`${mode} las
   const original = structuredClone(data.messages)
   await auto.beforeRequest(data.messages)
   const policy = readPolicy(data.session)
-  assert.equal(policy.version, 10)
+  assert.equal(policy.version, 11)
   assert.equal(policy.operations.length, 1)
   assert.equal(policy.operations[0].checkpoint, true)
   assert.ok(!policy.operations[0].sourceIDs.includes(original.at(-1)!.info.id))
