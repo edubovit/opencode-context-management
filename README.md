@@ -17,9 +17,9 @@ Initial summaries apply automatically; inspect/edit/expand them afterward. Summa
 
 ## Install
 
-This is a **source-based, private package**, not a published npm plugin. Requires a compatible local OpenCode **V2 (2.0.27 or newer)** installation and npm. Dependency packages are pinned to **2.0.27** for reproducibility, independently of the host. Startup does not enforce an exact host version. Host API/runtime changes may require updates; a different patch or minor version alone does not block loading.
+This is a **source-based, private package**, not a published npm plugin. Requires a compatible local OpenCode **V2 (2.0.27 or newer)** installation and npm.
 
-Validated on OpenCode **2.0.27 on Linux x64**, including the actual terminal inspector, provider-usage accounting, restoration and subagents. Earlier plugin releases were validated on **2.0.24–2.0.26 on Windows**; Windows has not been revalidated with this dependency baseline. See [validation details](CONTRIBUTING.md#version-413-validation).
+Validated on OpenCode **2.0.27 on Linux x64**, including the actual terminal inspector, provider-usage accounting, restoration and subagents. Windows and macOS have not been validated for the current release. See [validation details](CONTRIBUTING.md#version-413-validation).
 
 Development checks run on Node.js 22+; renderer tests use the bundled Bun runtime. OpenTUI's Node-backend engine warning on Node 22 does not apply to the bundled Bun renderer. Using its Node backend directly requires Node 26.4+.
 
@@ -52,13 +52,7 @@ Development checks run on Node.js 22+; renderer tests use the bundled Bun runtim
    node --input-type=module -e "import {pathToFileURL} from 'node:url'; console.log(pathToFileURL(process.cwd()+'/src').href)"
    ```
 
-3. Open a session and run **`/context-manager`**, or choose **Context manager** from the palette. V2 watches plugin/config changes. After changing dependencies, restart the background service and reconnect the terminal:
-
-   ```sh
-   opencode service restart
-   ```
-
-   This interrupts active work: finish or stop it first. Closing only the terminal does not restart V2's shared service.
+3. Open a session and run **`/context-manager`**, or choose **Context manager** from the palette. V2 watches plugin/config changes.
 
 The plugin does **not** rewrite host configuration. Explicit `compaction.auto: false` is required: native compaction runs before the context hook. While loaded, the plugin rejects native compaction requests; use its range actions instead of native `/compact`.
 
@@ -93,7 +87,7 @@ Reasoning removal combines with one tool mode. Summary modes cannot combine with
 
 Rows show USER/SUMMARY with compact, right-aligned sizes; filled circles and R labels mark selected ranges. Host checkpoint context is labeled separately and is read-only. Tool statistics distinguish large-output eligibility, pruning, removed tools/reasoning, and unfinished/protected turns. Exact numbers remain in Details and exports.
 
-Restoration affects only selected turns, even when an earlier prune covered a wider range. It preserves earlier pruning layers, survives restart, and also works with pruning saved by earlier V2 releases. The preview shows how much estimated text context will return. Restoring during a manual pause can put the request over budget again; Resume stays blocked until it fits. Restoration does not recover data already removed by the host or expand an ingestion-time spill preview into its full output file.
+Restoration affects only selected turns, even when an earlier prune covered a wider range. It preserves earlier pruning layers and survives restart. The preview shows how much estimated text context will return. Restoring during a manual pause can put the request over budget again; Resume stays blocked until it fits. Restoration does not recover data already removed by the host or expand an ingestion-time spill preview into its full output file.
 
 ## Options
 
@@ -269,15 +263,9 @@ Subagents, including nested/background children, have separate ledgers and usage
 
 Queued inputs are not silently discarded. Oversized synthetic-only context without a USER turn is refused. Pause authority is in memory; after reload/restart an old saved pause notice cannot resume the old request. Stop/reload cancels last-resort work and prevents late application.
 
-## Upgrading and limits
+## Limits and storage
 
-**4.1.3 fixes loading after upgrading OpenCode to 2.0.27.** That host uses stable Effect 4.0.1; the old 2.0.26 dependency packages import prerelease paths such as `effect/unstable/http`, which the new host does not provide. All OpenCode dependency packages now use 2.0.27. After updating this checkout, run `npm ci --ignore-scripts`, then restart the background service and reconnect the terminal when active work has stopped. Do not force-install another Effect copy or edit `node_modules` imports. This release requires OpenCode 2.0.27+; keep plugin 4.1.2 when staying on 2.0.24–2.0.26. Ledger, accounting-cache and export formats are unchanged; no history reset or cache deletion is needed.
-
-**Version 4.1 is V2-native.** Existing V2 ledgers in formats **7, 8 and 9** remain readable, including nested summaries, revisions, pruning and partial-turn checkpoints. Reading does not rewrite stored metadata. The next ledger write upgrades to append-only **format 10**, which records explicit pruning-restoration targets without changing older operations or their fingerprints. Old saved summary expansions retain their original summary-only behavior. Exports still use schema 4. Older plugin versions cannot read format 10: back up before upgrading and do not downgrade a modified session.
-
-**4.1.2 fixes false overloads caused by tool-returned images.** Accounting cache format 2 replaces format 1 automatically on the next request. Old local counts and pending matches are discarded; compatible native usage is reconstructed as `provider-unpaired` until a fresh response supplies a new match. Session history and operations are untouched, and previously excluded reports stay excluded. No manual cache deletion is needed. Historical guard snapshots refresh on the next request. Older plugin releases cannot read format-2 caches.
-
-Formats 1–6, malformed ledgers and copied-history fork ledgers are preserved and refused, never silently reset. There is no V1 reader, character-pruning mode or Undo/Redo ledger cursor. Pruning restoration is a new V2 expansion action, not the old V1 Unprune implementation. Fresh child sessions are distinct from forks and get their own ledger.
+Malformed ledgers and copied-history fork ledgers are preserved and refused, never silently reset. Fresh child sessions are distinct from forks and get their own ledger.
 
 Native checkpoints are read-only; edit later USER turns. Historical tools still marked running/streaming must be settled by the host before editing. Opaque provider-executed results cannot be safely pruned; use a summary or whole-call deletion with reasoning instead. Errored or interrupted reasoning that the host converted to visible text is also refused rather than guessed at. Signed/opaque reasoning, encrypted checkpoints and stateful provider transports are not universally validated.
 
