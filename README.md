@@ -2,7 +2,7 @@
 
 Choose what stays in your coding session's context. Prune reasoning or tool results, summarize selected turns, and expand summaries later—without deleting the stored conversation.
 
-**Plugin 4.1.2 · OpenCode V2**.
+**Plugin 4.1.3 · OpenCode V2**.
 
 ## Features
 
@@ -17,9 +17,9 @@ Initial summaries apply automatically; inspect/edit/expand them afterward. Summa
 
 ## Install
 
-This is a **source-based, private package**, not a published npm plugin. Requires a compatible local OpenCode **V2 (2.0.24 or newer)** installation and npm. Dependency packages are pinned to **2.0.26** for reproducibility, independently of the host. Startup does not enforce an exact host version. Host API changes may require updates; a different patch or minor version alone does not block loading.
+This is a **source-based, private package**, not a published npm plugin. Requires a compatible local OpenCode **V2 (2.0.27 or newer)** installation and npm. Dependency packages are pinned to **2.0.27** for reproducibility, independently of the host. Startup does not enforce an exact host version. Host API/runtime changes may require updates; a different patch or minor version alone does not block loading.
 
-Validated against OpenCode **2.0.24, 2.0.25 and 2.0.26**, including the actual Windows terminal inspector. Provider-usage accounting, restoration and subagents are checked on 2.0.26. See [validation details](CONTRIBUTING.md#version-410-validation).
+Validated on OpenCode **2.0.27 on Linux x64**, including the actual terminal inspector, provider-usage accounting, restoration and subagents. Earlier plugin releases were validated on **2.0.24–2.0.26 on Windows**; Windows has not been revalidated with this dependency baseline. See [validation details](CONTRIBUTING.md#version-413-validation).
 
 Development checks run on Node.js 22+; renderer tests use the bundled Bun runtime. OpenTUI's Node-backend engine warning on Node 22 does not apply to the bundled Bun renderer. Using its Node backend directly requires Node 26.4+.
 
@@ -270,6 +270,8 @@ Subagents, including nested/background children, have separate ledgers and usage
 Queued inputs are not silently discarded. Oversized synthetic-only context without a USER turn is refused. Pause authority is in memory; after reload/restart an old saved pause notice cannot resume the old request. Stop/reload cancels last-resort work and prevents late application.
 
 ## Upgrading and limits
+
+**4.1.3 fixes loading after upgrading OpenCode to 2.0.27.** That host uses stable Effect 4.0.1; the old 2.0.26 dependency packages import prerelease paths such as `effect/unstable/http`, which the new host does not provide. All OpenCode dependency packages now use 2.0.27. After updating this checkout, run `npm ci --ignore-scripts`, then restart the background service and reconnect the terminal when active work has stopped. Do not force-install another Effect copy or edit `node_modules` imports. This release requires OpenCode 2.0.27+; keep plugin 4.1.2 when staying on 2.0.24–2.0.26. Ledger, accounting-cache and export formats are unchanged; no history reset or cache deletion is needed.
 
 **Version 4.1 is V2-native.** Existing V2 ledgers in formats **7, 8 and 9** remain readable, including nested summaries, revisions, pruning and partial-turn checkpoints. Reading does not rewrite stored metadata. The next ledger write upgrades to append-only **format 10**, which records explicit pruning-restoration targets without changing older operations or their fingerprints. Old saved summary expansions retain their original summary-only behavior. Exports still use schema 4. Older plugin versions cannot read format 10: back up before upgrading and do not downgrade a modified session.
 

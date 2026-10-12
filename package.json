@@ -1,9 +1,9 @@
 {
   "name": "opencode-context-manager",
-  "version": "4.1.2",
+  "version": "4.1.3",
   "private": true,
   "type": "module",
-  "engines": { "opencode": ">=2.0.24 <3", "node": ">=22" },
+  "engines": { "opencode": ">=2.0.27 <3", "node": ">=22" },
   "exports": { ".": "./src/server.ts", "./server": "./src/server.ts", "./tui": "./src/tui.tsx", "./rpc": "./src/rpc.ts" },
   "scripts": {
     "typecheck": "tsc --noEmit",
@@ -22,9 +22,9 @@
   },
   "dependencies": {
     "gpt-tokenizer": "4.0.0",
-    "@opencode/ai": "2.0.26",
-    "@opencode/client": "2.0.26",
-    "@opencode/plugin": "2.0.26",
+    "@opencode/ai": "2.0.27",
+    "@opencode/client": "2.0.27",
+    "@opencode/plugin": "2.0.27",
     "zod": "4.6.5"
   },
   "overrides": {
@@ -34,7 +34,7 @@
   "devDependencies": {
     "@lydell/node-pty": "1.2.0-beta.15",
     "@xterm/headless": "6.0.0",
-    "@opencode/theme": "2.0.26",
+    "@opencode/theme": "2.0.27",
     "@opentui/core": "0.5.17",
     "@opentui/solid": "0.5.17",
     "@types/node": "24.19.1",

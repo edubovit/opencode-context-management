@@ -1,6 +1,6 @@
 # Contributing
 
-User installation/options are in [README.md](README.md). This package targets **OpenCode V2**, with **2.0.26** as its dependency baseline. Keep private research, captures and logs under ignored `.local/`; public code and checks must work without it. Treat the OpenCode source checkout as read-only research: implementation must use public APIs, without a host patch or fork.
+User installation/options are in [README.md](README.md). This package targets **OpenCode V2**, with **2.0.27** as its dependency baseline. Keep private research, captures and logs under ignored `.local/`; public code and checks must work without it. Treat the OpenCode source checkout as read-only research: implementation must use public APIs, without a host patch or fork.
 
 ## Setup and checks
 
@@ -18,9 +18,9 @@ git diff --check
 
 `check` runs typecheck, Node/tsx unit/adapter tests, and actual OpenTUI renderer tests. `script/test-tui.mjs` launches the optional platform-specific **Bun 1.4.2** binary directly; global Bun and installation scripts are unnecessary. Do not omit optional dependencies. The PTY smoke uses prebuilt `@lydell/node-pty` and `@xterm/headless`; it does not require Python or WSL. PTY support is limited to the platforms supported by those prebuilt binaries.
 
-V2 packages are pinned to **2.0.26**, OpenTUI to **0.5.17**, and Solid to **1.9.17**. Published OpenTUI still has an older exact Solid peer; the explicit npm override keeps one tested Solid runtime instead of using `--force`. Seroval is overridden to **1.6.9**. Zod, TypeScript and tsx are also pinned. Revalidate overrides and audit the complete lockfile after updates; do not force dependency upgrades to silence an audit.
+V2 packages are pinned to **2.0.27**, resolving Effect **4.0.1**; OpenTUI remains **0.5.17**, and Solid **1.9.17**. Published OpenTUI still has an older exact Solid peer; the explicit npm override keeps one tested Solid runtime instead of using `--force`. Seroval is overridden to **1.6.9**. Zod, TypeScript and tsx are also pinned. Revalidate overrides and audit the complete lockfile after updates; do not force dependency upgrades to silence an audit.
 
-The declared host range is **>=2.0.24 <3**, not an exact release. Server setup does not gate on the host version string. Keep dependency pins separate from host compatibility; run the installed-host checks after upgrades because V2 API compatibility is not guaranteed by the version number. Smoke runners accept V2 hosts and record the actual version in `result.json`. Server and TUI *plugin* versions must match because they share an RPC and ledger contract; that is not an OpenCode-version check.
+The declared host range is **>=2.0.27 <3**, not an exact release. Server setup does not gate on the host version string. Keep dependency pins separate from host compatibility; run the installed-host checks after upgrades because V2 API compatibility is not guaranteed by the version number. OpenCode 2.0.27 moved from prerelease Effect to stable 4.0.1: old dependencies importing `effect/unstable/http` fail before plugin setup because the host owns the Effect runtime. Upgrade the OpenCode packages together; do not bypass the runtime guard. Smoke runners accept V2 hosts and record the actual version in `result.json`. Server and TUI *plugin* versions must match because they share an RPC and ledger contract; that is not an OpenCode-version check.
 
 Node 22 works for the pure checks; renderer execution uses Bun. OpenTUI's Node-backend engine requirement is Node **26.4+**, so npm can warn on Node 22. Use the provided Bun launcher, not direct Node JSX execution.
 
@@ -43,6 +43,8 @@ npm run test:upgrade -- /absolute/path/to/opencode /absolute/path/to/baseline/sr
 ```
 
 This optional test creates genuine format-7/8 or format-9 operations under the old plugin, restarts only its private host with the new source, and verifies the next same-model requests, summary expansion, restoration of old pruning, format-10 writes and another restart. It needs no new development branch/worktree. Default checks need no old source snapshot. Tests exercise production projection code, not a duplicate converter.
+
+The upgrade runner uses one host executable for both plugins. Unmodified archives with 2.0.26 dependencies cannot load on 2.0.27, and this release no longer targets the older host. It therefore does not cover that host/runtime transition; use the frozen persistence regressions and current-host smoke tests without claiming a real cross-host archive upgrade.
 
 All default tests use synthetic content. Fake-provider success proves protocol/flow, not semantic summary quality or arbitrary signed-reasoning/provider compatibility. Live tests require explicit permission for provider/model and request bounds; no live-provider runner is enabled by default.
 
@@ -82,6 +84,15 @@ These checks use synthetic providers and owned private servers. No shared-servic
 - Provider-budget suite: **17 checks** on each of OpenCode **2.0.24, 2.0.25 and 2.0.26**, including large decoded tool images reaching the next request intact, no false compaction under fallback/matched accounting, and format-1 cache migration across restart.
 - Production server/Windows ConPTY: **33 checks** on 2.0.26; subagents/automatic recovery: **11 checks**. Successful private fixtures all stopped cleanly.
 - Synthetic tests cover image/PDF allowances, text/JSON/error distinctions, identity hashes, conservative removal credit, cache exclusions and fresh matching. No exact vision-token or live-provider capacity guarantee. Dependencies and operation fingerprints are unchanged; only the accounting cache advances to format 2.
+
+### Version 4.1.3 validation
+
+- Reproduced the 2.0.27 startup failure with the old 2.0.26 packages, both through the production smoke suites and a minimal public-package import. Updating the OpenCode packages together replaces Effect 4.0.0-rc.112 with 4.0.1 and removes the obsolete `effect/unstable/http` import.
+- Typecheck, **230 unit/adapter tests** on Node **22.22.1**, and **36 renderer tests** on bundled Bun **1.4.2** passed.
+- OpenCode **2.0.27, Linux x64**: production server/actual 80×24 PTY inspector **33 checks**, provider-budget suite **17 checks**, subagent/automatic recovery **11 checks**. All private hosts stopped cleanly; synthetic providers only.
+- A fresh public-tree copy passed `npm ci --ignore-scripts`, the full local checks and production server/PTY inspector smoke without ignored artifacts or forced dependency resolution.
+- Frozen source/request fingerprints, ledger-format compatibility and accounting-cache migration remain covered. Ledger **10**, accounting cache **2**, export schema **4**, tokenizer and UI runtime pins are unchanged. No cross-host archive upgrade or current Windows/macOS validation is claimed.
+- Dependency audit: **0 known vulnerabilities**. Only OpenCode/Effect package versions changed; unrelated dependency versions were retained, and packages no longer required by Effect were removed. No forced peer resolution, private host import, runtime alias or host patch.
 
 ## Architecture
 
