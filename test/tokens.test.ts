@@ -173,7 +173,7 @@ test("historical usage is separate from the current token projection and exports
   assert.equal(usage?.total, 240)
   const policy = append(emptyPolicy("ses_test"), operation("tool-prune", turns(raw), pruneRule()))
   const dump = snapshot("ses_test", "2.0.26", project(raw, policy), policy, undefined, FALLBACK_BASIS, usage)
-  assert.equal(dump.schemaVersion, 5)
+  assert.equal(dump.schemaVersion, 6)
   assert.equal(dump.distribution.unit, "estimated content tokens")
   assert.equal(dump.characterDistribution.unit, "Unicode characters")
   assert.equal(dump.lastReportedUsage?.total, 240)

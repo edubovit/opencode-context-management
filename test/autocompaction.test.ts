@@ -227,6 +227,8 @@ test("checked control writes reject cursor rewinds and new unprune operations", 
   await assert.rejects(auto.commit(data.session.id, { ...data.session.metadata, [KEY]: rewind }, expected), /cursor|revision/)
   const unprune = { ...before, revision: before.revision + 1, operations: [...before.operations, { ...before.operations[0], id: "invalid", mode: "unprune" }] }
   await assert.rejects(auto.commit(data.session.id, { ...data.session.metadata, [KEY]: unprune }, expected), /mode/)
+  const forgedEnds = { ...append(before, operation("prune-reason", [turns(data.messages)[1]])), turnEnds: [data.messages[0].info.id] }
+  await assert.rejects(auto.commit(data.session.id, { ...data.session.metadata, [KEY]: forgedEnds }, expected), /boundaries/)
   assert.deepEqual(readPolicy(data.session), before)
 })
 
@@ -261,7 +263,7 @@ for (const mode of ["AUTO_PER_TURN", "AUTO_SESSION"] as const) test(`${mode} las
   const original = structuredClone(data.messages)
   await auto.beforeRequest(data.messages)
   const policy = readPolicy(data.session)
-  assert.equal(policy.version, 11)
+  assert.equal(policy.version, 12)
   assert.equal(policy.operations.length, 1)
   assert.equal(policy.operations[0].checkpoint, true)
   assert.ok(!policy.operations[0].sourceIDs.includes(original.at(-1)!.info.id))

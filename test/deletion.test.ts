@@ -93,7 +93,7 @@ test("deleted content stays absent from helpers, counts, previews and effective 
   for (const text of [prompt, JSON.stringify(exported.blocks), exported.text, rangePreview(blocks[0], f.policy)]) {
     assert.doesNotMatch(text, /QUESTION_0|HEAD_0|REASON_0|ANSWER_0|"previous"|"pruning"/)
   }
-  assert.equal(exported.schemaVersion, 5)
+  assert.equal(exported.schemaVersion, 6)
   const request = f.request()
   f.save({ ...operation("brief", blocks), summary: "VISIBLE_ONLY" })
   f.save(operation("expand", f.blocks()))
@@ -121,7 +121,7 @@ test("deletion persistence accepts prior ledger 10 without rewriting it and reje
   const saved = JSON.parse(JSON.stringify({ ...f.policy, version: 10 }))
   const before = JSON.stringify(saved)
   const decoded = readPolicy({ id: f.session.id, metadata: { [KEY]: saved } })
-  assert.equal(decoded.version, 11)
+  assert.equal(decoded.version, 12)
   assert.equal(JSON.stringify(saved), before)
   f.save(operation("delete", [f.blocks()[0]]))
   const restore = operation("expand", [f.blocks()[0]])

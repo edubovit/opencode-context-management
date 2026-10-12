@@ -71,6 +71,24 @@ try {
     checks.push(`${strategy}: lower local count cannot bypass high provider usage; same-loop reduction/resume and accounting export`)
   }
 
+  const { controller: forkParent } = await make()
+  await send(forkParent.sessionID, "FORK_USAGE_SOURCE " + "Earlier useful facts. ".repeat(1200))
+  const forkDraft = await forkParent.summarize("brief", (await forkParent.load()).blocks[0].sourceIDs)
+  await forkParent.apply(forkDraft, forkDraft.operation.summary!)
+  const fork = await test.client.session.fork({ sessionID: forkParent.sessionID })
+  sessions.push(fork.id)
+  const forkRemote = remoteHost(test.client, fork.id)
+  const forkLoaded = await forkRemote.load()
+  const forkController = new Controller(forkRemote.host, fork.id, settings(forkLoaded.settings), forkRemote.artifacts)
+  test.usage((_wire, scope) => scope.sessionID === fork.id ? { input: 1000, output: 20 } : undefined)
+  await send(fork.id, "FORK_FIRST_OWN_REQUEST")
+  assert.equal((await test.client.session.get({ sessionID: fork.id })).outcome, "succeeded")
+  assert.equal((await accounting(forkController))?.source, "local-fallback")
+  await send(fork.id, "FORK_SECOND_OWN_REQUEST")
+  assert.equal((await accounting(forkController))?.source, "provider-matched")
+  assert.equal((await accounting(forkController))?.reported?.input, 1000)
+  checks.push("forks exclude copied parent usage, continue with compacted context, then match their own provider reports")
+
   let reports = 0
   test.usage((wire) => noHelpers(wire) ? undefined : ++reports === 1 ? { input: 8000, output: 100, cached: 5000 } : { input: 9500, output: 700, cached: 5000, reasoning: 600 })
   const { controller: pruning } = await make()

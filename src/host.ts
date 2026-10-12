@@ -5,8 +5,9 @@ import { AUTO_KEY, strategy } from "./auto-state.ts"
 import type { HelperTrigger, Host } from "./controller.ts"
 import { Activity } from "./activity.ts"
 import { modelView, sessionView, transcriptView } from "./normalize.ts"
-import { emptyPolicy, readPolicy } from "./context.ts"
+import { emptyPolicy, hash, readPolicy, type Policy } from "./context.ts"
 import { validateNativePolicy } from "./projection.ts"
+import { inheritFork } from "./fork.ts"
 
 export type PluginContext = Parameters<Plugin.Plugin["setup"]>[0]
 
@@ -15,11 +16,35 @@ export function pluginHost(ctx: PluginContext) {
   const jobs = new Map<string, { owner: string; purpose: "summary" | "edit"; trigger: HelperTrigger; running: boolean; cancelled: boolean; budgetError?: string }>()
   const loading = new Map<string, Promise<SessionInfo>>()
   let closed = false
+  const inherited = async (target: SessionInfo, policy: Policy, seen = new Set<string>()): Promise<Policy> => {
+    if (!target.fork || seen.has(target.id)) throw new Error("Fork ledger does not belong to a verified ancestor")
+    seen.add(target.id)
+    const source = await ctx.session.get({ sessionID: target.fork.sessionID })
+    const prior = policy.sessionID === source.id ? policy : await inherited(source, policy, seen)
+    const [native, copied] = await Promise.all([ctx.session.context({ sessionID: source.id }), ctx.session.context({ sessionID: target.id })])
+    return inheritFork(source, native, target, copied, prior)
+  }
   const loadSession = async (sessionID: string): Promise<SessionInfo> => {
     if (closed) throw new Error("Context manager has been unloaded")
     const value = await ctx.session.get({ sessionID })
     if (value.location.directory !== ctx.location.directory)
       throw new Error("Session location changed. Reopen the context manager in its current location.")
+    const saved = value.metadata?.[KEY]
+    if (value.fork && (!saved || typeof saved !== "object" || !("sessionID" in saved) || saved.sessionID !== value.id)) {
+      const owner = saved && typeof saved === "object" && "sessionID" in saved ? saved.sessionID : undefined
+      if (saved !== undefined && typeof owner !== "string") throw new Error("Invalid copied fork ledger")
+      const policy = saved === undefined ? emptyPolicy(value.id) : await inherited(value, readPolicy({ id: owner as string, metadata: { [KEY]: saved } }))
+      const current = await ctx.session.get({ sessionID })
+      if (closed) throw new Error("Context manager unloaded before fork initialization")
+      if (hash(current.fork) !== hash(value.fork) || hash(current.metadata?.[KEY]) !== hash(saved) || current.location.directory !== value.location.directory)
+        throw new Error("Fork changed before context initialization; reopen it")
+      const native = await ctx.session.context({ sessionID })
+      validateNativePolicy(native, transcriptView(current, native), policy)
+      const metadata: NonNullable<SessionInfo["metadata"]> = JSON.parse(JSON.stringify({ ...current.metadata, [KEY]: policy, [AUTO_KEY]: { strategy: strategy(sessionView(current)) } }))
+      if (closed) throw new Error("Context manager unloaded before fork initialization")
+      await ctx.session.update({ sessionID, metadata })
+      return { ...current, metadata }
+    }
     if (value.parentID && !value.fork && !value.metadata?.context_manager_job) {
       const saved = value.metadata?.[KEY]
       const owner = saved && typeof saved === "object" && "sessionID" in saved ? saved.sessionID : undefined

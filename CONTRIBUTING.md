@@ -12,6 +12,7 @@ npm run test:host -- /absolute/path/to/opencode
 npm run test:host -- /absolute/path/to/opencode --tui
 npm run test:usage -- /absolute/path/to/opencode
 npm run test:subagents -- /absolute/path/to/opencode
+node --import tsx script/fork-smoke.ts /absolute/path/to/opencode --tui
 npm audit
 git diff --check
 ```
@@ -42,7 +43,7 @@ To verify a real upgrade, unpack an archived 3.2.0 or 4.0.0 source snapshot unde
 npm run test:upgrade -- /absolute/path/to/opencode /absolute/path/to/baseline/src
 ```
 
-This optional test creates genuine format-7/8 or format-9 operations under the old plugin, restarts only its private host with the new source, and verifies the next same-model requests, summary expansion, restoration of old pruning, format-11 writes and another restart. It needs no new development branch/worktree. Default checks need no old source snapshot. Tests exercise production projection code, not a duplicate converter.
+This optional test creates genuine format-7/8 or format-9 operations under the old plugin, restarts only its private host with the new source, and verifies the next same-model requests, summary expansion, restoration of old pruning, format-12 writes and another restart. It needs no new development branch/worktree. Default checks need no old source snapshot. Tests exercise production projection code, not a duplicate converter.
 
 The upgrade runner uses one host executable for both plugins. Unmodified archives with 2.0.26 dependencies cannot load on 2.0.27, and this release no longer targets the older host. It therefore does not cover that host/runtime transition; use the frozen persistence regressions and current-host smoke tests without claiming a real cross-host archive upgrade.
 
@@ -103,12 +104,22 @@ These checks use synthetic providers and owned private servers. No shared-servic
 - PTY startup waits for the plugin's actual slash-command autocomplete entry rather than assuming the session title means plugin setup completed. Failure screenshots are captured before exit resets the alternate screen.
 - No current Linux/macOS validation, fresh-install run, new dependency audit or real archived-plugin upgrade was performed for this change. No shared-service restart, host-source patch or live-provider call.
 
+### Version 4.3.0 validation
+
+- Typecheck and **263 unit/adapter tests** on Node **24.21.0**, plus **42 renderer tests** on bundled Bun **1.4.2**, passed in the canonical checkout and a fresh public-file installation. The clean installation used `npm ci --ignore-scripts`, with no ignored research inputs or forced dependency resolution. Dependency audit: **0 known vulnerabilities**; dependency versions are unchanged.
+- OpenCode **2.0.27, Windows x64**: production server/ConPTY inspector **35 checks**, provider-usage accounting **19 checks**, and subagents/automatic recovery **11 checks**. All owned fixtures stopped cleanly.
+- Dedicated `script/fork-smoke.ts --tui`: **7 check groups / 14 recorded observations**, covering full/partial/empty forks, nested/revised summaries, independent pruning/deletion restoration, automatic/checkpoint reductions, real `/fork` and Ctrl+E, restart, and parent removal. Synthetic providers only; no shared-service restart or host patch.
+- Large fixture: **2,000,137 raw local tokens → 500,254 effective tokens**. The fork retained that effective context and continued, then independently expanded to 2M. A full-context helper was rejected by the synthetic provider; isolated helpers fit and reduced the fork to **500,300** tokens. The original session remained unchanged, and both continued after restart. Counts are local estimates, not real-provider billing/capacity or summary-quality guarantees.
+- Boundary regressions cover crossing summaries/deleted ranges, all-output and whole-call pruning across a partial cutoff, per-turn restoration, checkpoint tails, metadata/payload drift and coalesced initialization. Isolation checks cover both summary modes, both options at 80/60 columns, retries/refinements, disjoint-range scope and sibling-result exclusion. Copied provider reports are excluded until the fork matches its own usage.
+- Ledger **12**, export schema **6**, accounting cache **2**. Ordinary-session formats **7–11** retain their existing operations/fingerprints; no old-fork repair/migration command is included. No current Linux/macOS or real archived-plugin upgrade run.
+
 ## Architecture
 
 | Area | Files |
 | --- | --- |
 | V2 lifecycle, hooks, agents, RPC registration | `src/server.ts` |
 | Public in-process session/model/helper adapter | `src/host.ts` |
+| Verified fork identity mapping and reversible-state inheritance | `src/fork.ts` |
 | Shared RPC schemas / remote inspector adapter | `src/rpc.ts`, `src/control.ts` |
 | Small domain views / native normalization | `src/model.ts`, `src/normalize.ts` |
 | Ledger schema, V2 persistence decoding and append-only writes | `src/ledger.ts` |
@@ -138,11 +149,15 @@ Stored transcript, normalized effective projection, hook capture, and final prov
 
 ### Persistence and migration
 
-The ledger remains in session metadata under `opencode_context_manager`; strategy/status uses a separate namespace. All writes use append-only **format 11**, with no runtime cursor. The decoder accepts V2 formats 7/8/9/10 and returns the same operations in a format-11 view without persisting it. It rejects truncated cursors, invalid revisions, foreign owners and formats 1–6. The next checked write upgrades the stored envelope. Package version, ledger format, budget-cache format and export schema are independent. Current export schema is **5**; accounting cache stays **2**.
+The ledger remains in session metadata under `opencode_context_manager`; strategy/status uses a separate namespace. All writes use append-only **format 12**, with no runtime cursor. The decoder accepts ordinary-session V2 formats 7/8/9/10/11 and returns the same operations in a format-12 view without persisting it. It rejects truncated cursors, invalid revisions, foreign owners and formats 1–6. The next checked write upgrades the stored envelope. Package version, ledger format, budget-cache format and export schema are independent. Current export schema is **6**; accounting cache stays **2**.
 
 `historyHash` preserves the established V2 fingerprint representation, including the fixed tool discriminator `nativeVersion: 2` **inside the hash only**. It is not a runtime version switch. Frozen 3.2.0 source/request hashes in `test/ledger.test.ts` protect nested summaries, revision, expansion and partial-turn checkpoint compatibility. Never change that representation casually or regenerate expected hashes to hide a regression. Budget bootstrap replays an explicit operation prefix; this is not Undo.
 
-The `checkpoint: true` compact operation splits a USER block after its final source message before replay, so later continuations cannot move that boundary. Ordinary fresh children (parentID, no fork) receive an empty own ledger only after validating any copied ledger belongs to an ancestor; unrelated metadata is retained and inherited live-pause notices removed. Own ledgers, forks and unrelated/corrupt copies are never silently reset. Initialization is coalesced and pending writes drain on unload.
+The `checkpoint: true` compact operation splits a USER block after its final source message before replay, so later continuations cannot move that boundary. Ordinary fresh children (parentID, no fork) receive an empty own ledger only after validating any copied ledger belongs to an ancestor; unrelated metadata is retained and inherited live-pause notices removed. Own ledgers and unrelated/corrupt copies are never silently reset. Initialization is coalesced and pending writes drain on unload.
+
+Native forks have `fork.sessionID` but no `parentID`; the host copies stored messages with new IDs and current metadata, not this plugin's request projection. `host.ts` initializes them on public fork events or before their first access. It verifies the copied snapshot's ancestor ownership, matches native payloads in order at the native cutoff, then `fork.ts` reconstructs retained effective transformation layers with new source IDs/fingerprints. The source ledger/history are never written. Complete summaries/deletions stay applied; crossing ones open recursively to retained content, with earlier pruning/nested layers preserved. Active per-turn pruning layers are rebuilt independently; already-undone audit operations need not be copied. Saved summary revisions supply their current text without adding expansion layers.
+
+Format 12 adds immutable optional `turnEnds`: copied leaf-turn boundaries are applied before replay so inherited checkpoint prefixes/tails remain separately restorable. Maintenance cannot add/change/remove these boundaries. Initialization validates the final policy and rechecks destination ownership/location before merging metadata; it drops inherited pause notices, keeps strategy and unrelated metadata, and drains on unload. Nested uninitialized forks use the copied policy snapshot without initializing/writing ancestors. Parent history must remain available and match during initialization; missing/changed source or unavailable native boundaries fail closed. Once initialized, the fork survives parent removal. No old-fork repair/migration command is provided.
 
 Expansion provenance is replay-only. It must not enter provider metadata, helper input, or effective exports. New revisions target stable summary IDs without creating another expansion layer. RPC commits use the same strict ledger schema as persistence.
 
@@ -174,7 +189,7 @@ Native `session.context` exposes the active window, not arbitrary pre-checkpoint
 ### Summaries and edits
 
 - Freeze effective history, runtime background, source fingerprint, policy revision, and consuming tokenizer once per batch.
-- Each initial helper sees the **same full pre-batch effective context** with only its own selected range marked. Never include sibling results in another initial request.
+- With isolation off, each initial helper sees the **same full pre-batch effective context** with only its own selected range marked. `head` includes only preceding effective blocks plus selection; `total` includes only selection. Both omit captured runtime background. Scope is frozen per batch across retries/refinements, but each disjoint range uses its own boundaries against the same snapshot. Never include sibling results or hidden restoration content in another initial request. Isolation is a summary-only inspector choice, not a pruning combination or automatic-policy override.
 - The selected range is the only source to summarize; before/after/runtime regions are background. Preserve unfinished state and describe binary attachments without inventing their contents.
 - Detailed mode uses a soft 2×–20× review band on the complete wrapped replacement; exact boundaries need no retry. At most one follow-up; accept the second completed nonempty response regardless of size. Brief mode is single-pass.
 - Empty, truncated, failed, or cancelled responses are invalid. Manual summaries need not save tokens; automatic near-limit candidates must.
@@ -191,6 +206,7 @@ Native `session.context` exposes the active window, not arbitrary pre-checkpoint
 - Save hashed count units and a policy hash, not prompts/credentials. Pair only the immediately following assistant: interrupted attempts/new input cannot be mistaken for the sampled request. Drain pending accounting writes on unload. Never use transient generation to overwrite primary observations.
 - Recount edits against the same frozen anchor. Charge added units separately from removed units, with growth multiplier at least `max(estimateMultiplier, reportedInput / sampledLocalInput)`; removal credit is unscaled local count. Do not use a permanently unchanged old reported floor, scale removal credit as exact savings, or recalibrate the baseline from each candidate.
 - Bootstrap without a captured request is explicitly unpaired. Reconstruct a historical policy prefix excluding operations created after the response began or selecting that response/future messages. This is not proof of historical request identity; timestamps/configuration can be uncertain. New matched observations supersede it.
+- Forks exclude all copied assistant reports when creating their first accounting cache. The inherited effective ledger may have rebuilt/coalesced operation history, so copied reports cannot safely establish its historical projection. Use the normal local fallback until the fork's own captured request receives usage; subsequent accounting/restart works normally. Never copy the parent's cache or treat rewritten operation ordering as historical wire evidence.
 - Native checkpoint/raw-prefix changes and model/provider/variant/agent/tokenizer/route changes invalidate incompatible anchors. Do not immediately bootstrap from the very historical reports just invalidated by a scope change. Live gate validation checks current route/model configuration and capacity before maintenance/resume.
 - Missing usage falls back to a visible configurable local uplift (default 1.3). Unknown overhead remains uncertain; no universal media/opaque-state/provider bound is claimed. Keep local content totals, historical reported usage and the actual guard forecast clearly separate in the UI/export.
 - Typed `tool-result.content` is not raw JSON text: count its text parts and image/PDF allowances separately, never base64 file bytes or long file URLs as prose. Preserve full payload identity in unit hashes and leave requests unchanged. Plain text/JSON/error results keep serialized-text counting because those paths can genuinely send the bytes as text. Direct media and tool files share allowances; they remain rough estimates, not provider/image-resolution guarantees. Test media-bearing continuations with both fallback and reported usage.

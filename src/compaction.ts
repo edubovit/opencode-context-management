@@ -1,6 +1,7 @@
 export type ToolPruning = "large" | "all" | "delete"
 export type Pruning = { reasoning: boolean; tools?: ToolPruning }
-export type Compaction = ({ kind: "prune" } & Pruning) | { kind: "summary"; mode: "compact" | "brief" } | { kind: "delete" }
+export type Isolation = "off" | "head" | "total"
+export type Compaction = ({ kind: "prune" } & Pruning) | { kind: "summary"; mode: "compact" | "brief"; isolation?: Isolation } | { kind: "delete" }
 
 export const COMPACTION_MODES = [
   { name: "Prune reasoning", description: "Remove reasoning; keep prompts, calls and visible responses" },
@@ -10,17 +11,24 @@ export const COMPACTION_MODES = [
   { name: "Summarize (detailed)", description: "Model-written detailed summary; applies automatically" },
   { name: "Summarize (brief)", description: "Model-written brief summary; applies automatically" },
   { name: "Delete", description: "Remove selected ranges from effective context; Ctrl+E restores them" },
+  { name: "Isolated summarization (head included)", description: "Summary sees preceding context and the range only; no later or runtime background" },
+  { name: "Isolated summarization (total)", description: "Summary sees only the selected range; no preceding, later or runtime background" },
 ] as const
 
 export function selectedModes(value: Compaction): number[] {
   if (value.kind === "delete") return [6]
-  if (value.kind === "summary") return [value.mode === "compact" ? 4 : 5]
+  if (value.kind === "summary") return [value.mode === "compact" ? 4 : 5, ...(value.isolation === "head" ? [7] : value.isolation === "total" ? [8] : [])]
   return [...(value.reasoning ? [0] : []), ...(value.tools ? [{ large: 1, all: 2, delete: 3 }[value.tools]] : [])]
 }
 
 export function toggleMode(value: Compaction, index: number): Compaction {
+  if (index === 7 || index === 8) {
+    if (value.kind !== "summary") return value
+    const isolation = index === 7 ? "head" : "total"
+    return { ...value, isolation: value.isolation === isolation ? "off" : isolation }
+  }
   if (index === 6) return { kind: "delete" }
-  if (index === 4 || index === 5) return { kind: "summary", mode: index === 4 ? "compact" : "brief" }
+  if (index === 4 || index === 5) return { kind: "summary", mode: index === 4 ? "compact" : "brief", ...(value.kind === "summary" && value.isolation ? { isolation: value.isolation } : {}) }
   const current: Pruning = value.kind === "prune" ? value : { reasoning: false }
   if (index === 0) return { kind: "prune", ...current, reasoning: current.tools === "delete" || !current.reasoning }
   const tools = (["large", "all", "delete"] as const)[index - 1]

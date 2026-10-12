@@ -5,7 +5,8 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { setupServer } from "../src/server.ts"
 import { Storage } from "../src/storage.ts"
-import { AGENT, EDIT_AGENT } from "../src/config.ts"
+import { AGENT, EDIT_AGENT, KEY } from "../src/config.ts"
+import { emptyPolicy } from "../src/context.ts"
 import { SUMMARY_EDIT_SYSTEM, SUMMARIZER_SYSTEM } from "../src/summarize.ts"
 import { nativeFixture } from "./native-fixtures.ts"
 import { mockContext } from "./host-mock.ts"
@@ -51,6 +52,27 @@ test("V2 context capture preserves both omitted and numeric provider output caps
   const captured = await mock.store.capture("ses_native")
   assert.ok(captured?.system?.includes("Actual system"))
   assert.equal(captured?.tools?.[0].id, "fixture")
+})
+
+test("fork accounting excludes copied reports until its own request receives usage", async (t) => {
+  const mock = await setup(t)
+  const data = nativeFixture()
+  const session = mock.sessions.get("ses_native")!
+  session.fork = { sessionID: "ses_parent", boundary: { type: "through", messageID: "msg_parent_last" } }
+  session.metadata = { [KEY]: emptyPolicy(session.id) }
+  for (const message of data.native) if (message.type === "assistant") message.tokens = { input: 180000, output: 100, reasoning: 0, cache: { read: 0, write: 0 } }
+  mock.messages.set(session.id, data.native)
+  const event = { sessionID: session.id, agent: "build", model: { providerID: "fixture", id: "model" }, system: [{ type: "text", text: "System" }], messages: data.canonical, tools: {}, options: {} }
+  await mock.hooks.get("context")!(event)
+  assert.equal((await mock.store.capture(session.id))?.budget?.source, "local-fallback")
+  assert.equal((await mock.store.budget(session.id))?.excludedReports?.length, 3)
+  const reply = { id: "msg_own_reply", type: "assistant" as const, agent: "build", model: { providerID: "fixture", id: "model" }, time: { created: 100, completed: 101 }, finish: "stop" as const, content: [{ type: "text" as const, text: "Fork response" }], tokens: { input: 4000, output: 10, reasoning: 0, cache: { read: 0, write: 0 } } }
+  data.native.push(reply)
+  event.messages = [...data.canonical, Message.make({ id: reply.id, role: "assistant", content: "Fork response" })]
+  await mock.hooks.get("context")!(event)
+  const capture = await mock.store.capture(session.id)
+  assert.equal(capture?.budget?.source, "provider-matched")
+  assert.equal(capture?.budget?.reported?.messageID, reply.id)
 })
 
 test("V2 summary helpers receive isolated system context and no advertised tools", async (t) => {

@@ -15,7 +15,7 @@ import { RangeList } from "./range-list.tsx"
 import { ContextOverview } from "./context-overview.tsx"
 import { budgetView, compactCount } from "./inspector-view.ts"
 import { CompactionMenu } from "./compaction-menu.tsx"
-import { COMPACTION_MODES, selectedModes, toggleMode, type Compaction } from "./compaction.ts"
+import { COMPACTION_MODES, selectedModes, toggleMode, type Compaction, type Isolation } from "./compaction.ts"
 import { rangePreview, rangeToolStats } from "./range-rows.ts"
 import { Hotkeys, type HotkeyLine } from "./tui-help.tsx"
 import { anchorRanges, pressSpace, rangeIDs, rangeTag, selectedBlocks, visibleRanges, type Selection } from "./ranges.ts"
@@ -146,13 +146,13 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
     await refresh(ids)
     setNotice(warning ?? "Summaries applied automatically. Hover a summary and press Enter to read or edit it.")
   }
-  const beginSummary = async (mode: "compact" | "brief") => {
+  const beginSummary = async (mode: "compact" | "brief", isolation: Isolation = "off") => {
     const ids = selectedIDs()
-    await summaries.start(mode, ids, choice())
+    await summaries.start(mode, ids, choice(), isolation)
     setLoaded(summaries.snapshot)
     setSelection(anchorRanges(summaries.snapshot!.blocks, ids))
     setRunningBatch(true)
-    setNotice(`Generating ${ids.length} ${mode} ranges in parallel from one frozen pre-compaction context…`)
+    setNotice(`Generating ${ids.length} ${mode} ranges · ${isolation === "off" ? "full background" : isolation === "head" ? "isolated: head included" : "isolated: selected range only"}…`)
     await summaries.generate(touch)
     await finishBatch()
   }
@@ -166,7 +166,7 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
     const value = compaction()
     if (!selectedModes(value).length) throw new Error("Select at least one compaction mode")
     setConfiguring(false)
-    if (value.kind === "summary") { await beginSummary(value.mode); return }
+    if (value.kind === "summary") { await beginSummary(value.mode, value.isolation); return }
     const ids = selectedIDs()
     if (value.kind === "delete") {
       await props.controller.deleteRanges(ids)
@@ -494,6 +494,9 @@ In configuration: arrows choose, Space toggles, Enter runs.
 m/t selects the summary model/effort, also from the main view.
 Reasoning combines with one tool mode. Tool deletion requires reasoning removal.
 Summaries and Delete are standalone modes. Parallel summaries apply together.
+Summary options: Isolated (head included) sends preceding context + selection;
+Isolated (total) sends selection only. Both omit runtime/later background.
+Isolation defaults off; toggle one option with Space after choosing a summary mode.
 Delete removes each selected range entirely, leaving a zero-content DELETED row.
 No model call for deletion/pruning. Stored history is unchanged.
 

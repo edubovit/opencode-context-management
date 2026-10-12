@@ -1,5 +1,6 @@
 import { Controller, type Draft, type Loaded, type ModelChoice } from "./controller.ts"
 import { resolveRanges } from "./ranges.ts"
+import type { Isolation } from "./compaction.ts"
 
 export type BatchEntry = {
   ids: string[]; worker: Controller; choice: ModelChoice; status: "pending" | "running" | "ready" | "error"
@@ -10,6 +11,7 @@ export class SummaryBatch {
   entries: BatchEntry[] = []
   private frozen?: Loaded
   private mode: "compact" | "brief" = "compact"
+  private isolation: Isolation = "off"
   private task?: Promise<void>
   private closed = false
   private cancelled = false
@@ -19,7 +21,7 @@ export class SummaryBatch {
   get snapshot() { return this.frozen }
   get ready() { return !this.closed && !this.cancelled && !this.applied && !this.task && this.entries.length > 0 && this.entries.every((entry) => entry.status === "ready") }
 
-  async start(mode: "compact" | "brief", ranges: string[][], override?: ModelChoice) {
+  async start(mode: "compact" | "brief", ranges: string[][], override?: ModelChoice, isolation: Isolation = "off") {
     if (this.closed) throw new Error("Context inspector is closed")
     this.cancelled = false
     if (this.entries.length) {
@@ -35,6 +37,7 @@ export class SummaryBatch {
     if (this.closed || this.cancelled) throw new Error("Summary cancelled")
     this.frozen = frozen
     this.mode = mode
+    this.isolation = isolation
     this.applied = false
     this.entries = selected.map((blocks) => ({
       ids: blocks.flatMap((block) => block.sourceIDs), choice: { ...choice }, status: "pending", text: "", request: "",
@@ -72,7 +75,7 @@ export class SummaryBatch {
       try {
         await entry.worker.discard()
         if (this.closed || this.cancelled) throw new Error("Summary cancelled")
-        const draft = await entry.worker.summarize(this.mode, entry.ids, entry.choice, this.frozen)
+        const draft = await entry.worker.summarize(this.mode, entry.ids, entry.choice, this.frozen, this.isolation)
         entry.draft = draft
         entry.text = draft.operation.summary!
         entry.status = "ready"

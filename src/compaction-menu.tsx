@@ -6,9 +6,9 @@ export function CompactionMenu(props: { api: InspectorUI; value: Compaction; ind
   return <box id="cm-compaction-config" flexDirection="column" flexGrow={1} minHeight={0} overflow="hidden">
     <text height={1} flexShrink={0} fg={props.api.theme.text.base}>Compaction configuration</text>
     <select id="cm-compaction-modes" options={COMPACTION_MODES.map((mode, index) => ({
-      name: `${selectedModes(props.value).includes(index) ? "[+]" : "[ ]"} ${mode.name}`, description: mode.description,
+      name: `${index >= 7 && props.value.kind !== "summary" ? "[-]" : selectedModes(props.value).includes(index) ? "[+]" : "[ ]"} ${mode.name}`, description: mode.description,
     }))} selectedIndex={props.index} onSelect={(index) => props.toggle(index)} showDescription={false} showScrollIndicator flexGrow={1} minHeight={0} />
-    <text height={3} flexShrink={0} overflow="hidden" fg={props.api.theme.text.muted}>{COMPACTION_MODES[props.index].description}</text>
+    <text height={3} flexShrink={0} overflow="hidden" fg={props.api.theme.text.muted}>{props.index >= 7 && props.value.kind !== "summary" ? "Disabled: select detailed or brief summarization first." : COMPACTION_MODES[props.index].description}</text>
     <text height={2} flexShrink={0} overflow="hidden">{props.value.kind === "delete" ? "No model call. Stored history stays intact; Ctrl+E restores." : props.value.kind === "prune" ? "No model call. Ctrl+E restores the last pruning layer." : "Selected ranges run in parallel and autoapply together."}</text>
   </box>
 }

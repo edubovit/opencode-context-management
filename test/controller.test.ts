@@ -318,7 +318,7 @@ test("range restore previews are read-only until confirmed and use no model", as
   const loaded = await controller.load()
   assert.deepEqual(loaded.blocks[1].messages, data.messages.slice(2, 4))
   assert.equal(readPolicy(data.session).operations.length, 2)
-  assert.equal(readPolicy(data.session).version, 11)
+  assert.equal(readPolicy(data.session).version, 12)
   assert.equal(data.calls.length, calls)
 })
 

@@ -2,7 +2,7 @@ import type { Model, ModelChoice, Session } from "./model.ts"
 export type { ModelChoice } from "./model.ts"
 import { KEY, type Settings } from "./config.ts"
 import { append, hash, historyHash, activeMessages, operation, project, readPolicy, select, serialize, type Block, type Envelope, type Operation, type Policy, type RestoreMode } from "./context.ts"
-import { validatePruning, type Pruning } from "./compaction.ts"
+import { validatePruning, type Isolation, type Pruning } from "./compaction.ts"
 import { generateSummary, inputEstimate, refinementPrompt, summaryEditPrompt, SUMMARIZER_SYSTEM } from "./summarize.ts"
 import type { Artifacts, RuntimeCapture } from "./storage.ts"
 import { snapshot } from "./snapshot.ts"
@@ -215,7 +215,7 @@ export class Controller {
     await this.save(loaded.policy, next, preview.fingerprint)
   }
 
-  async summarize(mode: "compact" | "brief", ids: string[], override?: ModelChoice, frozen?: Loaded): Promise<Draft> {
+  async summarize(mode: "compact" | "brief", ids: string[], override?: ModelChoice, frozen?: Loaded, isolation: Isolation = "off"): Promise<Draft> {
     if (this.job) throw new Error("Apply or discard the current draft before starting another compaction")
     this.beginWork()
     try {
@@ -230,7 +230,7 @@ export class Controller {
       if (!chosen) throw new Error("Choose a compaction model first")
       const choice = { ...chosen }
       const model = await this.resolveModel(choice)
-      const result = await generateSummary(op, loaded.blocks, selected, (text) => this.request(choice, model, text), loaded.runtime ? JSON.stringify(loaded.runtime) : undefined)
+      const result = await generateSummary(op, loaded.blocks, selected, (text) => this.request(choice, model, text), isolation === "off" && loaded.runtime ? JSON.stringify(loaded.runtime) : undefined, isolation)
       const draft = { ...result, refinements: 0, revision: loaded.policy.revision, fingerprint: loaded.fingerprint, selected, totalBlocks: loaded.blocks.length, model: choice, jobID: this.job! }
       this.preview = draft
       return draft

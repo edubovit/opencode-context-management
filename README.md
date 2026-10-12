@@ -2,24 +2,26 @@
 
 Choose what stays in your coding session's context. Prune reasoning or tool results, summarize or delete selected ranges, and restore them later—without deleting the stored conversation.
 
-**Plugin 4.2.0 · OpenCode V2**.
+**Plugin 4.3.0 · OpenCode V2**.
 
 ## Features
 
 - **Range-based editing:** select disjoint ranges, then choose reasoning removal, large/all tool-result pruning, whole-call deletion, detailed/brief summaries, or whole-range deletion.
 - **Parallel summaries:** each range receives the same frozen effective background. Only a complete successful batch applies; retry just failed ranges.
+- **Isolated summaries:** optionally send only the selected range, or the selected range plus preceding effective history, without later/runtime background.
+- **Forks preserve reductions:** fully copied summaries, pruning and deleted ranges stay applied and remain independently reversible in the fork.
 - **Reversible reductions:** expand summaries, restore deleted ranges, or restore the latest tool/reasoning pruning layer on selected turns. Earlier layers and unrelated ranges stay intact; no global Undo/Redo.
 - **Fullscreen readers:** read turns and saved summaries. Edit summaries manually or with a model; model edits stay proposals until explicitly applied.
 - **Local statistics:** token estimates, tool status, selected-range totals, and effective-context exports. Counting needs no model call.
 - **Near-limit protection:** suspend before a model request and resume the same request after reduction. AUTO_PER_TURN is the default; subagents never require manual recovery. Last resort can summarize an unfinished-turn prefix while retaining the newest 20,000 estimated tokens.
 
-Initial summaries apply automatically; inspect/edit/expand them afterward. Summarization uses your provider and can cost money. Each parallel range sends the full effective background. Token counts are estimates, summaries are lossy, and exports can contain sensitive content.
+Initial summaries apply automatically; inspect/edit/expand them afterward. Summarization uses your provider and can cost money. By default, each parallel range sends the full effective background; isolation can narrow it. Token counts are estimates, summaries are lossy, and exports can contain sensitive content.
 
 ## Install
 
 This is a **source-based, private package**, not a published npm plugin. Requires a compatible local OpenCode **V2 (2.0.27 or newer)** installation and npm.
 
-Validated on OpenCode **2.0.27 on Windows x64**, including the actual terminal inspector, provider-usage accounting, deletion/restoration and subagents. Linux and macOS have not been validated for the current release. See [validation details](CONTRIBUTING.md#version-420-validation).
+Validated on OpenCode **2.0.27 on Windows x64**, including the actual terminal inspector, reversible forks, isolated summaries, provider-usage accounting and subagents. Linux and macOS have not been validated for the current release. See [validation details](CONTRIBUTING.md#version-430-validation).
 
 Development checks run on Node.js 22+; renderer tests use the bundled Bun runtime. OpenTUI's Node-backend engine warning on Node 22 does not apply to the bundled Bun renderer. Using its Node backend directly requires Node 26.4+.
 
@@ -77,6 +79,22 @@ Use **Space → move → Space** to close a range; repeat for more ranges. Press
 | Delete | Remove the entire selected range from effective context. Keep one zero-content **DELETED** row per range for restoration. No model call. |
 
 Reasoning removal combines with one tool mode. Summary modes and **Delete** are standalone choices. Pruning, deletion and restoration make no model calls and never change past tool execution or disable future tools.
+
+### Isolated summarization
+
+In **c**, select detailed or brief summarization, then toggle one optional isolation setting with **Space**:
+
+| Option | Helper receives |
+| --- | --- |
+| Both off (default) | Selected range plus full effective history and captured runtime background, as before. |
+| Isolated summarization (head included) | Selected range plus preceding effective history. No later history or captured runtime background. |
+| Isolated summarization (total) | Only the selected range. No preceding/later history or captured runtime background. |
+
+The options are mutually exclusive and disabled for pruning/Delete. Toggling the selected option turns isolation off. Switching detailed/brief keeps the selected isolation; choosing another action clears it. These are local inspector choices, not global configuration fields. The helper still receives its summarization instructions, but no tools.
+
+Each batch range uses its own boundary against the same frozen snapshot; retries/refinements keep that scope, without sibling-summary leakage. Total isolation is useful after expansion makes the full session too large for a helper. The selected range must still fit the provider, and head-included can still be large. Isolating the helper does not remove unselected history from the main session or bypass its Resume guard.
+
+### Other controls
 
 - **Enter:** read a turn or summary. Readers exclude tool activity/reasoning and label unfinished answers.
 - **Ctrl+E, then Ctrl+S:** preview and confirm one-layer restoration. A summary expands to its pre-summary view. A **DELETED** range restores its pre-deletion turns, summaries and pruning. A pruned ordinary turn restores its latest effective pruning action. Combined tool/reasoning pruning restores together, including deleted calls/results; separate actions restore one at a time. Expand a summary or deleted range before restoring layers hidden inside it.
@@ -234,11 +252,11 @@ Changing an encoding does not change a model's real context limit or make the pr
 - You can set only `variant` to override effort while still inheriting the main model. `"variant": "default"` explicitly selects the model's default rather than inheriting the main session's effort.
 - Inspector **m/t** selections override these defaults for that inspector. They do not rewrite configuration or switch the main session's model.
 
-Choose a model with enough input capacity for the **full effective background**, not just the selected range. Every initial batch helper sees that same frozen background. A cheaper helper may reduce cost, but a smaller context window can reject the request. Nothing is silently dropped or switched to another model.
+Choose a model with enough input capacity for the **selected helper scope**. With isolation off, this includes the full effective background, not just the selected range. Each initial batch helper uses the same frozen snapshot and its own isolation boundary. A cheaper helper may reduce cost, but a smaller context window can reject the request. Content is omitted only when you explicitly choose an isolation option; models are never silently switched.
 
 These IDs select an existing OpenCode provider/model; they do not configure a provider or supply credentials. Provider setup and model context/output limits belong in OpenCode's provider configuration, not this plugin's options.
 
-**Manual compaction lets the provider decide whether the input fits.** User-started summaries, batch ranges, refinements and saved-summary edits have no plugin token-size preflight, safety multiplier or usage-based veto. This also applies in AUTO sessions and during manual cleanup pauses. Each batch range still sends the full frozen background; splitting ranges does not split request size. Host/provider limits and errors still apply, and failed or incomplete results are never applied. Automatic cleanup—including Run from a pause—and main-request Resume keep their budget guards.
+**Manual compaction lets the provider decide whether the input fits.** User-started summaries, batch ranges, refinements and saved-summary edits have no plugin token-size preflight, safety multiplier or usage-based veto. This also applies in AUTO sessions and during manual cleanup pauses. Without isolation, splitting ranges does not reduce each request's full frozen background. Host/provider limits and errors still apply, and failed or incomplete results are never applied. Automatic cleanup—including Run from a pause—and main-request Resume keep their budget guards.
 
 ### Autocompaction
 
@@ -266,13 +284,23 @@ Subagents, including nested/background children, have separate ledgers and usage
 
 Queued inputs are not silently discarded. Oversized synthetic-only context without a USER turn is refused. Pause authority is in memory; after reload/restart an old saved pause notice cannot resume the old request. Stop/reload cancels last-resort work and prevents late application.
 
+## Forking sessions
+
+Use OpenCode's normal **/fork**. The fork keeps every fully copied effective summary, pruning layer and deleted range. **Ctrl+E** restores those layers in the fork only; the original session is unchanged. Nested summaries, prior pruning and last-resort split boundaries stay reversible, including after restart or deleting the original session once fork initialization has finished.
+
+Native cutoff rules still apply: forking at a user message copies history **before** that message and places its prompt in the input box as a draft. A summary or deleted range crossing the cutoff is opened to its retained earlier content; fully retained inner layers stay applied. For example, with summaries 1–10 and 11–20, forking at 19 keeps summary 1–10 and turns 11–18, with turn 19 as a draft—not turns 20–21.
+
+The plugin initializes a separate fork-owned ledger from verified copied history. It does not rewrite original messages or the original ledger. Copied parent usage is excluded until the fork measures its own requests; the first request uses the normal conservative local estimate. If opening a boundary-crossing summary makes the fork too large, normal budget protection still applies; isolated summaries can help reduce it.
+
+Fork initialization needs the source history to remain available and unchanged while it verifies the copy. Missing source/boundaries or mismatched payloads fail visibly rather than guessing. There is no separate repair/migration command for old broken forks. Once initialized, the fork no longer needs its source session.
+
 ## Limits and storage
 
-Malformed ledgers and copied-history fork ledgers are preserved and refused, never silently reset. Fresh child sessions are distinct from forks and get their own ledger.
+Malformed or unrelated ledgers are preserved and refused, never silently reset. Verified new forks inherit independent reversible reductions; ordinary fresh child sessions get an empty own ledger.
 
 Native checkpoints are read-only; edit later USER turns. Historical tools still marked running/streaming must be settled by the host before editing. Opaque provider-executed results cannot be safely pruned; use a summary or whole-call deletion with reasoning instead. Errored or interrupted reasoning that the host converted to visible text is also refused rather than guessed at. Signed/opaque reasoning, encrypted checkpoints and stateful provider transports are not universally validated.
 
-Version 4.2.0 writes ledger format **11** and exports schema **5**. Saved V2 ledgers **7–10** are read without rewriting them until the next checked write; older operations keep their meaning. Do not downgrade the plugin after a format-11 write. Range deletion keeps the same source, idle, protected-turn and native-checkpoint safeguards as other context edits; restoring a range never bypasses the Resume budget check.
+Version 4.3.0 writes ledger format **12** and exports schema **6**. Existing ordinary-session V2 ledgers **7–11** are read without rewriting them until the next checked write; older operations keep their meaning. Do not downgrade the plugin after a format-12 write. Fork initialization records immutable turn boundaries where needed for restoration. Range deletion keeps the same source, idle, protected-turn and native-checkpoint safeguards as other context edits; restoring a range never bypasses the Resume budget check.
 
 Captures, spill files and exports live in `~/.local/state/opencode-context-manager/<project-hash>/` on the server. The ledger and strategy live in OpenCode session metadata. Control uses authenticated native RPC, with no separate control port or credential file.
 

@@ -158,6 +158,10 @@ export function replacementTokens(op: Operation, selected: Block[]) {
 
 export function project(active: Envelope[], policy: Policy, observe?: (op: Operation, selected: Block[]) => void): Block[] {
   let blocks = turns(structuredClone(active))
+  for (const id of policy.turnEnds ?? []) {
+    if (!active.some((message) => message.info.id === id)) throw new Error("Saved fork turn boundary no longer exists")
+    blocks = splitAfter(blocks, id)
+  }
   const pruned = new Map<string, string>()
   for (const op of policy.operations) {
     if (op.checkpoint) blocks = splitAfter(blocks, op.sourceIDs.at(-1)!)

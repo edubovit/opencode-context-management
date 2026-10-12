@@ -60,7 +60,7 @@ test("tool deletion removes complete calls, including pending calls, and reasoni
   assert.ok(pending.type === "tool")
   pending.state = { status: "running", input: { original: "kept in storage" } }
   const policy = append(emptyPolicy("ses_test"), { ...operation("tool-delete", [turns(raw)[0]]), pruneReason: true })
-  assert.equal(readPolicy({ id: "ses_test", metadata: { [KEY]: policy } }).version, 11)
+  assert.equal(readPolicy({ id: "ses_test", metadata: { [KEY]: policy } }).version, 12)
   const blocks = project(raw, policy)
   assert.deepEqual(blocks[0].messages, raw.slice(0, 2).map((message) => ({ ...message, parts: message.parts.filter((p) => p.type !== "tool" && p.type !== "reasoning") })))
   assert.equal(rangeToolStats(toolStatus([blocks[0]], pruneRule())), "Tools removed · reasoning removed")

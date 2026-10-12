@@ -99,7 +99,7 @@ test("ordinary children and nested children isolate ancestor ledgers, strategy a
   await adapter.close()
 })
 
-test("child initialization refuses unrelated/corrupt ledgers and never resets forks or own ledgers", async () => {
+test("child initialization refuses unrelated/corrupt ledgers and preserves own ledgers", async () => {
   const mock = mockContext()
   const adapter = pluginHost(mock.context)
   const metadata = (id: string) => JSON.parse(JSON.stringify({ [KEY]: emptyPolicy(id) }))
@@ -109,7 +109,7 @@ test("child initialization refuses unrelated/corrupt ledgers and never resets fo
   await assert.rejects(adapter.host.session("ses_child"), /Invalid inherited/)
   mock.sessions.set("ses_fork", { ...nativeSession("ses_fork"), fork: { sessionID: "ses_native", boundary: { type: "before", messageID: "msg_boundary" } }, metadata: metadata("ses_native") })
   assert.throws(() => readPolicy({ id: "ses_fork", metadata: mock.sessions.get("ses_fork")!.metadata }), /another session/)
-  await adapter.host.session("ses_fork")
+  await assert.rejects(adapter.host.session("ses_fork"), /Fork boundary/)
   assert.deepEqual(mock.sessions.get("ses_fork")!.metadata, metadata("ses_native"))
   mock.sessions.get("ses_child")!.metadata = metadata("ses_child")
   assert.deepEqual((await adapter.host.session("ses_child")).metadata, metadata("ses_child"))
