@@ -2,7 +2,7 @@
 
 Choose what stays in your coding session's context. Prune reasoning or tool results, summarize or delete selected ranges, and restore them later—without deleting the stored conversation.
 
-**Plugin 4.4.0 · OpenCode V2**.
+**Plugin 4.4.1 · OpenCode V2**.
 
 ## Features
 
@@ -22,7 +22,7 @@ Initial summaries apply automatically; inspect/edit/expand them afterward. Summa
 
 This is a **source-based, private package**, not a published npm plugin. Requires a compatible local OpenCode **V2 (2.0.27 or newer)** installation and npm.
 
-Validated on OpenCode **2.0.27 on Windows x64**, including the actual terminal inspector, native Revert, reversible forks, isolated summaries, provider-usage accounting and subagents. Linux and macOS have not been validated for the current release. See [validation details](CONTRIBUTING.md#version-440-validation).
+Validated on OpenCode **2.0.28 on Windows x64**, including the actual terminal inspector, native Revert, reversible forks, isolated summaries, provider-usage accounting and subagents. The production server/terminal suite also passes on **2.0.27**. Linux and macOS have not been validated for the current release. See [validation details](CONTRIBUTING.md#version-441-validation).
 
 Development checks run on Node.js 22+; renderer tests use the bundled Bun runtime. OpenTUI's Node-backend engine warning on Node 22 does not apply to the bundled Bun renderer. Using its Node backend directly requires Node 26.4+.
 
@@ -267,7 +267,7 @@ Requests are paired with their reports using model/agent/configuration identity 
 
 The inspector shows **Live guard** while paused or **Last request guard** otherwise, separately from local categories and historical usage. This meter is not the manual summarizer's input count. `provider-matched` means a captured request/report pair; `provider-unpaired` is a conservative reconstruction for an existing session without a sample. Known later ledger edits are excluded from that historical reconstruction. `local-fallback` means no compatible report is available and uses the configured uplift. Automatic helpers have independent accounting and fail before dispatch when their estimated capacity would be exceeded. Manual helpers skip that guard. Neither kind recursively compacts or changes the parent's usage baseline.
 
-Accounting survives restart. Model, variant, agent, configured route or tokenizer changes invalidate incompatible measurements; a changed model/provider configuration also prevents resuming a stale live pause. The files contain hashes/counts, not request text or credentials.
+Accounting survives restart. Model, variant, agent, configured route, provider/model compatibility options or tokenizer changes invalidate incompatible measurements; a changed model/provider configuration also prevents resuming a stale live pause. The files contain hashes/counts, not request text or credentials.
 
 Images and PDFs in typed tool-result content use the same rough media allowances as direct attachments, not the text-token cost of their base64 bytes. Text parts are counted separately and the image/file payload stays unchanged. Genuine text, JSON and error payloads remain text-counted; arbitrary base64-looking strings are not silently ignored.
 
@@ -319,7 +319,7 @@ Malformed or unrelated ledgers are preserved and refused, never silently reset. 
 
 Native checkpoints are read-only; edit later USER turns. Historical tools still marked running/streaming must be settled by the host before editing. Opaque provider-executed results cannot be safely pruned; use a summary or whole-call deletion with reasoning instead. Errored or interrupted reasoning that the host converted to visible text is also refused rather than guessed at. Signed/opaque reasoning, encrypted checkpoints and stateful provider transports are not universally validated.
 
-Version 4.4.0 writes ledger format **13** and exports schema **7**; accounting cache remains **2**. Existing ordinary-session V2 ledgers **7–12** retain their operations and fingerprints. An intact ledger gains a source manifest on checked server access without changing its reductions; no original message text is copied into that manifest. Normal edits append operations. A committed native revert instead rebuilds the retained reversible layers and removes obsolete source references. Do not downgrade after a format-13 write. Fork/revert turn boundaries and source provenance cannot be rewritten by ordinary context maintenance. Restoration never bypasses the Resume budget check.
+Version 4.4.1 writes ledger format **13** and exports schema **7**; accounting cache remains **2**. Existing ordinary-session V2 ledgers **7–12** retain their operations and fingerprints. An intact ledger gains a source manifest on checked server access without changing its reductions; no original message text is copied into that manifest. Normal edits append operations. A committed native revert instead rebuilds the retained reversible layers and removes obsolete source references. Do not downgrade after a format-13 write. Fork/revert turn boundaries and source provenance cannot be rewritten by ordinary context maintenance. Restoration never bypasses the Resume budget check.
 
 Captures, spill files and exports live in `~/.local/state/opencode-context-manager/<project-hash>/` on the server. The ledger and strategy live in OpenCode session metadata. Control uses authenticated native RPC, with no separate control port or credential file.
 

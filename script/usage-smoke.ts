@@ -218,6 +218,43 @@ try {
   assert.equal((await accounting(endpoint))?.source, "local-fallback")
   checks.push("configured endpoint change invalidates a live gate and discards incompatible usage")
 
+  for (const target of ["provider", "model"] as const) {
+    const { controller } = await make()
+    test.usage(() => ({ input: 10000, output: 800 }))
+    await send(controller.sessionID, "COMPATIBILITY_BASE " + "Earlier useful facts. ".repeat(1200))
+    await test.client.session.prompt({ sessionID: controller.sessionID, text: "WAIT_FOR_COMPATIBILITY_CHANGE" })
+    const pause = await test.until(async () => (await controller.host.auto!.state(controller.sessionID)).pause, "pause before compatibility change")
+    const calls = test.requests.length
+    const provider = changed.providers.fixture
+    const compatibility = { requireReasoning: true }
+    const configured = target === "provider" ? { ...provider, compatibility }
+      : { ...provider, models: { ...provider.models, small: { ...provider.models.small, compatibility } } }
+    const active = async () => target === "provider"
+      ? (await test.client.provider.get({ providerID: "fixture", location: { directory: test.project } })).data.compatibility?.requireReasoning
+      : (await test.client.model.list({ location: { directory: test.project } })).data.find((model) => model.id === "small")?.compatibility?.requireReasoning
+    await writeFile(test.configPath, JSON.stringify({ ...changed, providers: { fixture: configured } }))
+    await test.until(async () => await active() === true, "new compatibility configuration")
+    const invalidated = (await controller.host.auto!.state(controller.sessionID)).pause
+    assert.ok(!invalidated || invalidated.phase === "invalid")
+    await assert.rejects(controller.host.auto!.command(controller.sessionID, { action: "resume", pauseID: pause.id }))
+    if (invalidated) await controller.host.auto!.command(controller.sessionID, { action: "abort", pauseID: invalidated.id })
+    await test.client.session.wait({ sessionID: controller.sessionID })
+    assert.equal(test.requests.length, calls)
+    test.usage(() => ({ input: 1000, output: 20 }))
+    await send(controller.sessionID, "First request under new compatibility")
+    assert.equal((await test.client.session.get({ sessionID: controller.sessionID })).outcome, "succeeded")
+    assert.equal((await accounting(controller))?.source, "local-fallback")
+    const assistants = test.requests.at(-1)!.messages.filter((message) => message.role === "assistant")
+    assert.ok(assistants.length)
+    assert.ok(assistants.every((message) => "reasoning_content" in message && typeof message.reasoning_content === "string"))
+    await send(controller.sessionID, "Match only the new compatibility report")
+    assert.equal((await accounting(controller))?.source, "provider-matched")
+    assert.equal((await accounting(controller))?.reported?.input, 1000)
+    await writeFile(test.configPath, JSON.stringify(changed))
+    await test.until(async () => await active() === undefined, "restore compatibility configuration")
+    checks.push(`${target} compatibility changes invalidate a held gate and old usage; actual wire lowering changes and new reports match independently`)
+  }
+
   const { controller: parent, remote } = await make()
   const editing = new Controller(remote.host, parent.sessionID, parent.config, remote.artifacts, "edit")
   test.usage((wire) => noHelpers(wire) ? { input: 167500, output: 1000, cached: 100000, reasoning: 900 } : undefined)

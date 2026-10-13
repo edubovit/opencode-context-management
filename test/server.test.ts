@@ -107,6 +107,65 @@ test("committed revert resets historical usage scope and matches the new request
   assert.equal((await mock.store.capture(session.id))?.budget?.reported?.messageID, reply.id)
 })
 
+for (const target of ["provider", "model"] as const) test(`${target} compatibility changes reset usage and invalidate a held request`, async (t) => {
+  const mock = await setup(t)
+  const data = nativeFixture()
+  const session = mock.sessions.get("ses_native")!
+  session.metadata = { [AUTO_KEY]: { strategy: "MANUAL" } }
+  let compatibility: { requireReasoning: boolean } | undefined
+  const provider = mock.context.provider.get
+  const models = mock.context.model.list
+  if (target === "provider") mock.context.provider.get = async () => {
+    const result = await provider({ providerID: "fixture" })
+    return { ...result, data: { ...result.data, compatibility } }
+  }
+  else mock.context.model.list = async () => {
+    const result = await models()
+    return { ...result, data: result.data.map((model) => ({ ...model, compatibility })) }
+  }
+  for (const message of data.native) if (message.type === "assistant") message.tokens = { input: 4000, output: 100, reasoning: 0, cache: { read: 0, write: 0 } }
+  mock.messages.set(session.id, data.native)
+  const event = () => ({ sessionID: session.id, agent: "build", model: { providerID: "fixture", id: "model" }, system: [{ type: "text" as const, text: "System" }], messages: [...data.canonical], tools: {}, options: { maxTokens: 32000 } })
+  await mock.hooks.get("context")!(event())
+  const previous = (await mock.store.budget(session.id))!
+  assert.ok(previous.anchor)
+  compatibility = { requireReasoning: true }
+  const next = event()
+  await mock.hooks.get("context")!(next)
+  const reset = (await mock.store.budget(session.id))!
+  assert.notEqual(reset.scope, previous.scope)
+  assert.equal(reset.anchor, undefined)
+  assert.equal(reset.excludedReports?.length, 3)
+  assert.equal((await mock.store.capture(session.id))?.budget?.source, "local-fallback")
+  assert.deepEqual(next.messages, data.canonical)
+  assert.deepEqual(next.options, { maxTokens: 32000 })
+  const reply = { id: "msg_new_compatibility", type: "assistant" as const, agent: "build", model: { providerID: "fixture", id: "model" }, time: { created: 100, completed: 101 }, finish: "stop" as const, content: [{ type: "text" as const, text: "New response" }], tokens: { input: 150000, output: 100, reasoning: 0, cache: { read: 0, write: 0 } } }
+  data.native.push(reply)
+  data.canonical.push(Message.make({ id: reply.id, role: "assistant", content: "New response" }))
+  let release!: () => void
+  const busy = new Promise<void>((resolve) => { release = resolve })
+  mock.context.session.wait = () => busy
+  const running = mock.hooks.get("context")!(event()).then(() => undefined, (error: unknown) => error)
+  t.after(async () => { release(); await mock.close(); await running })
+  let pause
+  for (let i = 0; i < 100 && !pause; i++) {
+    const state = await mock.rpc.state({ sessionID: session.id }, call)
+    assert.ok("strategy" in state)
+    pause = state.pause
+    if (!pause) await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  assert.equal(pause?.phase, "manual")
+  assert.equal(pause?.accounting?.source, "provider-matched")
+  assert.equal(pause?.accounting?.reported?.messageID, reply.id)
+  compatibility = { requireReasoning: false }
+  const state = await mock.rpc.state({ sessionID: session.id }, call)
+  assert.ok("strategy" in state)
+  assert.equal(state.pause?.phase, "invalid")
+  await assert.rejects(mock.rpc.command({ sessionID: session.id, command: { action: "resume", pauseID: pause!.id } }, call))
+  await mock.rpc.command({ sessionID: session.id, command: { action: "abort", pauseID: pause!.id } }, call)
+  assert.ok(await running instanceof Error)
+})
+
 test("V2 summary helpers receive isolated system context and no advertised tools", async (t) => {
   const mock = await setup(t)
   mock.sessions.get("ses_native")!.metadata = { context_manager_job: true }
@@ -180,7 +239,7 @@ test("V2 fresh spilling preserves structured output and attachments and owns the
   assert.equal(short.result.metadata.truncated, false)
 })
 
-for (const version of ["2.0.24", "2.0.25", "2.0.26", "2.0.27", "2.1.0", "2.0.26-dev", "custom-build"]) {
+for (const version of ["2.0.24", "2.0.25", "2.0.26", "2.0.27", "2.0.28", "2.1.0", "2.0.26-dev", "custom-build"]) {
   test(`V2 setup accepts compatible APIs with host version ${version}`, async (t) => {
     const mock = await setup(t, version)
     assert.ok(mock.agents.has(AGENT))

@@ -124,7 +124,7 @@ export async function setupServer(ctx: PluginContext, store = new Storage(ctx.lo
     const choice = { providerID: event.model.providerID, modelID: event.model.id, variant: event.model.variant }
     const basis = tokenBasis(choice, model && modelView(model), config.tokenizer)
     const provider = (await ctx.provider.get({ providerID: event.model.providerID })).data
-    const definition = (value: { package?: string; settings?: unknown; headers?: unknown; body?: unknown } | undefined) => value && ({ package: value.package, settings: value.settings, headers: value.headers, body: value.body })
+    const definition = (value: { package?: string; settings?: unknown; headers?: unknown; body?: unknown; compatibility?: unknown } | undefined) => value && ({ package: value.package, settings: value.settings, headers: value.headers, body: value.body, compatibility: value.compatibility })
     const requestScope = (selected: typeof model, configured: typeof provider) => budgetScope({ model: event.model, agent: event.agent }, basis, {
       historyEpoch: currentPolicy.epoch,
       provider: { ...definition(configured), integrationID: configured.integrationID }, model: { ...definition(selected), modelID: selected?.modelID, variant: selected?.variants.find((variant) => variant.id === event.model.variant) },
