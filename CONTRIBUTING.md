@@ -28,7 +28,11 @@ Node 22 works for the pure checks; renderer execution uses Bun. OpenTUI's Node-b
 
 No bundler/build is required for installation. Configure the **`src/` directory**; V2 resolves `server.ts` and `tui.tsx`. Native source/config reload releases scoped registrations. Dependency updates require a service restart and TUI reconnect, which interrupts active work.
 
-Work on `master` in the canonical checkout. Do not create or push feature branches or extra development worktrees unless explicitly requested. This checkout may serve the live development session: use isolated hosts for testing, coordinate source reloads, and do not restart the shared service during active work without permission.
+Work on `master` in the canonical development checkout. Do not create or push feature branches or extra development worktrees unless explicitly requested. Keep the live OpenCode instance pointed at a separate frozen deployment clone; make source and dependency changes only in the development checkout.
+
+The frozen clone receives updates only after development is complete, verified, committed and pushed. Treat pulling it as a deployment step, not part of ordinary development; do not update it or restart/reload the shared service without authorization. Persisted-state compatibility still matters across deployments. Use isolated synthetic-provider hosts for testing and keep imported development source unchanged during final suites: those private hosts still watch their plugin files.
+
+Never include machine-specific local paths or workstation configuration in tracked files. Use generic placeholders in public documentation and examples; keep exact local setup details in ignored notes.
 
 ### Installed-host verification
 
