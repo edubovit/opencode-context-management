@@ -307,6 +307,7 @@ function protectedBlocks(loaded: Pick<Loaded, "blocks">, pause: Pause) {
 function changedOperations(before: Policy, next: Policy) {
   if (next.sessionID !== before.sessionID) throw new Error("Invalid maintenance policy identity")
   if (hash(before.turnEnds) !== hash(next.turnEnds)) throw new Error("Fork turn boundaries cannot be changed by maintenance")
+  if (before.epoch !== next.epoch || hash(before.sources) !== hash(next.sources)) throw new Error("Revert provenance cannot be changed by maintenance")
   const added = next.operations.length - before.operations.length
   if (added < 1 || next.revision !== before.revision + added ||
       hash(before.operations) !== hash(next.operations.slice(0, before.operations.length))) throw new Error("Maintenance must append operations; existing history cannot be rewritten")

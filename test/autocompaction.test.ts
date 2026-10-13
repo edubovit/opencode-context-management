@@ -229,6 +229,8 @@ test("checked control writes reject cursor rewinds and new unprune operations", 
   await assert.rejects(auto.commit(data.session.id, { ...data.session.metadata, [KEY]: unprune }, expected), /mode/)
   const forgedEnds = { ...append(before, operation("prune-reason", [turns(data.messages)[1]])), turnEnds: [data.messages[0].info.id] }
   await assert.rejects(auto.commit(data.session.id, { ...data.session.metadata, [KEY]: forgedEnds }, expected), /boundaries/)
+  for (const provenance of [{ epoch: "forged" }, { sources: [{ id: data.messages[0].info.id, hash: "0".repeat(64), user: true, created: 0 }] }])
+    await assert.rejects(auto.commit(data.session.id, { [KEY]: { ...append(before, operation("prune-reason", [turns(data.messages)[1]])), ...provenance } }, expected), /provenance/)
   assert.deepEqual(readPolicy(data.session), before)
 })
 
@@ -263,7 +265,7 @@ for (const mode of ["AUTO_PER_TURN", "AUTO_SESSION"] as const) test(`${mode} las
   const original = structuredClone(data.messages)
   await auto.beforeRequest(data.messages)
   const policy = readPolicy(data.session)
-  assert.equal(policy.version, 12)
+  assert.equal(policy.version, 13)
   assert.equal(policy.operations.length, 1)
   assert.equal(policy.operations[0].checkpoint, true)
   assert.ok(!policy.operations[0].sourceIDs.includes(original.at(-1)!.info.id))

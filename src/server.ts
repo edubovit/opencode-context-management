@@ -106,6 +106,8 @@ export async function setupServer(ctx: PluginContext, store = new Storage(ctx.lo
   })
   const context = async (event: import("@opencode/plugin/promise/session").SessionContext, gate: boolean) => {
     const current = await requireSession(event.sessionID)
+    if (current.revert) throw new Error("Finish native undo/unrevert before generating context")
+    const currentPolicy = readPolicy(sessionView(current))
     const helper = [AGENT, EDIT_AGENT].includes(event.agent) && current.metadata?.context_manager_job === true
     if (helper) {
       event.system = [{ type: "text", text: event.agent === EDIT_AGENT ? SUMMARY_EDIT_SYSTEM : SUMMARIZER_SYSTEM }]
@@ -124,6 +126,7 @@ export async function setupServer(ctx: PluginContext, store = new Storage(ctx.lo
     const provider = (await ctx.provider.get({ providerID: event.model.providerID })).data
     const definition = (value: { package?: string; settings?: unknown; headers?: unknown; body?: unknown } | undefined) => value && ({ package: value.package, settings: value.settings, headers: value.headers, body: value.body })
     const requestScope = (selected: typeof model, configured: typeof provider) => budgetScope({ model: event.model, agent: event.agent }, basis, {
+      historyEpoch: currentPolicy.epoch,
       provider: { ...definition(configured), integrationID: configured.integrationID }, model: { ...definition(selected), modelID: selected?.modelID, variant: selected?.variants.find((variant) => variant.id === event.model.variant) },
       overrides: Object.fromEntries(Object.entries(event.options).filter(([key]) => key !== "maxTokens")),
     })
@@ -133,8 +136,7 @@ export async function setupServer(ctx: PluginContext, store = new Storage(ctx.lo
       const configured = (await ctx.provider.get({ providerID: event.model.providerID })).data
       return requestScope(selected, configured) === scope && hash(selected?.limit) === hash(model?.limit)
     }
-    const previous = await store.budget(event.sessionID) ?? (current.fork ? { version: 2 as const, scope, excludedReports: native.filter((message) => message.type === "assistant").map((message) => message.id) } : undefined)
-    const currentPolicy = readPolicy(sessionView(current))
+    const previous = await store.budget(event.sessionID) ?? (current.fork || currentPolicy.epoch ? { version: 2 as const, scope, excludedReports: native.filter((message) => message.type === "assistant").map((message) => message.id) } : undefined)
     const state = prepareBudget({ scope, model: event.model, agent: event.agent }, native, projectRequest(native, raw, incoming, currentPolicy), event.system, event.tools, basis, hash(currentPolicy), previous, (response) => {
       const position = native.findIndex((message) => message.id === response.id)
       const future = new Set(native.slice(position).map((message) => message.id))
@@ -190,6 +192,8 @@ export async function setupServer(ctx: PluginContext, store = new Storage(ctx.lo
     for await (const event of ctx.event.subscribe({ signal: stop.signal })) {
       if (event.type === "session.forked" && event.location?.directory === ctx.location.directory)
         void adapter.nativeSession(event.data.sessionID).catch((error: unknown) => { if (!closed) console.error("Context manager fork initialization:", errorMessage(error)) })
+      if (event.type === "session.viewed" && event.location?.directory === ctx.location.directory)
+        void adapter.nativeSession(event.data.sessionID).catch((error: unknown) => { if (!closed) console.error("Context manager revert reconciliation:", errorMessage(error)) })
       if (event.type === "session.execution.interrupted" || event.type === "session.execution.failed" || event.type === "session.execution.succeeded") auto.cancel(event.data.sessionID)
       if (event.type === "session.moved") { auto.cancel(event.data.sessionID); await adapter.moved(event.data.sessionID).catch((error: unknown) => console.error("Context manager moved-session helper cleanup:", errorMessage(error))) }
       if (event.type === "session.deleted") { auto.cancel(event.data.sessionID); adapter.deleted(event.data.sessionID) }

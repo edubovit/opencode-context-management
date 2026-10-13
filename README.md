@@ -2,7 +2,7 @@
 
 Choose what stays in your coding session's context. Prune reasoning or tool results, summarize or delete selected ranges, and restore them later—without deleting the stored conversation.
 
-**Plugin 4.3.0 · OpenCode V2**.
+**Plugin 4.4.0 · OpenCode V2**.
 
 ## Features
 
@@ -10,6 +10,7 @@ Choose what stays in your coding session's context. Prune reasoning or tool resu
 - **Parallel summaries:** each range receives the same frozen effective background. Only a complete successful batch applies; retry just failed ranges.
 - **Isolated summaries:** optionally send only the selected range, or the selected range plus preceding effective history, without later/runtime background.
 - **Forks preserve reductions:** fully copied summaries, pruning and deleted ranges stay applied and remain independently reversible in the fork.
+- **Native Revert support:** crossing summaries open to the retained turns; earlier reductions remain reversible. Redo restores the original view before you submit.
 - **Reversible reductions:** expand summaries, restore deleted ranges, or restore the latest tool/reasoning pruning layer on selected turns. Earlier layers and unrelated ranges stay intact; no global Undo/Redo.
 - **Fullscreen readers:** read turns and saved summaries. Edit summaries manually or with a model; model edits stay proposals until explicitly applied.
 - **Local statistics:** token estimates, tool status, selected-range totals, and effective-context exports. Counting needs no model call.
@@ -21,7 +22,7 @@ Initial summaries apply automatically; inspect/edit/expand them afterward. Summa
 
 This is a **source-based, private package**, not a published npm plugin. Requires a compatible local OpenCode **V2 (2.0.27 or newer)** installation and npm.
 
-Validated on OpenCode **2.0.27 on Windows x64**, including the actual terminal inspector, reversible forks, isolated summaries, provider-usage accounting and subagents. Linux and macOS have not been validated for the current release. See [validation details](CONTRIBUTING.md#version-430-validation).
+Validated on OpenCode **2.0.27 on Windows x64**, including the actual terminal inspector, native Revert, reversible forks, isolated summaries, provider-usage accounting and subagents. Linux and macOS have not been validated for the current release. See [validation details](CONTRIBUTING.md#version-440-validation).
 
 Development checks run on Node.js 22+; renderer tests use the bundled Bun runtime. OpenTUI's Node-backend engine warning on Node 22 does not apply to the bundled Bun renderer. Using its Node backend directly requires Node 26.4+.
 
@@ -294,13 +295,31 @@ The plugin initializes a separate fork-owned ledger from verified copied history
 
 Fork initialization needs the source history to remain available and unchanged while it verifies the copy. Missing source/boundaries or mismatched payloads fail visibly rather than guessing. There is no separate repair/migration command for old broken forks. Once initialized, the fork no longer needs its source session.
 
+## Reverting a session
+
+Use OpenCode's **Revert** message action or **/undo**. The selected user message returns to the input box; only history before it remains in the effective context. For example:
+
+```text
+Before:  summary 1–10, turn 11
+Revert:  turn 8
+After:   turns 1–7, with turn 8 in the input box
+```
+
+A summary or deleted range crossing the cutoff opens to its retained earlier content. Fully retained earlier summaries, pruning and deletions stay applied and can still be expanded one layer at a time. This also works in initialized forks and across plugin-created last-resort checkpoints. Revert does not run a summarizer.
+
+Before submitting, **/redo** restores the original conversation/reductions. The inspector can show the staged prefix, but context edits remain blocked while native undo is staged. Submitting the edited prompt commits the cutoff; the plugin rebuilds its ledger for the verified retained history before the next model request. **/redo cannot undo that committed cutoff.** Native file rollback is controlled by OpenCode's [snapshots](https://opencode.ai/v2/docs/snapshots), not by this plugin.
+
+Opening a crossing summary can enlarge the context. The normal main-request budget guard still applies. After rebuilding a ledger, historical usage is excluded until the session measures its new request; no oversized-dispatch bypass is granted.
+
+**Upgrade safety:** open `/context-manager` on an intact older session before reverting it, so its source identities and timestamps can be recorded. Earlier format-13 records without timestamps are accepted and backfilled only from matching intact history. The plugin cannot automatically repair history already truncated before this provenance was saved. Missing/changed retained content, interior holes, unfamiliar older replacement history and changed native-checkpoint windows are refused, not guessed at. Do not clear metadata or disable the plugin as a repair.
+
 ## Limits and storage
 
 Malformed or unrelated ledgers are preserved and refused, never silently reset. Verified new forks inherit independent reversible reductions; ordinary fresh child sessions get an empty own ledger.
 
 Native checkpoints are read-only; edit later USER turns. Historical tools still marked running/streaming must be settled by the host before editing. Opaque provider-executed results cannot be safely pruned; use a summary or whole-call deletion with reasoning instead. Errored or interrupted reasoning that the host converted to visible text is also refused rather than guessed at. Signed/opaque reasoning, encrypted checkpoints and stateful provider transports are not universally validated.
 
-Version 4.3.0 writes ledger format **12** and exports schema **6**. Existing ordinary-session V2 ledgers **7–11** are read without rewriting them until the next checked write; older operations keep their meaning. Do not downgrade the plugin after a format-12 write. Fork initialization records immutable turn boundaries where needed for restoration. Range deletion keeps the same source, idle, protected-turn and native-checkpoint safeguards as other context edits; restoring a range never bypasses the Resume budget check.
+Version 4.4.0 writes ledger format **13** and exports schema **7**; accounting cache remains **2**. Existing ordinary-session V2 ledgers **7–12** retain their operations and fingerprints. An intact ledger gains a source manifest on checked server access without changing its reductions; no original message text is copied into that manifest. Normal edits append operations. A committed native revert instead rebuilds the retained reversible layers and removes obsolete source references. Do not downgrade after a format-13 write. Fork/revert turn boundaries and source provenance cannot be rewritten by ordinary context maintenance. Restoration never bypasses the Resume budget check.
 
 Captures, spill files and exports live in `~/.local/state/opencode-context-manager/<project-hash>/` on the server. The ledger and strategy live in OpenCode session metadata. Control uses authenticated native RPC, with no separate control port or credential file.
 

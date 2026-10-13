@@ -11,6 +11,7 @@ import { bindPruneRule, chars, type PruneRule } from "./text.ts"
 import { tokenBasis, type TokenBasis } from "./tokens.ts"
 import { contentTokens, lastReportedUsage } from "./metrics.ts"
 import { resolveRanges } from "./ranges.ts"
+import { revertPolicy } from "./revert.ts"
 import type { AutoControl, AutoState, Expected } from "./auto-state.ts"
 
 export type HelperTrigger = "manual" | "auto"
@@ -59,7 +60,7 @@ export class Controller {
 
   async load(): Promise<Loaded> {
     const [session, raw, runtime, models, auto] = await Promise.all([this.host.session(this.sessionID), this.host.messages(this.sessionID), this.storage.capture(this.sessionID), this.host.models(), this.host.auto?.state(this.sessionID)])
-    const policy = readPolicy(session)
+    const policy = session.revert ? revertPolicy(raw, readPolicy(session), session.revert.messageID) : readPolicy(session)
     const active = sessionModel(session, raw)
     const model = models.find((m) => m.id === active?.modelID && m.providerID === active.providerID)
     const tokenizer = tokenBasis(active, model, this.config.tokenizer)

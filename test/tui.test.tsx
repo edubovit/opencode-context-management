@@ -89,6 +89,26 @@ for (const width of [80, 60]) test(`Delete removes a range and Ctrl+E previews/c
   assert.equal(view.data.jobs, 0)
 })
 
+for (const width of [80, 60]) test(`staged revert shows retained raw turns and redo restores the summary at ${width} columns`, async (t) => {
+  const view = await setup(t, width, 24, ({ data }) => {
+    data.session.metadata![KEY] = append(emptyPolicy(data.session.id), { ...operation("compact", turns(data.messages)), summary: "SAVED_CROSSING_SUMMARY" })
+    data.session.revert = { messageID: data.messages[4].info.id }
+  })
+  await view.until(() => view.frame().includes("Ready."))
+  assert.deepEqual((await view.controller.load()).blocks.map((block) => block.kind), ["turn", "turn"])
+  assert.ok(!view.frame().includes("SUMMARY"))
+  const saved = JSON.stringify(view.data.session.metadata)
+  await view.type("  ")
+  await view.compact(6)
+  await view.until(() => view.frame().includes("undo/unrevert"))
+  assert.equal(JSON.stringify(view.data.session.metadata), saved)
+  delete view.data.session.revert
+  await view.type("f")
+  await view.until(() => view.frame().includes("SUMMARY"))
+  assert.equal((await view.controller.load()).blocks[0].kind, "compact")
+  assert.equal(view.data.jobs, 0)
+})
+
 test("native modal input ownership blocks inspector actions and resumes cleanly", async (t) => {
   const view = await setup(t, 80, 24)
   await view.until(() => view.frame().includes("Ready."))

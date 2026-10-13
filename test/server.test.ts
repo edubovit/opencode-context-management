@@ -6,7 +6,9 @@ import path from "node:path"
 import { setupServer } from "../src/server.ts"
 import { Storage } from "../src/storage.ts"
 import { AGENT, EDIT_AGENT, KEY } from "../src/config.ts"
-import { emptyPolicy } from "../src/context.ts"
+import { activeMessages, append, emptyPolicy, operation, project, readPolicy } from "../src/context.ts"
+import { rememberPolicy } from "../src/revert.ts"
+import { transcriptView } from "../src/normalize.ts"
 import { SUMMARY_EDIT_SYSTEM, SUMMARIZER_SYSTEM } from "../src/summarize.ts"
 import { nativeFixture } from "./native-fixtures.ts"
 import { mockContext } from "./host-mock.ts"
@@ -73,6 +75,36 @@ test("fork accounting excludes copied reports until its own request receives usa
   const capture = await mock.store.capture(session.id)
   assert.equal(capture?.budget?.source, "provider-matched")
   assert.equal(capture?.budget?.reported?.messageID, reply.id)
+})
+
+test("committed revert resets historical usage scope and matches the new request without reviving removed context", async (t) => {
+  const mock = await setup(t)
+  const data = nativeFixture()
+  const session = mock.sessions.get("ses_native")!
+  for (const message of data.native) if (message.type === "assistant") message.tokens = { input: 4000, output: 100, reasoning: 0, cache: { read: 0, write: 0 } }
+  const raw = transcriptView(session, data.native)
+  const policy = rememberPolicy(raw, append(emptyPolicy(session.id), { ...operation("brief", project(activeMessages(raw), emptyPolicy(session.id))), summary: "CROSSES_REVERT" }))
+  session.metadata = { [KEY]: policy }
+  mock.messages.set(session.id, data.native)
+  const event = () => ({ sessionID: session.id, agent: "build", model: { providerID: "fixture", id: "model" }, system: [{ type: "text" as const, text: "System" }], messages: [...data.canonical], tools: {}, options: {} })
+  await mock.hooks.get("context")!(event())
+  const previousScope = (await mock.store.budget(session.id))!.scope
+  const cut = data.native.findIndex((message) => message.id === "msg_u2")
+  const retained = data.native.slice(0, cut)
+  mock.messages.set(session.id, retained)
+  const next = event()
+  next.messages = data.canonical.slice(0, data.canonical.findIndex((message) => message.id === "msg_u2"))
+  await mock.hooks.get("context")!(next)
+  assert.deepEqual(next.messages, data.canonical.slice(0, data.canonical.findIndex((message) => message.id === "msg_u2")))
+  assert.ok(readPolicy(session).epoch)
+  assert.notEqual((await mock.store.budget(session.id))!.scope, previousScope)
+  assert.equal((await mock.store.capture(session.id))?.budget?.source, "local-fallback")
+  const reply = { id: "msg_after_revert", type: "assistant" as const, agent: "build", model: { providerID: "fixture", id: "model" }, time: { created: 100, completed: 101 }, finish: "stop" as const, content: [{ type: "text" as const, text: "New response" }], tokens: { input: 3000, output: 10, reasoning: 0, cache: { read: 0, write: 0 } } }
+  retained.push(reply)
+  next.messages.push(Message.make({ id: reply.id, role: "assistant", content: "New response" }))
+  await mock.hooks.get("context")!(next)
+  assert.equal((await mock.store.capture(session.id))?.budget?.source, "provider-matched")
+  assert.equal((await mock.store.capture(session.id))?.budget?.reported?.messageID, reply.id)
 })
 
 test("V2 summary helpers receive isolated system context and no advertised tools", async (t) => {

@@ -8,6 +8,7 @@ import { modelView, sessionView, transcriptView } from "./normalize.ts"
 import { emptyPolicy, hash, readPolicy, type Policy } from "./context.ts"
 import { validateNativePolicy } from "./projection.ts"
 import { inheritFork } from "./fork.ts"
+import { rememberPolicy, revertPolicy } from "./revert.ts"
 
 export type PluginContext = Parameters<Plugin.Plugin["setup"]>[0]
 
@@ -24,7 +25,7 @@ export function pluginHost(ctx: PluginContext) {
     const [native, copied] = await Promise.all([ctx.session.context({ sessionID: source.id }), ctx.session.context({ sessionID: target.id })])
     return inheritFork(source, native, target, copied, prior)
   }
-  const loadSession = async (sessionID: string): Promise<SessionInfo> => {
+  const loadSession = async (sessionID: string, retry = true): Promise<SessionInfo> => {
     if (closed) throw new Error("Context manager has been unloaded")
     const value = await ctx.session.get({ sessionID })
     if (value.location.directory !== ctx.location.directory)
@@ -33,13 +34,14 @@ export function pluginHost(ctx: PluginContext) {
     if (value.fork && (!saved || typeof saved !== "object" || !("sessionID" in saved) || saved.sessionID !== value.id)) {
       const owner = saved && typeof saved === "object" && "sessionID" in saved ? saved.sessionID : undefined
       if (saved !== undefined && typeof owner !== "string") throw new Error("Invalid copied fork ledger")
-      const policy = saved === undefined ? emptyPolicy(value.id) : await inherited(value, readPolicy({ id: owner as string, metadata: { [KEY]: saved } }))
+      let policy = saved === undefined ? emptyPolicy(value.id) : await inherited(value, readPolicy({ id: owner as string, metadata: { [KEY]: saved } }))
       const current = await ctx.session.get({ sessionID })
       if (closed) throw new Error("Context manager unloaded before fork initialization")
       if (hash(current.fork) !== hash(value.fork) || hash(current.metadata?.[KEY]) !== hash(saved) || current.location.directory !== value.location.directory)
         throw new Error("Fork changed before context initialization; reopen it")
       const native = await ctx.session.context({ sessionID })
       validateNativePolicy(native, transcriptView(current, native), policy)
+      policy = rememberPolicy(transcriptView(current, native), policy)
       const metadata: NonNullable<SessionInfo["metadata"]> = JSON.parse(JSON.stringify({ ...current.metadata, [KEY]: policy, [AUTO_KEY]: { strategy: strategy(sessionView(current)) } }))
       if (closed) throw new Error("Context manager unloaded before fork initialization")
       await ctx.session.update({ sessionID, metadata })
@@ -61,6 +63,37 @@ export function pluginHost(ctx: PluginContext) {
         await ctx.session.update({ sessionID, metadata })
         return { ...value, metadata }
       }
+    }
+    if (saved !== undefined) {
+      const before = readPolicy(sessionView(value))
+      const raw = transcriptView(value, await ctx.session.context({ sessionID }))
+      let next = value.revert ? before : revertPolicy(raw, before)
+      if ((!next.sources || next.sources.some((source) => source.created === undefined)) && (next.operations.length || next.turnEnds?.length)) next = rememberPolicy(raw, next)
+      if (hash(next) !== hash(before)) {
+        const current = await ctx.session.get({ sessionID })
+        if (closed) throw new Error("Context manager unloaded before revert reconciliation")
+        if (hash(current.metadata?.[KEY]) !== hash(saved) || hash(current.revert) !== hash(value.revert) || current.location.directory !== value.location.directory)
+          throw new Error("Session changed before revert reconciliation; reopen it")
+        const native = await ctx.session.context({ sessionID })
+        const currentRaw = transcriptView(current, native)
+        const checked = current.revert ? before : revertPolicy(currentRaw, before)
+        if (hash(rememberPolicy(currentRaw, checked)) !== hash(next)) throw new Error("History changed before revert reconciliation")
+        validateNativePolicy(native, currentRaw, next)
+        const metadata: NonNullable<SessionInfo["metadata"]> = JSON.parse(JSON.stringify({ ...current.metadata, [KEY]: next,
+          ...(before.epoch !== next.epoch ? { [AUTO_KEY]: { strategy: strategy(sessionView(current)) } } : {}),
+        }))
+        if (closed) throw new Error("Context manager unloaded before revert reconciliation")
+        await ctx.session.update({ sessionID, metadata })
+        return { ...current, metadata }
+      }
+      const current = await ctx.session.get({ sessionID })
+      if (hash(current.revert) !== hash(value.revert) || hash(current.metadata?.[KEY]) !== hash(saved)) {
+        if (!retry) throw new Error("Session changed during context inspection; retry after native revert settles")
+        return loadSession(sessionID, false)
+      }
+      if (current.location.directory !== value.location.directory) throw new Error("Session location changed during context inspection")
+      if (closed) throw new Error("Context manager unloaded during context inspection")
+      return current
     }
     return value
   }
@@ -85,7 +118,9 @@ export function pluginHost(ctx: PluginContext) {
       const native = await ctx.session.context({ sessionID: id })
       const policy = readPolicy({ ...sessionView(session), metadata })
       validateNativePolicy(native, transcriptView(session, native), policy)
-      await ctx.session.update({ sessionID: id, metadata: JSON.parse(JSON.stringify(metadata)) })
+      await ctx.session.update({ sessionID: id, metadata: JSON.parse(JSON.stringify({ ...metadata,
+        ...(metadata[KEY] !== undefined ? { [KEY]: rememberPolicy(transcriptView(session, native), policy) } : {}),
+      })) })
     },
     createJob: async (purpose = "summary", ownerID, trigger = "auto") => {
       if (!ownerID) throw new Error("Summary job owner is required")

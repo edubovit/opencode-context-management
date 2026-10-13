@@ -156,7 +156,7 @@ export function replacementTokens(op: Operation, selected: Block[]) {
   return contentTokens(replacement(op, selected).messages, op.tokenizer)
 }
 
-export function project(active: Envelope[], policy: Policy, observe?: (op: Operation, selected: Block[]) => void): Block[] {
+export function project(active: Envelope[], policy: Policy, observe?: (op: Operation, selected: Block[]) => void, unavailable?: ReadonlySet<string>): Block[] {
   let blocks = turns(structuredClone(active))
   for (const id of policy.turnEnds ?? []) {
     if (!active.some((message) => message.info.id === id)) throw new Error("Saved fork turn boundary no longer exists")
@@ -171,7 +171,7 @@ export function project(active: Envelope[], policy: Policy, observe?: (op: Opera
     const selected = blocks.slice(start, end + 1)
     const selectedMessages = blockMessages(selected)
     if (hash(selected.flatMap((b) => b.sourceIDs)) !== hash(op.sourceIDs) ||
-        historyHash(selectedMessages) !== op.beforeHash)
+        (historyHash(selectedMessages) !== op.beforeHash && !op.sourceIDs.some((id) => unavailable?.has(id))))
       throw new Error("Saved range content changed. Restore the original host history before continuing.")
     observe?.(op, selected)
     if (op.mode === "revise") {

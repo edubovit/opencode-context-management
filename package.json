@@ -1,6 +1,6 @@
 {
   "name": "opencode-context-manager",
-  "version": "4.3.0",
+  "version": "4.4.0",
   "private": true,
   "type": "module",
   "engines": { "opencode": ">=2.0.27 <3", "node": ">=22" },
@@ -13,6 +13,7 @@
     "test:host": "tsx script/host-smoke.ts",
     "test:usage": "tsx script/usage-smoke.ts",
     "test:subagents": "tsx script/subagent-smoke.ts",
+    "test:revert": "tsx script/revert-smoke.ts",
     "test:upgrade": "tsx script/upgrade-smoke.ts"
   },
   "peerDependencies": {

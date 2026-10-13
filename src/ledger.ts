@@ -3,7 +3,7 @@ import { KEY } from "./config.ts"
 import type { Session } from "./model.ts"
 import { TOKENIZER_ID } from "./tokens.ts"
 
-export const POLICY_VERSION = 12
+export const POLICY_VERSION = 13
 export type Mode = "tool-prune" | "tool-prune-all" | "tool-delete" | "prune-reason" | "compact" | "brief" | "delete"
 export type RestoreMode = "expand"
 
@@ -46,9 +46,15 @@ const operation = z.object({
 export type Operation = z.infer<typeof operation>
 export const policySchema = z.object({
   version: z.literal(POLICY_VERSION), sessionID: z.string().min(1), revision: count, operations: z.array(operation), turnEnds: ids.optional(),
+  sources: z.array(z.object({ id: z.string().min(1), hash: z.string().length(64), user: z.boolean(), created: count.optional() }).strict()).nonempty().optional(), epoch: z.string().min(1).optional(),
 }).strict().superRefine((policy, ctx) => {
   if (policy.revision !== policy.operations.length || new Set(policy.operations.map((op) => op.id)).size !== policy.operations.length)
     ctx.addIssue({ code: "custom", message: "Invalid operation identity or revision" })
+  if (policy.sources) {
+    const sourceIDs = new Set(policy.sources.map((source) => source.id))
+    if (sourceIDs.size !== policy.sources.length)
+      ctx.addIssue({ code: "custom", message: "Invalid saved source manifest" })
+  }
 })
 export type Policy = z.infer<typeof policySchema>
 
@@ -62,9 +68,13 @@ export function readPolicy(session: Pick<Session, "id" | "metadata">): Policy {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid context-manager state")
   if (!("sessionID" in value) || value.sessionID !== session.id)
     throw new Error("Context-manager ledger belongs to another session or has no owner; original data is preserved")
-  if (!("version" in value) || ![7, 8, 9, 10, 11, POLICY_VERSION].includes(Number(value.version)) || typeof value.version !== "number")
-    throw new Error("Unsupported context-manager ledger; only V2 formats 7–12 are supported. Original data is preserved.")
+  if (!("version" in value) || ![7, 8, 9, 10, 11, 12, POLICY_VERSION].includes(Number(value.version)) || typeof value.version !== "number")
+    throw new Error("Unsupported context-manager ledger; only V2 formats 7–13 are supported. Original data is preserved.")
   if (value.version === POLICY_VERSION) return policySchema.parse(value)
+  if (value.version === 12) {
+    if ("sources" in value || "epoch" in value) throw new Error("Revert provenance requires ledger format 13")
+    return policySchema.parse({ ...value, version: POLICY_VERSION })
+  }
   const saved = z.object({ version: z.union([z.literal(7), z.literal(8), z.literal(9), z.literal(10), z.literal(11)]), sessionID: z.string(), revision: count, cursor: count.optional(), operations: z.array(operation) }).strict().parse(value)
   if (saved.version < 11 && saved.operations.some((op) => op.mode === "delete" || op.deletedIDs)) throw new Error("Range deletion requires ledger format 11; original data is preserved")
   if ((saved.version < 9 ? saved.cursor !== saved.operations.length : saved.cursor !== undefined) || (saved.version === 7 && saved.operations.some((op) => op.checkpoint)))
