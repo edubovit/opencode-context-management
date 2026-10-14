@@ -10,7 +10,7 @@ import { ContextManager, errorMessage } from "./rpc.ts"
 import { pluginHost, type PluginContext } from "./host.ts"
 import { modelView, sessionView, transcriptView } from "./normalize.ts"
 import { protectedMessages } from "./history.ts"
-import { projectRequest } from "./projection.ts"
+import { projectRequest, reasoningBlockedIDs } from "./projection.ts"
 import { tokenBasis } from "./tokens.ts"
 import { budgetScope, budgetUnits, estimateBudget, prepareBudget, recordRequest } from "./budget.ts"
 import { hash } from "./context.ts"
@@ -51,9 +51,9 @@ export async function setupServer(ctx: PluginContext, store = new Storage(ctx.lo
   }
   const rpc = await ctx.rpc.register(ContextManager, {
     inspect: ({ sessionID }, call) => attempt((message) => call.error("rejected", message, null), async () => {
-      await requireSession(sessionID)
-      const [session, messages, models, runtime, state] = await Promise.all([host.session(sessionID), host.messages(sessionID), host.models(), store.capture(sessionID), auto.state(sessionID)])
-      return { version: VERSION, settings: config, session, messages, models, runtime, auto: state }
+      const current = await requireSession(sessionID)
+      const [native, models, runtime, state] = await Promise.all([ctx.session.context({ sessionID }), host.models(), store.capture(sessionID), auto.state(sessionID)])
+      return { version: VERSION, settings: config, session: sessionView(current), messages: transcriptView(current, native), reasoningBlocked: reasoningBlockedIDs(native), models, runtime, auto: state }
     }),
     idle: ({ sessionID }, call) => attempt((message) => call.error("rejected", message, null), () => eligible(sessionID)),
     state: ({ sessionID }, call) => attempt((message) => call.error("rejected", message, null), async () => { await requireSession(sessionID); return auto.state(sessionID) }),

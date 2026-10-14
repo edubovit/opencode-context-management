@@ -5,7 +5,7 @@ import type { SessionMessageInfo } from "@opencode/client"
 import { append, emptyPolicy, operation, project, activeMessages, type Mode } from "../src/context.ts"
 import { projectRequest, validateNativePolicy } from "../src/projection.ts"
 import { transcriptView } from "../src/normalize.ts"
-import { nativeSession } from "./native-fixtures.ts"
+import { nativeFixture, nativeSession } from "./native-fixtures.ts"
 import { pruneRule } from "./fixtures.ts"
 
 function fixture() {
@@ -152,4 +152,79 @@ test("interrupted reasoning without a message error is not mistaken for removabl
   request[2] = Message.make({ ...request[2], content: [{ type: "text", text: reasoning.text }, ...request[2].content.slice(1)] })
   for (const mode of ["prune-reason", "tool-delete"] as const) assert.throws(() => apply(mode), /interrupted reasoning/)
   assert.ok(JSON.stringify(apply("tool-prune-all")).includes("REASON"))
+})
+
+test("reasoning errors identify the original turn for a failed response, without changing inputs", () => {
+  const { session, native, canonical } = nativeFixture()
+  const failed = native.find((message) => message.id === "msg_a1")!
+  assert.equal(failed.type, "assistant")
+  failed.error = { type: "provider.transport", message: "Synthetic failure" }
+  failed.content.push({ type: "reasoning", text: "", time: { created: 13, completed: 14 } })
+  const raw = transcriptView(session, native)
+  const empty = emptyPolicy(session.id)
+  const selected = project(activeMessages(raw), empty)
+  const op = operation("tool-prune", selected, pruneRule())
+  const policy = append(empty, { ...op, pruneReason: true })
+  const before = JSON.stringify({ native, raw, canonical, policy })
+  for (const check of [() => validateNativePolicy(native, raw, policy), () => projectRequest(native, raw, canonical, policy)])
+    assert.throws(check, /^Error: Turn 2: Failed-assistant reasoning or interrupted reasoning/)
+  assert.equal(JSON.stringify({ native, raw, canonical, policy }), before)
+  assert.doesNotThrow(() => validateNativePolicy(native, raw, append(empty, op)))
+  assert.doesNotThrow(() => projectRequest(native, raw, canonical, append(empty, op)))
+})
+
+test("reasoning errors list all offending turns across disjoint operations, sorted and deduplicated", () => {
+  const { session, native, canonical } = nativeFixture()
+  const failed = native.find((message) => message.id === "msg_a0")!
+  const interrupted = native.find((message) => message.id === "msg_a2")!
+  assert.equal(failed.type, "assistant")
+  assert.equal(interrupted.type, "assistant")
+  failed.error = { type: "aborted", message: "Synthetic failure" }
+  interrupted.content.push({ type: "reasoning", text: "Interrupted", time: { created: 23 } })
+  const duplicate = { ...failed, id: "msg_extra", content: [{ type: "reasoning" as const, text: "Another failed attempt" }] }
+  native.splice(native.indexOf(failed) + 1, 0, duplicate)
+  canonical.splice(canonical.findIndex((message) => message.id === failed.id) + 1, 0, Message.make({ id: duplicate.id, role: "assistant", content: "Another failed attempt" }))
+  const raw = transcriptView(session, native)
+  const empty = emptyPolicy(session.id)
+  const blocks = project(activeMessages(raw), empty)
+  const policy = append(append(empty, operation("prune-reason", [blocks[2]])), operation("prune-reason", [blocks[0]]))
+  for (const check of [() => validateNativePolicy(native, raw, policy), () => projectRequest(native, raw, canonical, policy)])
+    assert.throws(check, /^Error: Turns 1, 3: Failed-assistant reasoning or interrupted reasoning/)
+  const safe = append(empty, operation("prune-reason", [blocks[1]]))
+  assert.doesNotThrow(() => validateNativePolicy(native, raw, safe))
+  assert.doesNotThrow(() => projectRequest(native, raw, canonical, safe))
+})
+
+test("reasoning error turn numbers match the inspector after summaries and deletions", () => {
+  for (const mode of ["compact", "delete"] as const) {
+    const { session, native, canonical } = nativeFixture()
+    for (const message of native) if (message.type === "assistant" && ["msg_a0", "msg_a2"].includes(message.id))
+      message.error = { type: "aborted", message: "Synthetic failure" }
+    const raw = transcriptView(session, native)
+    const empty = emptyPolicy(session.id)
+    const before = project(activeMessages(raw), empty)
+    const reduced = append(empty, { ...operation(mode, before.slice(0, 2)), ...(mode === "compact" ? { summary: "Earlier turns" } : {}) })
+    const selected = project(activeMessages(raw), reduced)
+    assert.equal(selected.length, 2)
+    const policy = append(reduced, operation("prune-reason", selected))
+    for (const check of [() => validateNativePolicy(native, raw, policy), () => projectRequest(native, raw, canonical, policy)])
+      assert.throws(check, /^Error: Turn 3: Failed-assistant reasoning or interrupted reasoning/)
+  }
+})
+
+test("reasoning errors keep the source turn number for a split continuation", () => {
+  const { session, native, canonical } = nativeFixture()
+  const failed: SessionMessageInfo = {
+    id: "msg_tail", type: "assistant", agent: "build", model: session.model!, time: { created: 4, completed: 5 },
+    error: { type: "aborted", message: "Synthetic failure" }, content: [{ type: "reasoning", text: "Failed tail" }],
+  }
+  native.splice(native.findIndex((message) => message.id === "msg_idle0"), 0, failed)
+  canonical.splice(canonical.findIndex((message) => message.id === "msg_u1"), 0, Message.make({ id: failed.id, role: "assistant", content: "Failed tail" }))
+  const raw = transcriptView(session, native)
+  const empty = { ...emptyPolicy(session.id), turnEnds: ["msg_a0"] }
+  const blocks = project(activeMessages(raw), empty)
+  assert.equal(blocks.length, 4)
+  const policy = append(empty, operation("prune-reason", [blocks[1]]))
+  for (const check of [() => validateNativePolicy(native, raw, policy), () => projectRequest(native, raw, canonical, policy)])
+    assert.throws(check, /^Error: Turn 1: Failed-assistant reasoning or interrupted reasoning/)
 })

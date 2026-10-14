@@ -6,7 +6,7 @@ import path from "node:path"
 import { setupServer } from "../src/server.ts"
 import { Storage } from "../src/storage.ts"
 import { AGENT, EDIT_AGENT, KEY } from "../src/config.ts"
-import { activeMessages, append, emptyPolicy, operation, project, readPolicy } from "../src/context.ts"
+import { activeMessages, append, emptyPolicy, historyHash, operation, project, readPolicy } from "../src/context.ts"
 import { rememberPolicy } from "../src/revert.ts"
 import { transcriptView } from "../src/normalize.ts"
 import { SUMMARY_EDIT_SYSTEM, SUMMARIZER_SYSTEM } from "../src/summarize.ts"
@@ -14,6 +14,7 @@ import { nativeFixture } from "./native-fixtures.ts"
 import { mockContext } from "./host-mock.ts"
 import { Message } from "@opencode/ai"
 import { AUTO_KEY } from "../src/auto-state.ts"
+import { pruneRule } from "./fixtures.ts"
 
 const call = { signal: new AbortController().signal, error: (...args: unknown[]) => { throw new Error(String(args[1])) } }
 
@@ -75,6 +76,52 @@ test("fork accounting excludes copied reports until its own request receives usa
   const capture = await mock.store.capture(session.id)
   assert.equal(capture?.budget?.source, "provider-matched")
   assert.equal(capture?.budget?.reported?.messageID, reply.id)
+})
+
+test("RPC rejects combined pruning with all offending turn numbers and no partial write", async (t) => {
+  const mock = await setup(t)
+  const { native } = nativeFixture()
+  for (const message of native) if (message.type === "assistant" && ["msg_a0", "msg_a2"].includes(message.id))
+    message.error = { type: "aborted", message: "Synthetic failure" }
+  const session = mock.sessions.get("ses_native")!
+  mock.messages.set(session.id, native)
+  const raw = transcriptView(session, native)
+  const policy = emptyPolicy(session.id)
+  const blocks = project(activeMessages(raw), policy)
+  const operations = [blocks[0], blocks[2]].map((block) => operation("tool-prune", [block], pruneRule()))
+  const before = JSON.stringify({ session, native })
+  const inspected = await mock.rpc.inspect({ sessionID: session.id }, call)
+  assert.ok("messages" in inspected)
+  assert.deepEqual(inspected.messages, JSON.parse(JSON.stringify(raw)))
+  assert.equal(historyHash(inspected.messages), historyHash(raw))
+  assert.ok("reasoningBlocked" in inspected)
+  assert.deepEqual(inspected.reasoningBlocked, ["msg_a0", "msg_a2"])
+  const expected = { revision: 0, fingerprint: historyHash(raw) }
+  await assert.rejects(() => mock.rpc.commit({ sessionID: session.id, expected,
+    policy: operations.reduce((saved, op) => append(saved, { ...op, pruneReason: true }), policy),
+  }, call), /^Error: Turns 1, 3: Failed-assistant reasoning or interrupted reasoning/)
+  assert.equal(JSON.stringify({ session, native }), before)
+  assert.equal(mock.state.prompts.length, 0)
+  assert.equal(mock.state.created.length, 0)
+  await mock.rpc.commit({ sessionID: session.id, expected, policy: operations.reduce(append, policy) }, call)
+  assert.equal(readPolicy(session).revision, 2)
+  assert.deepEqual(mock.messages.get(session.id), native)
+})
+
+test("inspection marks interrupted reasoning without an error, but not failures without reasoning", async (t) => {
+  const mock = await setup(t)
+  const { native } = nativeFixture()
+  for (const message of native) if (message.type === "assistant") {
+    if (message.id === "msg_a0") message.content.push({ type: "reasoning", text: "Interrupted", time: { created: 3 } })
+    if (message.id === "msg_a1") {
+      message.error = { type: "aborted", message: "Synthetic failure" }
+      message.content = message.content.filter((part) => part.type !== "reasoning")
+    }
+  }
+  mock.messages.set("ses_native", native)
+  const inspected = await mock.rpc.inspect({ sessionID: "ses_native" }, call)
+  assert.ok("reasoningBlocked" in inspected)
+  assert.deepEqual(inspected.reasoningBlocked, ["msg_a0"])
 })
 
 test("committed revert resets historical usage scope and matches the new request without reviving removed context", async (t) => {

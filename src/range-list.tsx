@@ -58,7 +58,7 @@ export function RangeList(props: {
             fg={props.api.theme.text.formfield.state({ focused: props.focused && props.selectedIndex === index })}>{row().title}</text>
           <text id={`cm-range-size-${index}`} flexShrink={0} fg={props.api.theme.text.muted}>{row().size}</text>
         </box>
-        <Show when={row().stats}>{(stats) => <text id={`cm-range-stats-${index}`} height={1} flexShrink={0} wrapMode="none" truncate fg={props.api.theme.text.muted}>{stats()}</text>}</Show>
+        <Show when={row().stats}>{(stats) => <text id={`cm-range-stats-${index}`} height={1} flexShrink={0} wrapMode="none" truncate fg={row().warning ? props.api.theme.text.feedback.warning.base : props.api.theme.text.muted}>{stats()}</text>}</Show>
         <box id={`cm-range-preview-${index}`} maxHeight={props.maxLines - (row().stats ? 2 : 1)} flexShrink={0} overflow="hidden">
           <text id={`cm-range-preview-text-${index}`} flexShrink={0} wrapMode="word" fg={props.api.theme.text.muted}>{row().preview}</text>
         </box>

@@ -2,7 +2,7 @@
 
 Choose what stays in your coding session's context. Prune reasoning or tool results, summarize or delete selected ranges, and restore them later—without deleting the stored conversation.
 
-**Plugin 4.4.1 · OpenCode V2**.
+**Plugin 4.4.2 · OpenCode V2**.
 
 ## Features
 
@@ -22,7 +22,7 @@ Initial summaries apply automatically; inspect/edit/expand them afterward. Summa
 
 This is a **source-based, private package**, not a published npm plugin. Requires a compatible local OpenCode **V2 (2.0.27 or newer)** installation and npm.
 
-Validated on OpenCode **2.0.28 on Windows x64**, including the actual terminal inspector, native Revert, reversible forks, isolated summaries, provider-usage accounting and subagents. The production server/terminal suite also passes on **2.0.27**. Linux and macOS have not been validated for the current release. See [validation details](CONTRIBUTING.md#version-441-validation).
+The reasoning-pruning warnings and numbered errors are validated on **OpenCode 2.0.29 on Windows x64**, including the actual terminal inspector. Broader 2.0.28/2.0.27 coverage belongs to the previous release; the full 2.0.29 smoke suite has a separate truncation-test assumption still to update. Linux and macOS have not been validated for the current release. See [validation details](CONTRIBUTING.md#version-442-validation).
 
 Development checks run on Node.js 22+; renderer tests use the bundled Bun runtime. OpenTUI's Node-backend engine warning on Node 22 does not apply to the bundled Bun renderer. Using its Node backend directly requires Node 26.4+.
 
@@ -317,9 +317,9 @@ Opening a crossing summary can enlarge the context. The normal main-request budg
 
 Malformed or unrelated ledgers are preserved and refused, never silently reset. Verified new forks inherit independent reversible reductions; ordinary fresh child sessions get an empty own ledger.
 
-Native checkpoints are read-only; edit later USER turns. Historical tools still marked running/streaming must be settled by the host before editing. Opaque provider-executed results cannot be safely pruned; use a summary or whole-call deletion with reasoning instead. Errored or interrupted reasoning that the host converted to visible text is also refused rather than guessed at. Signed/opaque reasoning, encrypted checkpoints and stateful provider transports are not universally validated.
+Native checkpoints are read-only; edit later USER turns. Historical tools still marked running/streaming must be settled by the host before editing. Opaque provider-executed results cannot be safely pruned; use a summary or whole-call deletion with reasoning instead. Errored or interrupted reasoning that the host converted to visible text is also refused rather than guessed at. Affected turns show **Reasoning blocked** in warning color in the range list, even before selection. The error lists their turn numbers as shown in the inspector; deselect reasoning to prune only tool results, exclude those turns, or summarize them instead. The rejected action applies no partial pruning. Summarized/deleted ranges hide the marker until restored. Signed/opaque reasoning, encrypted checkpoints and stateful provider transports are not universally validated.
 
-Version 4.4.1 writes ledger format **13** and exports schema **7**; accounting cache remains **2**. Existing ordinary-session V2 ledgers **7–12** retain their operations and fingerprints. An intact ledger gains a source manifest on checked server access without changing its reductions; no original message text is copied into that manifest. Normal edits append operations. A committed native revert instead rebuilds the retained reversible layers and removes obsolete source references. Do not downgrade after a format-13 write. Fork/revert turn boundaries and source provenance cannot be rewritten by ordinary context maintenance. Restoration never bypasses the Resume budget check.
+Version 4.4.2 writes ledger format **13** and exports schema **7**; accounting cache remains **2**. Existing ordinary-session V2 ledgers **7–12** retain their operations and fingerprints. An intact ledger gains a source manifest on checked server access without changing its reductions; no original message text is copied into that manifest. Normal edits append operations. A committed native revert instead rebuilds the retained reversible layers and removes obsolete source references. Do not downgrade after a format-13 write. Fork/revert turn boundaries and source provenance cannot be rewritten by ordinary context maintenance. Restoration never bypasses the Resume budget check.
 
 Captures, spill files and exports live in `~/.local/state/opencode-context-manager/<project-hash>/` on the server. The ledger and strategy live in OpenCode session metadata. Control uses authenticated native RPC, with no separate control port or credential file.
 

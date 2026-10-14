@@ -140,6 +140,14 @@ These checks use synthetic providers and owned private servers. No shared-servic
 - The fresh installation also passed **35 production server/ConPTY checks on each of 2.0.27 and 2.0.28**, retaining the supported minimum without an exact-version gate.
 - Synthetic HTTP providers only. No shared-service restart, frozen-deployment update, current Linux/macOS validation, real archived/cross-host upgrade, or live-provider calls. New transports/compression and arbitrary signed/opaque checkpoints are not exhaustively validated.
 
+### Version 4.4.2 validation
+
+- Typecheck, **293 unit/adapter tests** on Node **24.21.0**, and **46 renderer tests** on bundled Bun **1.4.2** passed. Regressions cover single/multiple offending turns, disjoint operations, duplicate failures, unchanged source numbering after summary/deletion/split boundaries, atomic RPC rejection and tools-only success.
+- The range list marks failed/interrupted reasoning before selection. Native inspection supplies blocked message IDs separately from normalized history, using the same predicate as the safety guard. No added transcript fields, persisted fingerprints, ledger/export/cache formats, global options or dependencies. Markers remain after tools-only pruning, disappear under deletion and return on restoration; renderer coverage includes 80 and 60 columns.
+- OpenCode **2.0.29 / Windows x64**: a private synthetic-provider/ConPTY scenario interrupted a reasoning-bearing tool call, verified the warning and numbered rejection, and confirmed unchanged metadata/history and no model call from the rejected action. Owned terminal/server cleanup passed.
+- The broader 2.0.29 production smoke did **not** pass completely: it stopped at the existing assumption that one `finish_reason: length` ends a summary helper. A focused reproduction with unchanged published **4.4.1** produced a host continuation and completed `stop` reply, with three requests for two helpers. The test expectation needs separate work; this release does not claim full 2.0.29 verification or silently weaken incomplete-result validation.
+- No shared-service restart, frozen deployment update, live-provider calls, fresh dependency install/audit, archived upgrade or current Linux/macOS validation.
+
 ## Architecture
 
 | Area | Files |

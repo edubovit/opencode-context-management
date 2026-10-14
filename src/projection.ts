@@ -2,6 +2,7 @@ import { Message, type ContentPart } from "@opencode/ai"
 import type { SessionMessageInfo } from "@opencode/client"
 import { hash, activeMessages, project, replacement, type Block, type Envelope, type Operation, type Policy } from "./context.ts"
 import { pruneResult } from "./tool-result.ts"
+import { turnIndex } from "./status.ts"
 
 type Assistant = Extract<SessionMessageInfo, { type: "assistant" }>
 type Tool = Extract<Assistant["content"][number], { type: "tool" }>
@@ -26,6 +27,7 @@ export function projectRequest(native: readonly SessionMessageInfo[], raw: Envel
   const observed = new Set<string>()
   const seenCalls = new Set<string>()
   const seenResults = new Set<string>()
+  const rejectedReasoning = new Set<string>()
   let entries: Entry[] = incoming.map((message, anchor) => {
     let owner = message.id && selectable.has(message.id) ? message.id : undefined
     if (owner && edited.has(owner)) {
@@ -127,7 +129,7 @@ export function projectRequest(native: readonly SessionMessageInfo[], raw: Envel
       const owner = entry.sourceIDs[0]
       const original = originals.get(owner)
       if (reason && original?.type === "assistant" && convertedReasoning(original))
-        throw new Error("Failed-assistant reasoning or interrupted reasoning became visible text; refusing ambiguous removal")
+        rejectedReasoning.add(owner)
       const rules = new Map(entry.rules)
       const content = entry.message.content.flatMap((part): ContentPart[] => {
         if (part.type === "reasoning" && reason) return []
@@ -147,12 +149,15 @@ export function projectRequest(native: readonly SessionMessageInfo[], raw: Envel
       return [{ ...entry, rules, message: Message.make({ ...entry.message, content }) }]
     })
   })
+  rejectReasoning(active, rejectedReasoning)
   return entries.sort((a, b) => a.anchor - b.anchor || a.slot - b.slot).map((entry) => entry.message)
 }
 
 export function validateNativePolicy(native: readonly SessionMessageInfo[], raw: Envelope[], policy: Policy) {
   const source = new Map(native.map((message) => [message.id, message]))
-  project(activeMessages(raw), policy, (op, selected) => {
+  const active = activeMessages(raw)
+  const rejectedReasoning = new Set<string>()
+  project(active, policy, (op, selected) => {
     for (const block of selected) {
       if (block.kind !== "turn") continue
       for (const id of block.sourceIDs) {
@@ -162,14 +167,26 @@ export function validateNativePolicy(native: readonly SessionMessageInfo[], raw:
         if (message.content.some((part) => part.type === "tool" && ["streaming", "running"].includes(part.state.status)))
           throw new Error("The host must settle unfinished tool calls before editing this historical turn")
         if ((op.pruneReason || op.mode === "prune-reason") && convertedReasoning(message))
-          throw new Error("Failed-assistant reasoning or interrupted reasoning cannot be removed safely; summarize the range instead")
+          rejectedReasoning.add(id)
         if (["tool-prune", "tool-prune-all"].includes(op.mode) && message.content.some((part) => part.type === "tool" && part.executed && (part.providerResultState || part.providerState)))
           throw new Error("Opaque provider-executed results cannot be pruned; summarize or delete the complete calls with reasoning")
       }
     }
   })
+  rejectReasoning(active, rejectedReasoning)
+}
+
+function rejectReasoning(active: Envelope[], ids: ReadonlySet<string>) {
+  if (!ids.size) return
+  const index = turnIndex(active)
+  const numbers = [...new Set([...ids].map((id) => index.get(id)!))].sort((a, b) => a - b)
+  throw new Error(`Turn${numbers.length === 1 ? "" : "s"} ${numbers.join(", ")}: Failed-assistant reasoning or interrupted reasoning cannot be removed safely; summarize or deselect reasoning.`)
 }
 
 function convertedReasoning(message: Assistant) {
   return message.content.some((part) => part.type === "reasoning" && (message.error || (part.time && part.time.completed === undefined)))
+}
+
+export function reasoningBlockedIDs(native: readonly SessionMessageInfo[]) {
+  return native.flatMap((message) => message.type === "assistant" && convertedReasoning(message) ? [message.id] : [])
 }

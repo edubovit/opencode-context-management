@@ -12,7 +12,7 @@ const session = z.object({ sessionID: id }).strict()
 const job = z.object({ sessionID: id, jobID: id }).strict()
 const model = z.object({ providerID: z.string().min(1), modelID: z.string().min(1), variant: z.string().min(1).optional() }).strict()
 const errors = { rejected: z.null() }
-export type Inspection = { version: string; settings: Settings; session: Session; messages: Envelope[]; models: Model[]; runtime?: RuntimeCapture; auto: AutoState }
+export type Inspection = { version: string; settings: Settings; session: Session; messages: Envelope[]; reasoningBlocked: string[]; models: Model[]; runtime?: RuntimeCapture; auto: AutoState }
 
 export const ContextManager = Rpc.define({
   id: "context-manager",

@@ -20,6 +20,7 @@ export interface Host {
   auto?: AutoControl
   session(id: string): Promise<Session>
   messages(id: string): Promise<Envelope[]>
+  reasoningBlocked?(id: string): Promise<string[]>
   idle(id: string): Promise<boolean>
   update(id: string, metadata: Record<string, unknown>, expected?: Expected): Promise<void>
   models(): Promise<Model[]>
@@ -29,7 +30,7 @@ export interface Host {
   abort(id: string): Promise<void>
   remove(id: string): Promise<void>
 }
-export type Loaded = { session: Session; raw: Envelope[]; policy: Policy; blocks: Block[]; fingerprint: string; runtime?: RuntimeCapture; models: Model[]; tokenizer: TokenBasis; pruneRule: PruneRule; usage?: ReturnType<typeof lastReportedUsage>; auto?: AutoState }
+export type Loaded = { session: Session; raw: Envelope[]; policy: Policy; blocks: Block[]; fingerprint: string; runtime?: RuntimeCapture; models: Model[]; tokenizer: TokenBasis; pruneRule: PruneRule; usage?: ReturnType<typeof lastReportedUsage>; auto?: AutoState; reasoningBlocked?: string[] }
 export type Draft = { operation: Operation; attempts: number; refinements: number; revision: number; fingerprint: string; selected: Block[]; totalBlocks: number; model: ModelChoice; jobID: string }
 export type SummaryView = { id: string; text: string; block: Block; revision: number; fingerprint: string; tokenizer: TokenBasis }
 export type RestorePreview = {
@@ -59,12 +60,12 @@ export class Controller {
   constructor(readonly host: Host, readonly sessionID: string, readonly config: Settings, readonly storage: Artifacts, private readonly purpose: "summary" | "edit" = "summary", private readonly trigger: HelperTrigger = "manual") {}
 
   async load(): Promise<Loaded> {
-    const [session, raw, runtime, models, auto] = await Promise.all([this.host.session(this.sessionID), this.host.messages(this.sessionID), this.storage.capture(this.sessionID), this.host.models(), this.host.auto?.state(this.sessionID)])
+    const [session, raw, runtime, models, auto, reasoningBlocked] = await Promise.all([this.host.session(this.sessionID), this.host.messages(this.sessionID), this.storage.capture(this.sessionID), this.host.models(), this.host.auto?.state(this.sessionID), this.host.reasoningBlocked?.(this.sessionID)])
     const policy = session.revert ? revertPolicy(raw, readPolicy(session), session.revert.messageID) : readPolicy(session)
     const active = sessionModel(session, raw)
     const model = models.find((m) => m.id === active?.modelID && m.providerID === active.providerID)
     const tokenizer = tokenBasis(active, model, this.config.tokenizer)
-    return { session, raw, policy, blocks: project(activeMessages(raw, session.revert), policy), fingerprint: historyHash(raw), runtime, models, tokenizer, pruneRule: bindPruneRule(this.config.prune, tokenizer), usage: lastReportedUsage(raw), auto }
+    return { session, raw, policy, blocks: project(activeMessages(raw, session.revert), policy), fingerprint: historyHash(raw), runtime, models, tokenizer, pruneRule: bindPruneRule(this.config.prune, tokenizer), usage: lastReportedUsage(raw), auto, reasoningBlocked }
   }
 
   async requireIdle() {

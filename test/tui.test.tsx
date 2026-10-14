@@ -20,6 +20,9 @@ import { distribution } from "../src/metrics.ts"
 import { compactCount } from "../src/inspector-view.ts"
 import { Hotkeys } from "../src/tui-help.tsx"
 import { AUTO_KEY, type AutoCommand, type AutoControl, type AutoState } from "../src/auto-state.ts"
+import { nativeFixture } from "./native-fixtures.ts"
+import { sessionView, transcriptView } from "../src/normalize.ts"
+import { validateNativePolicy } from "../src/projection.ts"
 
 async function setup(t: { after(fn: () => Promise<void>): void }, width = 140, height = 40, prepare?: (fixture: ReturnType<typeof fixtureHost>) => void, options: unknown = {}, runtime?: RuntimeCapture) {
   const dir = await mkdtemp(path.join(tmpdir(), "cm-tui-"))
@@ -60,6 +63,50 @@ async function setup(t: { after(fn: () => Promise<void>): void }, width = 140, h
   }
   return { ...fixture, controller, screen, frame, until, navigations, compact, setInputMode: (mode: string) => { inputMode = mode }, type: screen.mockInput.typeText, key, esc: screen.mockInput.pressEscape }
 }
+
+for (const width of [80, 60]) test(`reasoning rejection shows the offending turns at ${width} columns without applying pruning`, async (t) => {
+  const view = await setup(t, width, 24, ({ data, host }) => {
+    const { session, native } = nativeFixture()
+    for (const message of native) if (message.type === "assistant" && ["msg_a0", "msg_a2"].includes(message.id))
+      message.error = { type: "aborted", message: "Synthetic failure" }
+    data.session = sessionView(session)
+    data.messages = transcriptView(session, native)
+    host.reasoningBlocked = async () => ["msg_a0", "msg_a2"]
+    const update = host.update
+    host.update = async (id, metadata, expected) => {
+      validateNativePolicy(native, data.messages, readPolicy({ id, metadata }))
+      await update(id, metadata, expected)
+    }
+  })
+  await view.until(() => view.frame().includes("Ready."))
+  const stats = (index: number) => (view.screen.renderer.root.findDescendantById(`cm-range-stats-${index}`) as TextRenderable | undefined)?.plainText ?? ""
+  assert.match(stats(0), /Reasoning blocked/)
+  assert.doesNotMatch(stats(1), /Reasoning blocked/)
+  assert.match(stats(2), /Reasoning blocked/)
+  assert.ok(view.frame().includes("Reasoning blocked"))
+  const before = JSON.stringify({ session: view.data.session, messages: view.data.messages })
+  await view.type(" ")
+  view.key(KeyCodes.END)
+  await view.type(" ")
+  await view.compact(0)
+  await view.until(() => view.frame().includes("Turns 1, 3: Failed-assistant"))
+  assert.equal(JSON.stringify({ session: view.data.session, messages: view.data.messages }), before)
+  assert.equal(view.data.jobs, 0)
+  const notice = view.screen.renderer.root.findDescendantById("cm-notice") as TextRenderable
+  assert.match(notice.plainText, /summarize or deselect reasoning/)
+  const loaded = await view.controller.load()
+  await view.controller.prune(loaded.blocks.flatMap((block) => block.sourceIDs), { reasoning: false, tools: "all" })
+  await view.type("f")
+  await view.until(() => view.frame().includes("Prune tools (all)") || view.frame().includes("pruned"))
+  assert.match(stats(0), /Reasoning blocked/)
+  await view.controller.deleteRanges([loaded.blocks[0].sourceIDs])
+  await view.type("f")
+  await view.until(() => view.frame().includes("DELETED"))
+  assert.doesNotMatch(stats(0), /Reasoning blocked/)
+  await view.controller.applyRestore(await view.controller.prepareRestore("expand", loaded.blocks[0].sourceIDs))
+  await view.type("f")
+  await view.until(() => !view.frame().includes("DELETED") && stats(0).includes("Reasoning blocked"))
+})
 
 for (const width of [80, 60]) test(`Delete removes a range and Ctrl+E previews/cancels/restores it at ${width} columns`, async (t) => {
   const view = await setup(t, width, 24)
