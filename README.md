@@ -147,7 +147,7 @@ This example includes **every configurable plugin parameter**. The numeric setti
           "headShare": 0.5
         },
         "prune": {
-          "threshold": 5000,
+          "threshold": 3000,
           "head": 1000,
           "tail": 500
         },
@@ -220,11 +220,11 @@ These limits control **Prune tools (large)** on selected existing history. They 
 
 | Parameter | Default | Allowed values and effect |
 | --- | --- | --- |
-| `prune.threshold` | `5000` | Integer ≥ `1`, in locally estimated tokens per tool result. Only results **strictly larger** than this value are eligible. |
+| `prune.threshold` | `3000` | Integer ≥ `1`, in locally estimated tokens per tool result. Only results **strictly larger** than this value are eligible. |
 | `prune.head` | `1000` | Integer ≥ `0`. Maximum tokens retained from the beginning of an eligible result. `0` keeps no beginning text. |
 | `prune.tail` | `500` | Integer ≥ `0`. Maximum tokens retained from the end of an eligible result. `0` keeps no ending text. |
 
-**`head + tail` must be strictly less than `threshold`.** With the defaults, a result above 5,000 tokens is reduced to up to 1,000 beginning tokens plus 500 ending tokens, with an omission notice and any full-output path added. These notices are extra; if the resulting text would not be smaller, the operation is skipped.
+**`head + tail` must be strictly less than `threshold`.** With the defaults, a result above 3,000 tokens is reduced to up to 1,000 beginning tokens plus 500 ending tokens, with an omission notice and any full-output path added. These notices are extra; if the resulting text would not be smaller, the operation is skipped.
 
 Use more tail budget when final errors or conclusions matter most, or more head budget when headers and initial context matter most. Inputs and attachments stay intact in large-output mode. Each saved pruning operation pins its rule and tokenizer, so changing these defaults later does not reinterpret earlier cuts. **Ctrl+E** restores an applied pruning layer; it does not restore an external spill file's full contents into the conversation.
 

@@ -26,11 +26,12 @@ test("summarizer configuration has no output reserve or replacement output limit
 test("pruning defaults and partial settings always use token units", () => {
   for (const input of [undefined, {}, { spill: {}, prune: {} }]) {
     assert.deepEqual(settings(input).spill, suppliedOptions.spill)
-    assert.deepEqual(settings(input).prune, { threshold: 5000, head: 1000, tail: 500 })
+    assert.deepEqual(settings(input).prune, { threshold: 3000, head: 1000, tail: 500 })
   }
   assert.deepEqual(settings({ prune: { threshold: 8000 } }).prune, { threshold: 8000, head: 1000, tail: 500 })
-  assert.deepEqual(settings({ prune: { head: 0 } }).prune, { threshold: 5000, head: 0, tail: 500 })
-  assert.deepEqual(settings({ prune: { tail: 1000 } }).prune, { threshold: 5000, head: 1000, tail: 1000 })
+  assert.deepEqual(settings({ prune: { head: 0 } }).prune, { threshold: 3000, head: 0, tail: 500 })
+  assert.deepEqual(settings({ prune: { tail: 1000 } }).prune, { threshold: 3000, head: 1000, tail: 1000 })
+  assert.deepEqual(settings({ prune: { threshold: 5000 } }).prune, { threshold: 5000, head: 1000, tail: 500 })
   assert.deepEqual(settings({ prune: { threshold: 2000 } }).prune, { threshold: 2000, head: 1000, tail: 500 })
   assert.deepEqual(settings({ prune: { threshold: 2000, head: 500, tail: 500 } }).prune, { threshold: 2000, head: 500, tail: 500 })
   assert.throws(() => settings({ prune: { threshold: 1500 } }), /below/)

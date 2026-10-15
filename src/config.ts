@@ -48,7 +48,7 @@ export function settings(input: unknown = {}): Settings {
       headShare: Number(spill.headShare ?? 0.5),
     },
     prune: {
-      threshold: integer(prune.threshold ?? 5000, "prune.threshold", 1),
+      threshold: integer(prune.threshold ?? 3000, "prune.threshold", 1),
       head: integer(prune.head ?? 1000, "prune.head", 0),
       tail: integer(prune.tail ?? 500, "prune.tail", 0),
     },
