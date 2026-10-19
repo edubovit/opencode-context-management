@@ -164,6 +164,12 @@ These checks use synthetic providers and owned private servers. No shared-servic
 - Packaged **OpenCode 2.0.32 / Windows x64** passed **36 production server/ConPTY checks**, with owned cleanup verified. A native interrupted tool attempt followed by a successful reasoning-bearing turn retains only failed reasoning on the immediate same-model request; restoration brings safe reasoning back without changing native history. Same-turn retry cases use native/canonical adapter fixtures, not a live WebSocket failure. No fresh install/audit, separate usage/subagent/revert/fork suite rerun, Linux/macOS or live-provider test.
 - Dependencies and ledger/export/cache formats remain **13/7/2**. No legacy reductions are reset; previously valid reasoning-prune operations could not include these failed/interrupted attempts. This does not establish universal WebSocket retry or signed-provider compatibility.
 
+### Version 4.4.5 validation
+
+- Ctrl+E prepares and immediately applies the same checked one-layer restoration, without rendering a preview or requiring Ctrl+S. Summary, pruning and deletion restoration share this path; summary-editor Ctrl+S remains unchanged. No ledger/export/cache, dependency or controller-validation changes.
+- Seven updated renderer expectations failed against the old preview workflow. Typecheck, **302 unit/adapter tests** and **48 renderer tests** passed. Tests cover immediate summary expansion, all pruning modes, deletion at 80/60 columns, mixed disjoint ranges in one write, repeat keys while busy, native-dialog ownership and an idle-state change between preparation and application.
+- Packaged **OpenCode 2.0.32 / Windows x64** passed **36 production server/ConPTY checks** and the small fork/ConPTY suite (**6 groups / 12 observations**), with owned cleanup verified. Actual terminal actions restore summaries, pruning and deleted ranges without Ctrl+S; summary-editor confirmation remains tested separately. No large-context fork, separate usage/subagent/revert rerun, fresh install/audit, Linux/macOS or live-provider validation for this UI change.
+
 ## Architecture
 
 | Area | Files |

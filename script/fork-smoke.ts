@@ -197,8 +197,6 @@ try {
       await seen(/SUMMARY/)
       tui.keys("  ")
       tui.keys("\x05")
-      await seen(/Restore preview/)
-      tui.keys("\x13")
       await test.until(async () => (await (await controller(fork.id)).load()).blocks[0].kind === "turn", "UI fork expansion")
       assert.equal((await parent.load()).blocks[0].kind, "compact")
       await seen(/Selected context layers restored/)

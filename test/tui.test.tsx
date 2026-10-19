@@ -103,7 +103,7 @@ for (const width of [80, 60]) test(`reasoning pruning uses ordinary status for f
   assert.doesNotMatch(stats(0), /Reasoning blocked|Partially pruned/)
 })
 
-for (const width of [80, 60]) test(`Delete removes a range and Ctrl+E previews/cancels/restores it at ${width} columns`, async (t) => {
+for (const width of [80, 60]) test(`Delete removes a range and Ctrl+E immediately restores it at ${width} columns`, async (t) => {
   const view = await setup(t, width, 24)
   await view.until(() => view.frame().includes("Ready."))
   const before = await view.controller.load()
@@ -119,14 +119,8 @@ for (const width of [80, 60]) test(`Delete removes a range and Ctrl+E previews/c
   view.key("return")
   await view.until(() => view.frame().includes("This range is deleted"))
   view.key("e", { ctrl: true })
-  await view.until(() => view.frame().includes("1 deletion"))
-  view.esc()
-  await view.until(() => !view.frame().includes("Restore preview"))
-  assert.equal(readPolicy(view.data.session).revision, 1)
-  view.key("e", { ctrl: true })
-  await view.until(() => view.frame().includes("Restore preview"))
-  view.key("s", { ctrl: true })
   await view.until(() => readPolicy(view.data.session).revision === 2 && !view.frame().includes("DELETED"))
+  assert.doesNotMatch(view.frame(), /Restore preview|confirm restore/)
   assert.deepEqual((await view.controller.load()).blocks, before.blocks)
   assert.equal(view.data.jobs, 0)
 })
@@ -311,7 +305,7 @@ test("compaction configuration combines pruning, forces reasoning for deletion a
   assert.deepEqual((await controller.load()).blocks[1].messages, data.messages.slice(2, 4))
 })
 
-for (const mode of [0, 1, 2, 3]) test(`Ctrl+E previews, cancels and restores pruning mode ${mode} without a model call`, async (t) => {
+for (const mode of [0, 1, 2, 3]) test(`Ctrl+E immediately restores pruning mode ${mode} without a model call`, async (t) => {
   const view = await setup(t, 100, 30)
   await view.until(() => view.frame().includes("Ready."))
   const original = structuredClone(view.data.messages)
@@ -320,15 +314,8 @@ for (const mode of [0, 1, 2, 3]) test(`Ctrl+E previews, cancels and restores pru
   await view.until(() => view.frame().includes("Pruning applied"))
   assert.equal(readPolicy(view.data.session).revision, 1)
   view.key("e", { ctrl: true })
-  await view.until(() => view.frame().includes("Restore preview") && view.frame().includes("1 pruning"))
-  assert.equal(readPolicy(view.data.session).revision, 1)
-  view.esc()
-  await view.until(() => !view.frame().includes("Restore preview"))
-  assert.equal(readPolicy(view.data.session).revision, 1)
-  view.key("e", { ctrl: true })
-  await view.until(() => view.frame().includes("1 pruning"))
-  view.key("s", { ctrl: true })
   await view.until(() => view.frame().includes("context layers restored"))
+  assert.doesNotMatch(view.frame(), /Restore preview|confirm restore/)
   assert.equal(readPolicy(view.data.session).revision, 2)
   assert.deepEqual((await view.controller.load()).blocks[0].messages, original.slice(0, 2))
   assert.equal(view.data.jobs, 0)
@@ -336,6 +323,67 @@ for (const mode of [0, 1, 2, 3]) test(`Ctrl+E previews, cancels and restores pru
   view.key("e", { ctrl: true })
   await view.until(() => view.frame().includes("No restorable"))
   assert.equal(readPolicy(view.data.session).revision, 2)
+})
+
+test("immediate restoration applies disjoint mixed ranges once and respects native dialog ownership", async (t) => {
+  const view = await setup(t, 100, 30, ({ data }) => {
+    const blocks = turns(data.messages)
+    data.session.metadata![KEY] = append(append(emptyPolicy(data.session.id), {
+      ...operation("compact", [blocks[0]]), summary: "Selected summary",
+    }), operation("prune-reason", [blocks[2]]))
+  })
+  await view.until(() => view.frame().includes("Ready."))
+  await view.type("  ")
+  view.key(KeyCodes.END)
+  await view.type("  ")
+  view.setInputMode("dialog")
+  view.key("e", { ctrl: true })
+  await view.screen.renderOnce()
+  assert.equal(readPolicy(view.data.session).revision, 2)
+  view.setInputMode("context-manager")
+  let release!: () => void
+  const waiting = new Promise<void>((resolve) => { release = resolve })
+  t.after(async () => release())
+  let preparations = 0
+  let writes = 0
+  const prepare = view.controller.prepareRestoreRanges.bind(view.controller)
+  view.controller.prepareRestoreRanges = async (...args) => {
+    preparations++
+    const result = await prepare(...args)
+    await waiting
+    return result
+  }
+  const update = view.host.update
+  view.host.update = async (...args) => { writes++; await update(...args) }
+  view.key("e", { ctrl: true })
+  await view.until(() => preparations === 1)
+  view.key("e", { ctrl: true })
+  release()
+  await view.until(() => view.frame().includes("context layers restored"))
+  assert.equal(preparations, 1)
+  assert.equal(writes, 1)
+  assert.equal(readPolicy(view.data.session).revision, 4)
+  assert.deepEqual((await view.controller.load()).blocks.map((block) => block.messages), turns(view.data.messages).map((block) => block.messages))
+  assert.equal(view.data.jobs, 0)
+  assert.doesNotMatch(view.frame(), /Restore preview|confirm restore/)
+})
+
+test("immediate restoration still rechecks idle state before applying", async (t) => {
+  const view = await setup(t, 100, 30)
+  await view.until(() => view.frame().includes("Ready."))
+  await view.type("  ")
+  await view.compact(0)
+  await view.until(() => view.frame().includes("Pruning applied"))
+  const prepare = view.controller.prepareRestoreRanges.bind(view.controller)
+  view.controller.prepareRestoreRanges = async (...args) => {
+    const result = await prepare(...args)
+    view.data.idle = false
+    return result
+  }
+  view.key("e", { ctrl: true })
+  await view.until(() => view.frame().includes("Wait for the main session to become idle"))
+  assert.equal(readPolicy(view.data.session).revision, 1)
+  assert.equal(view.data.jobs, 0)
 })
 
 test("configuration picker consumes model keys, keeps selection and fits a small terminal", async (t) => {
@@ -562,7 +610,7 @@ test("multi-range statistics stay visible and failed batches autoapply only afte
   assert.deepEqual((await controller.load()).blocks[1].messages, data.messages.slice(2, 4))
 })
 
-test("range restore confirmation and contextual help do not overlap the content", async (t) => {
+test("immediate summary restoration and contextual help keep the content visible", async (t) => {
   const { data, screen, frame, until, type, key, esc, compact } = await setup(t, 120, 32)
   await until(() => frame().includes("Ready."))
   await type("?")
@@ -573,11 +621,9 @@ test("range restore confirmation and contextual help do not overlap the content"
   await compact(5)
   await until(() => frame().includes("Summaries applied automatically"))
   key("e", { ctrl: true })
-  await until(() => frame().includes("Restore preview"))
-  assert.ok(frame().includes("Ctrl+S confirm restore"))
-  assert.ok(frame().includes("Local text"))
-  key("s", { ctrl: true })
   await until(() => readPolicy(data.session).operations.length === 2)
+  assert.doesNotMatch(frame(), /Restore preview|confirm restore/)
+  assert.ok(frame().includes("Local text"))
   const footer = screen.renderer.root.findDescendantById("cm-hotkeys")!
   assert.ok(footer.y + footer.height <= 32)
 })

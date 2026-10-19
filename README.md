@@ -2,7 +2,7 @@
 
 Choose what stays in your coding session's context. Prune reasoning or tool results, summarize or delete selected ranges, and restore them later—without deleting the stored conversation.
 
-**Plugin 4.4.4 · OpenCode V2**.
+**Plugin 4.4.5 · OpenCode V2**.
 
 ## Features
 
@@ -25,6 +25,8 @@ This is a **source-based, private package**, not a published npm plugin. Require
 Version 4.4.3 rejects summary output if any assistant response to the current helper prompt was truncated, even when OpenCode continues and finishes successfully. It does not accept a continuation tail as a complete summary or assemble truncated chunks. Earlier saved summaries are not automatically repaired: restore affected ranges and regenerate them, keeping the normal budget guard enabled. See [validation details](CONTRIBUTING.md#version-443-validation).
 
 Version 4.4.4 lets reasoning pruning proceed across failed/interrupted attempts by retaining their ambiguous reasoning and pruning safe responses. It uses the ordinary pruning status without extra warnings. See [current validation](CONTRIBUTING.md#version-444-validation).
+
+Version 4.4.5 makes **Ctrl+E** apply one-layer restoration immediately, without a preview or confirmation. It still checks the selected source and session state before writing. See [validation details](CONTRIBUTING.md#version-445-validation).
 
 Development checks run on Node.js 22+; renderer tests use the bundled Bun runtime. OpenTUI's Node-backend engine warning on Node 22 does not apply to the bundled Bun renderer. Using its Node backend directly requires Node 26.4+.
 
@@ -100,7 +102,7 @@ Each batch range uses its own boundary against the same frozen snapshot; retries
 ### Other controls
 
 - **Enter:** read a turn or summary. Readers exclude tool activity/reasoning and label unfinished answers.
-- **Ctrl+E, then Ctrl+S:** preview and confirm one-layer restoration. A summary expands to its pre-summary view. A **DELETED** range restores its pre-deletion turns, summaries and pruning. A pruned ordinary turn restores its latest effective pruning action. Combined tool/reasoning pruning restores together, including deleted calls/results; separate actions restore one at a time. Expand a summary or deleted range before restoring layers hidden inside it.
+- **Ctrl+E:** immediately restore one layer for each selected item, with no preview or confirmation. A summary expands to its pre-summary view. A **DELETED** range restores its pre-deletion turns, summaries and pruning. A pruned ordinary turn restores its latest effective pruning action. Combined tool/reasoning pruning restores together, including deleted calls/results; separate actions restore one at a time. Expand a summary or deleted range before restoring layers hidden inside it. Restoration makes no model call and can increase context size; the normal Resume budget guard still applies.
 - **e/r** inside a summary: manual edit / model request. **Ctrl+S** saves, sends, or applies according to the current editor mode.
 - **a:** save autocompaction strategy. **g:** retry failed batch jobs, or explicitly run AUTO while paused.
 - **v:** cycle Overview → Details → Content → Runtime. **n:** local token/character counts; the guard stays in tokens. **Tab:** switch panes. **f:** reload. **o:** export. **?:** help.

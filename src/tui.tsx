@@ -5,8 +5,8 @@ import type { Model } from "./model.ts"
 import { createMemo, createSignal, onCleanup, onMount, Show } from "solid-js"
 import { useKeyboard, useTerminalDimensions } from "@opentui/solid"
 import type { ScrollBoxRenderable } from "@opentui/core"
-import { Controller, type Loaded, type ModelChoice, type MultiRestorePreview } from "./controller.ts"
-import { blockMessages, activeMessages, serialize, type Block, type RestoreMode } from "./context.ts"
+import { Controller, type Loaded, type ModelChoice } from "./controller.ts"
+import { blockMessages, activeMessages, serialize, type Block } from "./context.ts"
 import { SummaryBatch } from "./batch.ts"
 import { SummaryEditor } from "./summary-editor.ts"
 import { SummaryReader } from "./summary-reader.tsx"
@@ -22,7 +22,7 @@ import { anchorRanges, pressSpace, rangeIDs, rangeTag, selectedBlocks, visibleRa
 import { bindPruneRule } from "./text.ts"
 import { distribution } from "./snapshot.ts"
 import { settings, VERSION } from "./config.ts"
-import { operationLabel, rangeLabel, toolStatus, turnIndex } from "./status.ts"
+import { rangeLabel, toolStatus, turnIndex } from "./status.ts"
 import { FALLBACK_BASIS, tokenLabel } from "./tokens.ts"
 import { AUTO_KEY, STRATEGIES, type AutoState, type AutoControl } from "./auto-state.ts"
 import { remoteHost } from "./control.ts"
@@ -50,7 +50,6 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
   const [picker, setPicker] = createSignal<"model" | "effort">()
   const [query, setQuery] = createSignal("")
   const [pickerIndex, setPickerIndex] = createSignal(0)
-  const [restoring, setRestoring] = createSignal<MultiRestorePreview>()
   const [unit, setUnit] = createSignal<"tokens" | "characters">("tokens")
   const [auto, setAuto] = createSignal<AutoState>({ strategy: "AUTO_PER_TURN" })
   const [strategyPicker, setStrategyPicker] = createSignal(false)
@@ -196,13 +195,9 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
     setReader(undefined)
     await refresh(anchors, current.editor.view.block.sourceIDs)
   }
-  const previewRestore = async (mode: RestoreMode) => {
-    setRestoring(await props.controller.prepareRestoreRanges(mode, selectedIDs()))
-  }
-  const confirmRestore = async () => {
-    const preview = restoring()!
+  const restore = async () => {
+    const preview = await props.controller.prepareRestoreRanges("expand", selectedIDs())
     await props.controller.applyOperations(preview.operations, preview)
-    setRestoring(undefined)
     await refresh(preview.ranges)
     setNotice("Selected context layers restored. Unselected history is unchanged.")
   }
@@ -223,7 +218,7 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
   })
   const filteredOptions = createMemo(() => pickerOptions().filter((option) => `${option.name} ${option.description}`.toLowerCase().includes(query().trim().toLowerCase())))
   const openPicker = (kind: "model" | "effort") => {
-    if (busy() || restoring()) return
+    if (busy()) return
     if (kind === "effort" && !choice()) { setNotice("Choose a compaction model first"); return }
     setQuery("")
     setPicker(kind)
@@ -257,11 +252,6 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
       return
     }
     if (help()) { if (key.name === "escape" || key.name === "?") { key.preventDefault(); setHelp(false) }; return }
-    if (restoring()) {
-      if (key.name === "escape" && !busy()) { key.preventDefault(); setRestoring(undefined) }
-      if (key.ctrl && key.name === "s") { key.preventDefault(); void run(confirmRestore) }
-      return
-    }
     if (picker()) {
       if (key.name === "escape") { key.preventDefault(); setPicker(undefined) }
       if (key.name === "up") { key.preventDefault(); setPickerIndex(Math.max(0, pickerIndex() - 1)) }
@@ -305,7 +295,7 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
       return
     }
     if (busy() || automatic()) return
-    if (key.ctrl && key.name === "e") { key.preventDefault(); void run(() => previewRestore("expand")); return }
+    if (key.ctrl && key.name === "e") { key.preventDefault(); void run(restore); return }
     if (key.ctrl || key.meta) return
     if (key.name === "tab") { key.preventDefault(); setPane(pane() === "list" ? "content" : "list"); return }
     const actions: Record<string, () => void | Promise<void>> = {
@@ -382,7 +372,6 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
     : picker() ? [[{ key: "Up/Down", label: "select" }, { key: "Enter", label: "confirm" }, { key: "Esc", label: "cancel" }, "type to filter"]]
     : help() ? [[{ key: "Esc", label: "close help" }]]
     : busy() ? [[{ key: "Esc", label: "cancel running model requests — writes already in progress may finish" }]]
-    : restoring() ? [[{ key: "Ctrl+S", label: "confirm restore" }, { key: "Esc", label: "cancel" }], ["Selected ranges only; no model call. Restoring increases context size."]]
     : runningBatch() ? [[{ key: "g", label: "retry failed ranges" }, { key: "m", label: "model" }, { key: "t", label: "effort" }, { key: "Esc", label: "discard batch" }], ["Successful results stay pending until the entire batch can autoapply."]]
     : configuring() ? [[{ key: "Up/Down", label: "mode" }, { key: "Space", label: "toggle" }, { key: "Enter", label: "run" }], [{ key: "m/t", label: "model/effort" }, { key: "Esc", label: "cancel" }]]
     : narrow() ? [
@@ -413,7 +402,6 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
             <box id="cm-conversation-panel" flexGrow={1} flexBasis={0} minWidth={0} flexDirection="column" minHeight={0} overflow="hidden"
               border borderStyle="rounded" borderColor={pane() === "list" ? api.theme.text.formfield.focused : api.theme.border.base}
               title={`Conversation · ${unit() === "tokens" ? "tokens" : "chars"}`} paddingLeft={1} paddingRight={1}>
-              <Show when={restoring()} keyed fallback={
                 <Show when={runningBatch()} fallback={
                   <Show when={configuring()} fallback={<RangeList api={api} rows={rows()} maxLines={props.controller.config.ui.maxLinesPerTurn} selectedIndex={cursor()} onChange={setCursor} focused={!busy() && !automatic() && !exitDialog() && !strategyPicker() && !picker() && pane() === "list"} />}>
                     <CompactionMenu api={api} value={compaction()} index={compactionIndex()} toggle={(index) => { if (!picker() && !inputBlocked(api)) setCompaction(toggleMode(compaction(), index)) }} />
@@ -422,18 +410,13 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
                   <text height={1} fg={api.theme.text.base}>Batch progress — automatic acceptance</text>
                   <scrollbox flexGrow={1} minHeight={0} focused={!busy() && !picker()}><text>{batchStatus()}</text></scrollbox>
                 </Show>
-              }>{(preview) => <>
-                <text height={2} fg={api.theme.text.base}>Restore preview — {preview.operations.map((op) => operationLabel(op, sourceTurns())).join("; ")}</text>
-                 <text height={2}>{`Restore ${[preview.summaries ? `${preview.summaries} summary` : "", preview.prunings ? `${preview.prunings} pruning` : "", preview.deletions ? `${preview.deletions} deletion` : ""].filter(Boolean).join(" + ")} layers. Text delta: ${signed(preview.afterTokens - preview.beforeTokens)} tokens`}</text>
-                <scrollbox flexGrow={1} minHeight={0} focused={!busy()}><text selectable>{limited(`BEFORE\n\n${serialize(blockMessages(preview.before))}\n\nAFTER\n\n${serialize(blockMessages(preview.after))}`)}</text></scrollbox>
-              </>}</Show>
             </box>
             </Show>
             <Show when={!narrow() || pane() === "content"}>
             <box id="cm-context-panel" width={narrow() ? "100%" : sidebarWidth()} flexShrink={0} flexDirection="column" minHeight={0} overflow="hidden"
               border borderStyle="rounded" borderColor={pane() === "content" ? api.theme.text.formfield.focused : api.theme.border.base}
               title={view().charAt(0).toUpperCase() + view().slice(1)} paddingLeft={1} paddingRight={1}>
-              <scrollbox id="cm-context-scroll" ref={(value) => { detailsScroll = value }} flexGrow={1} minHeight={0} focused={!configuring() && !runningBatch() && !busy() && !picker() && !restoring() && !help() && !exitDialog() && !strategyPicker() && pane() === "content"}>
+              <scrollbox id="cm-context-scroll" ref={(value) => { detailsScroll = value }} flexGrow={1} minHeight={0} focused={!configuring() && !runningBatch() && !busy() && !picker() && !help() && !exitDialog() && !strategyPicker() && pane() === "content"}>
                 <Show when={view() === "overview"} fallback={<text id="cm-diagnostics" selectable>{view() === "details" ? `${globalStats()}${ranges().length ? `\n\n${selectionStats()}` : ""}\n\n` : ""}{panel()}</text>}>
                   <Show when={loaded()} fallback={<text fg={api.theme.text.muted}>Context unavailable.</text>}>
                     <ContextOverview api={api} budget={requestBudget()} counts={ranges().length ? selectedCounts() : localCounts()} selected={ranges().length > 0} width={sidebarWidth() - 4} />
@@ -503,7 +486,7 @@ No model call for deletion/pruning. Stored history is unchanged.
 
 READ & EXPAND
 Enter reads the hovered USER or SUMMARY fullscreen.
-Ctrl+E previews one-layer restoration for each selected item; Ctrl+S confirms.
+Ctrl+E immediately restores one layer for each selected item; no confirmation.
 Summaries expand first, retaining their prior pruning. Pruned turns restore
 their latest pruning action; earlier layers stay applied. Combined tool/reasoning
 pruning restores together. This also restores deleted calls and results.
