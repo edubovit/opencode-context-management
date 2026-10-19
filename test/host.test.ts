@@ -52,6 +52,53 @@ test("V2 helpers reject provider failures and output truncation rather than appl
   assert.deepEqual(mock.state.removed, [id])
 })
 
+for (const purpose of ["summary", "edit"] as const) for (const lengths of [1, 2]) {
+  test(`${purpose} rejects ${lengths} truncated chunks followed by stop and scopes subsequent prompts`, async () => {
+    const mock = mockContext()
+    const adapter = pluginHost(mock.context)
+    const id = await adapter.host.createJob(purpose, "ses_native")
+    const prompt = mock.context.session.prompt
+    mock.context.session.prompt = async (input) => {
+      const admitted = await prompt(input)
+      const history = mock.messages.get(id)!
+      const reply = history.at(-1)!
+      assert.equal(reply.type, "assistant")
+      if (reply.type !== "assistant") throw new Error("Missing test reply")
+      history.splice(history.length - 1, 0, ...Array.from({ length: lengths }, (_, index) => ({
+        ...structuredClone(reply), id: `msg_chunk${index}`, finish: "length" as const,
+        content: [{ type: "text" as const, text: "Beginning split inside a value" }],
+      })))
+      return admitted
+    }
+    await assert.rejects(adapter.host.generate(id, { providerID: "fixture", modelID: "model" }, "First", purpose), /output limit/)
+    mock.context.session.prompt = prompt
+    assert.equal(await adapter.host.generate(id, { providerID: "fixture", modelID: "model" }, "Fresh complete revision", purpose), "Answer only")
+    await adapter.close()
+  })
+}
+
+for (const failure of ["error", "unfinished", "cancelled"] as const) {
+  test(`helper rejects ${failure} after partial output`, async () => {
+    const mock = mockContext()
+    const adapter = pluginHost(mock.context)
+    const id = await adapter.host.createJob("summary", "ses_native")
+    mock.context.session.wait = async () => {
+      const history = mock.messages.get(id)!
+      const reply = history.at(-1)!
+      assert.equal(reply.type, "assistant")
+      if (reply.type !== "assistant") throw new Error("Missing test reply")
+      const partial = structuredClone(reply)
+      partial.id = "msg_partial"
+      if (failure === "error") partial.error = { type: "aborted", message: "Interrupted" }
+      if (failure === "unfinished") delete partial.time.completed
+      history.splice(history.length - 1, 0, partial)
+      if (failure === "cancelled") await adapter.host.abort(id)
+    }
+    await assert.rejects(adapter.host.generate(id, { providerID: "fixture", modelID: "model" }, "Synthetic"), /failed|finish|cancelled/)
+    await adapter.close()
+  })
+}
+
 test("V2 cancellation during model selection cannot admit a late helper prompt", async () => {
   const mock = mockContext()
   const adapter = pluginHost(mock.context)

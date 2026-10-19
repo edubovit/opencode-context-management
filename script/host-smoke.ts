@@ -234,19 +234,28 @@ try {
   await send(partial, "FAIL_RANGE synthetic source")
   const partialBatch = new SummaryBatch(partial)
   const partialSource = await partial.load()
+  const partialMetadata = (await test.client.session.get({ sessionID: partial.sessionID })).metadata
+  const partialHistory = await test.client.session.context({ sessionID: partial.sessionID })
   await partialBatch.start("brief", partialSource.blocks.map((block) => block.sourceIDs))
   let failed = false
-  test.respond((wire) => {
+  let truncatedJob: string | undefined
+  let continuations = 0
+  test.respond((wire, scope) => {
+    if (scope.sessionID === truncatedJob) { continuations++; return { text: "CONTINUATION_TAIL_ONLY", finish: "stop" } }
     const message = wire.messages.findLast((message) => message.role === "user")
     const text = typeof message?.content === "string" ? message.content : JSON.stringify(message?.content)
     const selected = /<selected_range_[^>]+>([\s\S]*?)<\/selected_range_[^>]+>/.exec(text)?.[1]
-    if (!failed && selected?.includes("FAIL_RANGE")) { failed = true; return { text: "Truncated and invalid", finish: "length" } }
+    if (!failed && selected?.includes("FAIL_RANGE")) { failed = true; truncatedJob = scope.sessionID; return { text: "TRUNCATED_BEGINNING", finish: "length" } }
+    if (selected) return { text: `COMPLETE_BEGINNING ${selected.includes("FAIL_RANGE") ? "RETRIED" : "READY"} COMPLETE_END`, finish: "stop" }
     return undefined
   })
   await partialBatch.generate()
   assert.equal(partialBatch.ready, false)
   assert.equal(partialBatch.entries.filter((entry) => entry.status === "ready").length, 1)
   assert.equal((await partial.load()).policy.operations.length, 0)
+  assert.match(partialBatch.entries.find((entry) => entry.status === "error")!.error!, /output limit/)
+  assert.deepEqual((await test.client.session.get({ sessionID: partial.sessionID })).metadata, partialMetadata)
+  assert.deepEqual(await test.client.session.context({ sessionID: partial.sessionID }), partialHistory)
   await assert.rejects(partialBatch.apply(), /Every range/)
   const readyJob = partialBatch.entries.find((entry) => entry.status === "ready")!.draft!.jobID
   const retryStart = test.requests.length
@@ -256,7 +265,12 @@ try {
   await partialBatch.apply()
   test.respond(() => undefined)
   assert.equal((await partial.load()).policy.operations.length, 2)
-  checks.push("truncated sibling blocks partial application; retry only failed helper, one complete batch")
+  await send(partial, "Immediate same-model request after accepted retry")
+  const retryWire = JSON.stringify(test.requests.at(-1)!.messages)
+  assert.ok(retryWire.includes("COMPLETE_BEGINNING READY COMPLETE_END"))
+  assert.ok(retryWire.includes("COMPLETE_BEGINNING RETRIED COMPLETE_END"))
+  assert.ok(!retryWire.includes("CONTINUATION_TAIL_ONLY") && !retryWire.includes("TRUNCATED_BEGINNING"))
+  checks.push(`truncated sibling (${continuations} continuations) blocks partial application; retry only failed helper, complete beginnings/endings on next request`)
 
   const cancelEditor = new SummaryEditor(partial, await partial.summary((await partial.load()).blocks[0].summaryID!))
   const release = test.hold()
