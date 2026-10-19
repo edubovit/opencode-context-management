@@ -577,6 +577,31 @@ test("reader separators frame scrolling content and keep footer reserved at narr
   assert.equal(readPolicy(data.session).operations.length, 1)
 })
 
+for (const width of [80, 60]) test(`batch shows live helper counts without acceptance boilerplate at ${width} columns`, async (t) => {
+  let release!: () => void
+  const gate = new Promise<void>((resolve) => { release = resolve })
+  let output = 12
+  const view = await setup(t, width, 24, ({ host }) => {
+    const generate = host.generate
+    host.generate = async (...args) => { await gate; return generate(...args) }
+    host.progress = async () => ({ output, reasoning: 34, requests: 1 })
+  })
+  try {
+    await view.until(() => view.frame().includes("Ready."))
+    await view.type("  ")
+    await view.compact(5)
+    await view.until(() => view.frame().includes("12 output"))
+    assert.match(view.frame(), /0\/1 ready/)
+    assert.match(view.frame(), /34 reasoning chars/)
+    assert.match(view.frame(), /cancel agents/)
+    assert.doesNotMatch(view.frame(), /automatic acceptance|Batch progress|writes already/)
+    output = 123
+    await view.until(() => view.frame().includes("123 output"))
+    assert.equal(readPolicy(view.data.session).revision, 0)
+  } finally { release() }
+  await view.until(() => view.frame().includes("Summaries applied automatically"))
+})
+
 test("multi-range statistics stay visible and failed batches autoapply only after retry", async (t) => {
   const { data, controller, frame, until, type, key, compact } = await setup(t, 160, 44, ({ host }) => {
     const generate = host.generate

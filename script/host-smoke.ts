@@ -260,6 +260,8 @@ try {
   const second = await make()
   const job = await rpc.createJob({ sessionID: first.sessionID, purpose: "summary" }, { location: { directory: test.project } })
   await assert.rejects(rpc.removeJob({ sessionID: second.sessionID, jobID: job }, { location: { directory: test.project } }))
+  await assert.rejects(rpc.jobProgress({ sessionID: second.sessionID, jobID: job }, { location: { directory: test.project } }))
+  assert.deepEqual(await rpc.jobProgress({ sessionID: first.sessionID, jobID: job }, { location: { directory: test.project } }), { output: 0, reasoning: 0, requests: 0 })
   await rpc.removeJob({ sessionID: first.sessionID, jobID: job }, { location: { directory: test.project } })
   checks.push("helper ownership enforced by server RPC")
 

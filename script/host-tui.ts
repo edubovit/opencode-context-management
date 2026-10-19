@@ -10,6 +10,8 @@ export async function verifyInspector(test: Awaited<ReturnType<typeof fixture>>,
   const sleep = () => new Promise((resolve) => setTimeout(resolve, 250))
   const keys = async (keys: string) => { child.keys(keys); await sleep() }
   const seen = (text: string) => test.until(async () => (await child.text()).includes(text), `inspector UI: ${text}`)
+  let releaseProgress: (() => void) | undefined
+  let completed = false
   try {
     await seen("Context manager production sm")
     const before = test.requests.length
@@ -49,8 +51,16 @@ export async function verifyInspector(test: Awaited<ReturnType<typeof fixture>>,
     await keys("\x1b[H")
     for (let n = 0; n < 4; n++) await keys("\x1b[B")
     await keys(" ")
+    const pause = new Promise<void>((resolve) => { releaseProgress = resolve })
+    test.respond((wire) => JSON.stringify(wire.messages).includes("<selected_range_") ? { text: "LIVE_SUMMARY_OUTPUT", finish: "stop", pause } : undefined)
     await keys("\r")
+    await seen("0/1 ready")
+    await seen("19 output")
+    assert.ok(!(await child.text()).includes("automatic acceptance"))
+    assert.equal((await controller.load()).policy.revision, revision)
+    releaseProgress!()
     await test.until(async () => (await controller.load()).policy.operations.at(-1)?.mode === "compact", "UI summary application")
+    test.respond(() => undefined)
     await seen("Summaries applied automatically")
     await keys("\r")
     await seen("Summary reader")
@@ -86,7 +96,10 @@ export async function verifyInspector(test: Awaited<ReturnType<typeof fixture>>,
     child.resize(80, 24)
     await sleep()
     await keys("\x1b")
+    completed = true
   } finally {
-    assert.equal(await child.close(), 0, "Owned TUI must stop cleanly")
+    releaseProgress?.()
+    const code = await child.close()
+    if (completed) assert.equal(code, 0, "Owned TUI must stop cleanly")
   }
 }

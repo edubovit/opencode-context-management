@@ -11,7 +11,7 @@ import { OpenCode } from "@opencode/client"
 export type Wire = { model: string; messages: { role: string; content?: unknown; tool_calls?: unknown }[]; [key: string]: unknown }
 export type FakeUsage = { input: number; cached?: number; written?: number; output: number; reasoning?: number }
 export type RequestScope = { sessionID: string; parentID?: string }
-type Reply = string | { text: string; finish: "stop" | "length" } | { tool: { name: string; input: Record<string, unknown> } } | { error: { status: number; message: string; code: string } }
+type Reply = string | { text: string; finish: "stop" | "length"; pause?: Promise<void> } | { tool: { name: string; input: Record<string, unknown> } } | { error: { status: number; message: string; code: string } }
 
 export async function fixture(executable = "opencode", destination?: string, options: { subagents?: boolean; keep?: number; plugin?: string } = {}) {
   const version = spawnSync(executable, ["--version"], { encoding: "utf8" })
@@ -60,8 +60,10 @@ export async function fixture(executable = "opencode", destination?: string, opt
       : "Fixture final response. ROOT_FACT retained.")
     const delta = tool ? { reasoning_content: "REASONING_FIXTURE", tool_calls: [{ index: 0, id: `call_fixture_${requests.length}`, type: "function", function: { name: selectedTool?.name ?? "fixture_tool", arguments: selectedTool ? JSON.stringify(selectedTool.input) : lastText.includes("USAGE_TOOL") ? '{"small":true}' : "{}" } }] } : { content: text }
     res.writeHead(200, { "content-type": "text/event-stream" })
-    for (const choice of [{ index: 0, delta, finish_reason: null }, { index: 0, delta: {}, finish_reason: tool ? "tool_calls" : typeof custom === "object" && "finish" in custom ? custom.finish : lastText.includes("TRUNCATE_FIXTURE") ? "length" : "stop" }])
+    for (const choice of [{ index: 0, delta, finish_reason: null }, { index: 0, delta: {}, finish_reason: tool ? "tool_calls" : typeof custom === "object" && "finish" in custom ? custom.finish : lastText.includes("TRUNCATE_FIXTURE") ? "length" : "stop" }]) {
       res.write(`data: ${JSON.stringify({ id: "chatcmpl_fixture", object: "chat.completion.chunk", created: 1, model: input.model, choices: [choice] })}\n\n`)
+      if (choice.finish_reason === null && typeof custom === "object" && "pause" in custom) await custom.pause
+    }
     const report = usage(input, scope)
     if (report) res.write(`data: ${JSON.stringify({ id: "chatcmpl_fixture", object: "chat.completion.chunk", created: 1, model: input.model, choices: [], usage: {
       prompt_tokens: report.input, completion_tokens: report.output, total_tokens: report.input + report.output,

@@ -2,7 +2,7 @@
 
 Choose what stays in your coding session's context. Prune reasoning or tool results, summarize or delete selected ranges, and restore them later—without deleting the stored conversation.
 
-**Plugin 4.4.5 · OpenCode V2**.
+**Plugin 4.4.6 · OpenCode V2**.
 
 ## Features
 
@@ -26,7 +26,7 @@ Version 4.4.3 rejects summary output if any assistant response to the current he
 
 Version 4.4.4 lets reasoning pruning proceed across failed/interrupted attempts by retaining their ambiguous reasoning and pruning safe responses. It uses the ordinary pruning status without extra warnings. See [current validation](CONTRIBUTING.md#version-444-validation).
 
-Version 4.4.5 makes **Ctrl+E** apply one-layer restoration immediately, without a preview or confirmation. It still checks the selected source and session state before writing. See [validation details](CONTRIBUTING.md#version-445-validation).
+Version 4.4.6 simplifies the compaction screen: ready/total ranges, elapsed time per agent, and live output/reasoning character counts. Counts cover the helper conversation, including size-review prompts; they are not token usage or a completion percentage. Some providers expose no intermediate output. Progress-read failures do not cancel generation or authorize applying a draft. **Ctrl+E** still restores one layer immediately through the normal source/session checks. See [validation details](CONTRIBUTING.md#version-446-validation).
 
 Development checks run on Node.js 22+; renderer tests use the bundled Bun runtime. OpenTUI's Node-backend engine warning on Node 22 does not apply to the bundled Bun renderer. Using its Node backend directly requires Node 26.4+.
 

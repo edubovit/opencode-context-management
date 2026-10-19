@@ -61,6 +61,66 @@ test("five disjoint ranges generate concurrently from the same full frozen conte
   assert.equal(data.removed.length, 5)
 })
 
+test("live batch progress counts helper output only and cannot settle or fail generation", async (t) => {
+  const { host, data, batch, ranges } = await setup(t, 1)
+  let release!: () => void
+  const gate = new Promise<void>((resolve) => { release = resolve })
+  const generate = host.generate
+  host.generate = async (...args) => { await gate; return generate(...args) }
+  await batch.start("brief", ranges)
+  const pending = batch.generate()
+  await until(() => data.jobs === 1)
+  try {
+    const history = messages("job_1", 1)
+    history[0].parts = [{ ...history[0].parts[0], type: "text", text: "DO NOT COUNT INPUT" }]
+    history[1].parts = [
+      { ...history[0].parts[0], type: "text", text: "a😀" },
+      { ...history[0].parts[0], type: "reasoning", text: "think" },
+    ]
+    data.conversations.set("job_1", history)
+    await batch.pollProgress()
+    assert.deepEqual(batch.entries[0].progress, { output: 2, reasoning: 5, requests: 1 })
+    assert.equal(batch.entries[0].status, "running")
+    assert.equal(batch.ready, false)
+    const read = host.messages
+    host.messages = async () => { throw new Error("Progress read failed") }
+    await batch.pollProgress()
+    assert.equal(batch.entries[0].progressUnavailable, true)
+    assert.equal(batch.entries[0].status, "running")
+    host.messages = read
+    await batch.pollProgress()
+    assert.equal(batch.entries[0].progressUnavailable, false)
+    assert.equal(readPolicy(data.session).revision, 0)
+  } finally { release(); await pending }
+  assert.equal(batch.ready, true)
+  assert.ok(batch.entries[0].finished! >= batch.entries[0].started!)
+})
+
+test("progress polling coalesces reads and ignores results after cancellation", async (t) => {
+  const { host, data, batch, ranges } = await setup(t, 1)
+  let release!: () => void, readRelease!: () => void
+  const gate = new Promise<void>((resolve) => { release = resolve })
+  const readGate = new Promise<void>((resolve) => { readRelease = resolve })
+  const generate = host.generate
+  host.generate = async (...args) => { await gate; return generate(...args) }
+  let reads = 0
+  host.progress = async () => { reads++; await readGate; return { output: 40, reasoning: 10, requests: 1 } }
+  await batch.start("brief", ranges)
+  const pending = batch.generate()
+  await until(() => data.jobs === 1)
+  const polling = batch.pollProgress()
+  await until(() => reads === 1)
+  await batch.pollProgress()
+  assert.equal(reads, 1)
+  await batch.cancel()
+  readRelease()
+  await polling
+  assert.equal(batch.entries[0].progress, undefined)
+  release()
+  await pending
+  assert.equal(readPolicy(data.session).revision, 0)
+})
+
 test("partial failures keep successful edits and retry only the failed range against the original snapshot", async (t) => {
   const { host, data, storage, batch, ranges } = await setup(t, 3)
   await storage.saveCapture({ sessionID: data.session.id, time: 1, system: ["FROZEN_RUNTIME"], warnings: [] })

@@ -29,6 +29,7 @@ export const ContextManager = Rpc.define({
     ]) }).strict(), output: z.custom<AutoState>(), errors },
     createJob: { input: session.extend({ purpose: z.enum(["summary", "edit"]) }).strict(), output: id, errors },
     jobHistory: { input: job, output: z.custom<Envelope[]>(), errors },
+    jobProgress: { input: job, output: z.object({ output: z.number().int().nonnegative(), reasoning: z.number().int().nonnegative(), requests: z.number().int().nonnegative() }).strict(), errors },
     generate: { input: job.extend({ model, text: z.string().min(1), purpose: z.enum(["summary", "edit"]) }).strict(), output: z.string(), errors },
     abortJob: { input: job, output: z.null(), errors },
     removeJob: { input: job, output: z.null(), errors },

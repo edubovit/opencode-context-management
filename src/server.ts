@@ -3,7 +3,7 @@ import { AGENT, EDIT_AGENT, KEY, VERSION, settings } from "./config.ts"
 import { blockMessages, historyHash, activeMessages, project, readPolicy } from "./context.ts"
 import { Controller } from "./controller.ts"
 import { Storage, type RuntimeCapture } from "./storage.ts"
-import { spills, spillPreview } from "./text.ts"
+import { chars, spills, spillPreview } from "./text.ts"
 import { SUMMARIZER_SYSTEM, SUMMARY_EDIT_SYSTEM } from "./summarize.ts"
 import { Autocompaction } from "./autocompaction.ts"
 import { ContextManager, errorMessage } from "./rpc.ts"
@@ -15,6 +15,7 @@ import { tokenBasis } from "./tokens.ts"
 import { budgetScope, budgetUnits, estimateBudget, prepareBudget, recordRequest } from "./budget.ts"
 import { hash } from "./context.ts"
 import { inputBudget } from "./auto-state.ts"
+import { summaryProgress } from "./summary-progress.ts"
 
 export async function setupServer(ctx: PluginContext, store = new Storage(ctx.location.directory)) {
   const config = settings(ctx.options)
@@ -23,6 +24,7 @@ export async function setupServer(ctx: PluginContext, store = new Storage(ctx.lo
   const auto = new Autocompaction(host, config, store)
   let closed = false
   const budgetWrites = new Set<Promise<unknown>>()
+  const progress = new Map<string, { output: number; reasoning: number }>()
   const saveBudget = async (id: string, state: Parameters<Storage["saveBudget"]>[1]) => {
     if (closed) throw new Error("Context manager unloaded before budget accounting completed")
     const write = store.saveBudget(id, state)
@@ -76,9 +78,16 @@ export async function setupServer(ctx: PluginContext, store = new Storage(ctx.lo
       call.signal.throwIfAborted()
       const id = await host.createJob(purpose, sessionID, "manual")
       if (call.signal.aborted || closed) { await host.remove(id); throw new Error("Helper creation cancelled") }
+      progress.set(id, { output: 0, reasoning: 0 })
       return id
     }),
     jobHistory: ({ sessionID, jobID }, call) => attempt((message) => call.error("rejected", message, null), async () => { await ownJob(sessionID, jobID); return host.messages(jobID) }),
+    jobProgress: ({ sessionID, jobID }, call) => attempt((message) => call.error("rejected", message, null), async () => {
+      await ownJob(sessionID, jobID)
+      const saved = summaryProgress(await host.messages(jobID))
+      const live = progress.get(jobID)
+      return { ...saved, output: Math.max(saved.output, live?.output ?? 0), reasoning: Math.max(saved.reasoning, live?.reasoning ?? 0) }
+    }),
     generate: ({ sessionID, jobID, model, text, purpose }, call) => attempt((message) => call.error("rejected", message, null), async () => {
       await ownJob(sessionID, jobID)
       if (!await eligible(sessionID)) throw new Error("Main session is no longer available for context maintenance")
@@ -91,7 +100,7 @@ export async function setupServer(ctx: PluginContext, store = new Storage(ctx.lo
       finally { call.signal.removeEventListener("abort", abort); if (call.signal.aborted) await host.remove(jobID).catch(() => {}) }
     }),
     abortJob: ({ sessionID, jobID }, call) => attempt((message) => call.error("rejected", message, null), async () => { await ownJob(sessionID, jobID); await host.abort(jobID); return null }),
-    removeJob: ({ sessionID, jobID }, call) => attempt((message) => call.error("rejected", message, null), async () => { await ownJob(sessionID, jobID); await host.remove(jobID); return null }),
+    removeJob: ({ sessionID, jobID }, call) => attempt((message) => call.error("rejected", message, null), async () => { await ownJob(sessionID, jobID); await host.remove(jobID); progress.delete(jobID); return null }),
     dump: ({ sessionID }, call) => attempt((message) => call.error("rejected", message, null), async () => { await requireSession(sessionID); return new Controller(host, sessionID, config, store).dump(ctx.app.version) }),
   })
   await ctx.agent.transform((agents) => {
@@ -190,13 +199,17 @@ export async function setupServer(ctx: PluginContext, store = new Storage(ctx.lo
   await store.cleanupOutputs()
   const listening = (async () => {
     for await (const event of ctx.event.subscribe({ signal: stop.signal })) {
+      if (event.type === "session.text.delta" || event.type === "session.reasoning.delta") {
+        const live = progress.get(event.data.sessionID)
+        if (live) live[event.type === "session.text.delta" ? "output" : "reasoning"] += chars(event.data.delta)
+      }
       if (event.type === "session.forked" && event.location?.directory === ctx.location.directory)
         void adapter.nativeSession(event.data.sessionID).catch((error: unknown) => { if (!closed) console.error("Context manager fork initialization:", errorMessage(error)) })
       if (event.type === "session.viewed" && event.location?.directory === ctx.location.directory)
         void adapter.nativeSession(event.data.sessionID).catch((error: unknown) => { if (!closed) console.error("Context manager revert reconciliation:", errorMessage(error)) })
       if (event.type === "session.execution.interrupted" || event.type === "session.execution.failed" || event.type === "session.execution.succeeded") auto.cancel(event.data.sessionID)
       if (event.type === "session.moved") { auto.cancel(event.data.sessionID); await adapter.moved(event.data.sessionID).catch((error: unknown) => console.error("Context manager moved-session helper cleanup:", errorMessage(error))) }
-      if (event.type === "session.deleted") { auto.cancel(event.data.sessionID); adapter.deleted(event.data.sessionID) }
+      if (event.type === "session.deleted") { auto.cancel(event.data.sessionID); adapter.deleted(event.data.sessionID); progress.delete(event.data.sessionID) }
     }
   })().catch((error: unknown) => { if (!stop.signal.aborted) { closed = true; auto.close(); console.error("Context manager event stream stopped; reload required:", errorMessage(error)) } })
   return async () => {
@@ -206,6 +219,7 @@ export async function setupServer(ctx: PluginContext, store = new Storage(ctx.lo
     await listening
     await Promise.allSettled([...budgetWrites])
     await adapter.close()
+    progress.clear()
   }
 }
 

@@ -242,6 +242,8 @@ test("manual RPC generation leaves oversized input to the provider for summaries
     const text = "Full manual request must reach the provider. ".repeat(1000)
     assert.equal(await mock.rpc.generate({ sessionID: "ses_native", jobID: id, model: { providerID: "fixture", modelID: "model" }, text, purpose }, call), "Answer only")
     assert.equal(mock.state.prompts.at(-1), text)
+    const progress = await mock.rpc.jobProgress({ sessionID: "ses_native", jobID: id }, call)
+    assert.deepEqual(progress, { output: 11, reasoning: 14, requests: 1 })
   }
 })
 

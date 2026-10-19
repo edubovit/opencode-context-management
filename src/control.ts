@@ -32,6 +32,7 @@ export function remoteHost(client: OpenCodeClient, sessionID: string) {
     auto,
     session: async () => (await load()).session,
     messages: async (id) => id === sessionID ? (await load()).messages : call((options) => rpc.jobHistory({ sessionID, jobID: id }, options)),
+    progress: async (jobID) => call((options) => rpc.jobProgress({ sessionID, jobID }, options)),
     models: async () => (await load()).models,
     idle: async () => call((options) => rpc.idle({ sessionID }, options)),
     configured: async () => { await load(); return true },

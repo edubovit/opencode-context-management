@@ -13,6 +13,7 @@ import { contentTokens, lastReportedUsage } from "./metrics.ts"
 import { resolveRanges } from "./ranges.ts"
 import { revertPolicy } from "./revert.ts"
 import type { AutoControl, AutoState, Expected } from "./auto-state.ts"
+import { summaryProgress, type SummaryProgress } from "./summary-progress.ts"
 
 export type HelperTrigger = "manual" | "auto"
 
@@ -20,6 +21,7 @@ export interface Host {
   auto?: AutoControl
   session(id: string): Promise<Session>
   messages(id: string): Promise<Envelope[]>
+  progress?(id: string): Promise<SummaryProgress>
   idle(id: string): Promise<boolean>
   update(id: string, metadata: Record<string, unknown>, expected?: Expected): Promise<void>
   models(): Promise<Model[]>
@@ -277,6 +279,14 @@ export class Controller {
     const loaded = await this.load()
     const value = snapshot(this.sessionID, hostVersion, loaded.blocks, loaded.policy, loaded.runtime, loaded.tokenizer, loaded.usage)
     return this.storage.write(`dump-${Date.now()}-${hash(this.sessionID).slice(0, 8)}.json`, value)
+  }
+
+  async summaryProgress() {
+    const job = this.job
+    if (!job) return undefined
+    const progress = this.host.progress ? await this.host.progress(job) : summaryProgress(await this.host.messages(job))
+    if (this.job !== job) return undefined
+    return progress
   }
 
   async cancel() {

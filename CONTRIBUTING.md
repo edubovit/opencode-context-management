@@ -34,6 +34,14 @@ The frozen clone receives updates only after development is complete, verified, 
 
 Never include machine-specific local paths or workstation configuration in tracked files. Use generic placeholders in public documentation and examples; keep exact local setup details in ignored notes.
 
+### Version 4.4.6 validation
+
+The compacting view shows ready/total ranges, per-range elapsed time, and observed helper output/reasoning character counts. Counts include the entire helper conversation (including size-review prompts), exclude input text, and are not provider tokens, completion percentages or ETAs. The current accepted draft's size is shown once ready. Providers can buffer output or omit reasoning; no observed text does not prove a stalled agent.
+
+Progress uses public text/reasoning delta events for owned helpers and an ownership-checked native RPC returning only numeric counters. Saved history provides a fallback; live and saved totals are not added together. Ephemeral events can be lost, so these are observed counts, not billing measurements. The inspector polls once per second while a batch is visible, coalesces slow reads, ignores late/cancelled results, and disposes its timer on exit. Read failures are display-only; generation, validation, cancellation and atomic application remain authoritative and unchanged. No persistence or dependency change.
+
+Typecheck, **304 unit/adapter tests** and **50 renderer tests** passed. Regressions cover Unicode counts, prompt exclusion, unavailable/recovered reads, cancellation and overlapping polls, and 80/60-column live counters. **36 production server/ConPTY checks** passed on Windows x64 / OpenCode **2.0.32**, with cleanup verified. The installed host driver pauses a synthetic provider after streaming text and observes output counts in the actual inspector before allowing completion, plus cross-owner RPC refusal. An initial history-only implementation failed that live test; public delta events fixed it. No fresh install/audit, separate usage/subagent/revert/fork suites, Linux/macOS or live-provider validation was performed for this change.
+
 ### Installed-host verification
 
 `script/host-smoke.ts` uses the actual production entrypoints and RPC/controller workflows. `script/host-fixture.ts` starts a private foreground server and a loopback fake provider on ephemeral ports. It uses fresh HOME/config/data/cache/state directories and an explicit environment—not real credentials, MCP servers, or the shared service.

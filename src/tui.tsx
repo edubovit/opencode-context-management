@@ -19,7 +19,7 @@ import { COMPACTION_MODES, selectedModes, toggleMode, type Compaction, type Isol
 import { rangePreview, rangeToolStats } from "./range-rows.ts"
 import { Hotkeys, type HotkeyLine } from "./tui-help.tsx"
 import { anchorRanges, pressSpace, rangeIDs, rangeTag, selectedBlocks, visibleRanges, type Selection } from "./ranges.ts"
-import { bindPruneRule } from "./text.ts"
+import { bindPruneRule, chars } from "./text.ts"
 import { distribution } from "./snapshot.ts"
 import { settings, VERSION } from "./config.ts"
 import { rangeLabel, toolStatus, turnIndex } from "./status.ts"
@@ -100,6 +100,15 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
   }
   onMount(() => void run(refresh))
   onMount(() => {
+    let alive = true
+    const timer = setInterval(() => {
+      if (!runningBatch()) return
+      touch()
+      void summaries.pollProgress().then(() => { if (alive) touch() })
+    }, 1000)
+    onCleanup(() => { alive = false; clearInterval(timer) })
+  })
+  onMount(() => {
     if (!props.controller.host.auto) return
     let alive = true
     let checking = false
@@ -151,7 +160,7 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
     setLoaded(summaries.snapshot)
     setSelection(anchorRanges(summaries.snapshot!.blocks, ids))
     setRunningBatch(true)
-    setNotice(`Generating ${ids.length} ${mode} ranges · ${isolation === "off" ? "full background" : isolation === "head" ? "isolated: head included" : "isolated: selected range only"}…`)
+    setNotice(isolation === "off" ? "Full background" : isolation === "head" ? "Background: earlier turns" : "Selected ranges only")
     await summaries.generate(touch)
     await finishBatch()
   }
@@ -371,8 +380,8 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
     : automatic() ? [["Automatic compaction in progress"], [{ key: "Esc", label: "exit choices / abort run" }]]
     : picker() ? [[{ key: "Up/Down", label: "select" }, { key: "Enter", label: "confirm" }, { key: "Esc", label: "cancel" }, "type to filter"]]
     : help() ? [[{ key: "Esc", label: "close help" }]]
-    : busy() ? [[{ key: "Esc", label: "cancel running model requests — writes already in progress may finish" }]]
-    : runningBatch() ? [[{ key: "g", label: "retry failed ranges" }, { key: "m", label: "model" }, { key: "t", label: "effort" }, { key: "Esc", label: "discard batch" }], ["Successful results stay pending until the entire batch can autoapply."]]
+    : busy() ? [[{ key: "Esc", label: runningBatch() ? "cancel agents" : "cancel requests" }]]
+    : runningBatch() ? [[{ key: "g", label: "retry failed" }, { key: "m/t", label: "model/effort" }, { key: "Esc", label: "discard" }]]
     : configuring() ? [[{ key: "Up/Down", label: "mode" }, { key: "Space", label: "toggle" }, { key: "Enter", label: "run" }], [{ key: "m/t", label: "model/effort" }, { key: "Esc", label: "cancel" }]]
     : narrow() ? [
       [{ key: "Space", label: "select" }, { key: "c", label: "reduce" }, { key: "Enter", label: "read" }],
@@ -382,7 +391,21 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
       [{ key: "Space", label: "select" }, { key: "c", label: "reduce" }, { key: "Enter", label: "read" }, { key: "Ctrl+E", label: "restore" }],
       [{ key: "v", label: "details" }, { key: "Tab", label: "pane" }, { key: "a", label: "auto" }, { key: "m/t", label: "model" }, { key: "?", label: "help" }, { key: "Esc", label: "back" }],
     ]
-  const batchStatus = () => { epoch(); return summaries.entries.map((entry, index) => `R${index + 1} ${rangeLabel(entry.ids, sourceTurns())}: ${entry.status}${entry.error ? `\n${entry.error}` : ""}`).join("\n\n") }
+  const batchStatus = () => {
+    epoch()
+    return summaries.entries.map((entry) => {
+      const seconds = entry.started === undefined ? undefined : Math.floor(((entry.finished ?? Date.now()) - entry.started) / 1000)
+      const elapsed = seconds === undefined ? "" : ` · ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`
+      const progress = entry.progress
+      const detail = entry.status === "ready" ? `${chars(entry.text).toLocaleString()} chars`
+        : entry.status !== "running" ? ""
+        : entry.progressUnavailable ? "Progress unavailable"
+        : progress && (progress.output || progress.reasoning) ? `${progress.output.toLocaleString()} output · ${progress.reasoning.toLocaleString()} reasoning chars${progress.requests > 1 ? ` · ${progress.requests} prompts` : ""}`
+        : "Waiting for output"
+      return `${rangeLabel(entry.ids, sourceTurns())} · ${entry.status}${elapsed}${detail ? `\n${detail}` : ""}${entry.error ? `\n${entry.error}` : ""}`
+    }).join("\n\n")
+  }
+  const batchHeading = () => { epoch(); return `Compacting · ${summaries.entries.filter((entry) => entry.status === "ready").length}/${summaries.entries.length} ready` }
   return <box width="100%" height="100%" flexDirection="column" overflow="hidden">
     <Show when={reader()} keyed fallback={
       <box width="100%" height="100%" flexDirection="column" padding={1} overflow="hidden">
@@ -398,21 +421,21 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
         <Show when={auto().pause}>{(pause) => <text height={2} flexShrink={0} overflow="hidden" fg={api.theme.text.feedback.warning.base}>{`PAUSED (${pause().phase}) ≈${pause().tokens.toLocaleString()} / ${pause().threshold.toLocaleString()} tokens · input limit ${pause().derived ? "derived" : "advertised"}\n${pause().message}`}</text>}</Show>
         <Show when={help()} fallback={
           <box flexDirection="row" flexGrow={1} minHeight={0} gap={1} overflow="hidden">
-            <Show when={!narrow() || pane() === "list"}>
+            <Show when={runningBatch() || !narrow() || pane() === "list"}>
             <box id="cm-conversation-panel" flexGrow={1} flexBasis={0} minWidth={0} flexDirection="column" minHeight={0} overflow="hidden"
               border borderStyle="rounded" borderColor={pane() === "list" ? api.theme.text.formfield.focused : api.theme.border.base}
-              title={`Conversation · ${unit() === "tokens" ? "tokens" : "chars"}`} paddingLeft={1} paddingRight={1}>
+              title={runningBatch() ? "Summaries" : `Conversation · ${unit() === "tokens" ? "tokens" : "chars"}`} paddingLeft={1} paddingRight={1}>
                 <Show when={runningBatch()} fallback={
                   <Show when={configuring()} fallback={<RangeList api={api} rows={rows()} maxLines={props.controller.config.ui.maxLinesPerTurn} selectedIndex={cursor()} onChange={setCursor} focused={!busy() && !automatic() && !exitDialog() && !strategyPicker() && !picker() && pane() === "list"} />}>
                     <CompactionMenu api={api} value={compaction()} index={compactionIndex()} toggle={(index) => { if (!picker() && !inputBlocked(api)) setCompaction(toggleMode(compaction(), index)) }} />
                   </Show>
                 }>
-                  <text height={1} fg={api.theme.text.base}>Batch progress — automatic acceptance</text>
+                   <text height={1} fg={api.theme.text.base}>{batchHeading()}</text>
                   <scrollbox flexGrow={1} minHeight={0} focused={!busy() && !picker()}><text>{batchStatus()}</text></scrollbox>
                 </Show>
             </box>
             </Show>
-            <Show when={!narrow() || pane() === "content"}>
+            <Show when={!runningBatch() && (!narrow() || pane() === "content")}>
             <box id="cm-context-panel" width={narrow() ? "100%" : sidebarWidth()} flexShrink={0} flexDirection="column" minHeight={0} overflow="hidden"
               border borderStyle="rounded" borderColor={pane() === "content" ? api.theme.text.formfield.focused : api.theme.border.base}
               title={view().charAt(0).toUpperCase() + view().slice(1)} paddingLeft={1} paddingRight={1}>

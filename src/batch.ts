@@ -5,6 +5,9 @@ import type { Isolation } from "./compaction.ts"
 export type BatchEntry = {
   ids: string[]; worker: Controller; choice: ModelChoice; status: "pending" | "running" | "ready" | "error"
   draft?: Draft; text: string; request: string; error?: string
+  started?: number; finished?: number
+  progress?: Awaited<ReturnType<Controller["summaryProgress"]>>
+  progressUnavailable?: boolean
 }
 
 export class SummaryBatch {
@@ -16,9 +19,28 @@ export class SummaryBatch {
   private closed = false
   private cancelled = false
   private applied = false
+  private polling = false
   constructor(private readonly owner: Controller) {}
 
   get snapshot() { return this.frozen }
+  async pollProgress() {
+    if (this.polling || this.closed || this.cancelled) return
+    this.polling = true
+    try {
+      await Promise.all(this.entries.filter((entry) => entry.status === "running").map(async (entry) => {
+        const started = entry.started
+        try {
+          const progress = await entry.worker.summaryProgress()
+          if (this.closed || this.cancelled || entry.status !== "running" || entry.started !== started) return
+          entry.progress = progress
+          entry.progressUnavailable = false
+        } catch {
+          if (this.closed || this.cancelled || entry.status !== "running" || entry.started !== started) return
+          entry.progressUnavailable = true
+        }
+      }))
+    } finally { this.polling = false }
+  }
   get ready() { return !this.closed && !this.cancelled && !this.applied && !this.task && this.entries.length > 0 && this.entries.every((entry) => entry.status === "ready") }
 
   async start(mode: "compact" | "brief", ranges: string[][], override?: ModelChoice, isolation: Isolation = "off") {
@@ -71,6 +93,10 @@ export class SummaryBatch {
     const task = Promise.all(entries.map(async (entry) => {
       entry.status = "running"
       entry.error = undefined
+      entry.started = Date.now()
+      entry.finished = undefined
+      entry.progress = undefined
+      entry.progressUnavailable = false
       onChange()
       try {
         await entry.worker.discard()
@@ -83,6 +109,7 @@ export class SummaryBatch {
         entry.status = "error"
         entry.error = error instanceof Error ? error.message : String(error)
       }
+      entry.finished = Date.now()
       onChange()
     })).then(() => {})
     this.task = task
