@@ -83,7 +83,7 @@ export async function fixture(executable = "opencode", destination?: string, opt
   const config = {
     update: "disable", snapshots: false, compaction: { auto: false }, model: "fixture/fixture",
     plugins: ["-opencode.provider.*", { package: options.plugin ?? path.join(repo, "src"), options: { autocompaction: { headroom: 2000, lastResortKeepTokens: options.keep ?? 20000 }, prune: { threshold: 300, head: 40, tail: 160 }, summarizer: { providerID: "fixture", modelID: "fixture" } } }, path.join(repo, "test/host-fixture")],
-    permissions: [{ action: "*", resource: "*", effect: "deny" }, { action: "fixture_tool", resource: "*", effect: "allow" }, ...(options.subagents ? [{ action: "subagent", resource: "*", effect: "allow" }] : [])],
+    permissions: [{ action: "*", resource: "*", effect: "deny" }, { action: "fixture_tool", resource: "*", effect: "allow" }, { action: "fixture_wait", resource: "*", effect: "allow" }, ...(options.subagents ? [{ action: "subagent", resource: "*", effect: "allow" }] : [])],
     ...(options.subagents ? { experimental: { subagent_depth: 4 }, agents: { "fixture-worker": { mode: "subagent", permissions: [{ action: "*", resource: "*", effect: "deny" }, { action: "fixture_tool", resource: "*", effect: "allow" }, { action: "subagent", resource: "*", effect: "allow" }] } } } : {}),
     providers: { fixture: { package: "@opencode/ai/providers/openai-compatible", settings: { apiKey: "synthetic-not-a-secret", baseURL: `http://127.0.0.1:${address.port}/v1` }, models: {
       fixture: { limit: { context: 200000, input: 168000, output: 32000 }, capabilities: { tools: true, input: ["text", "image"], output: ["text"] }, variants: [{ id: "high", settings: { reasoningEffort: "high" } }] },

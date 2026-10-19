@@ -4,6 +4,10 @@ import type { FilePart, Model, Part, Session, ToolPart, Usage } from "./model.ts
 
 const zero = (): Usage => ({ input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } })
 
+export function retainsReasoning(message: Extract<SessionMessageInfo, { type: "assistant" }>) {
+  return message.content.some((part) => part.type === "reasoning" && (message.error || (part.time && part.time.completed === undefined)))
+}
+
 export function sessionView(value: SessionInfo): Session {
   return {
     id: value.id, location: value.location, title: value.title ?? undefined,
@@ -49,6 +53,7 @@ export function transcriptView(session: SessionInfo, messages: readonly SessionM
         ...base, role: "assistant" as const, agent: message.agent, providerID: message.model.providerID, modelID: message.model.id,
         time: { created: message.time.created, completed: message.time.completed ?? undefined }, finish: message.finish ?? undefined,
         error: message.error ?? undefined, tokens: message.tokens ?? zero(), cost: message.cost ?? 0,
+        ...(retainsReasoning(message) ? { retainReasoning: true as const } : {}),
       },
       parts: message.content.map((content, index): Part => {
         if (content.type !== "tool") return { ...partBase(index), type: content.type, text: content.text, ...(content.state ? { metadata: content.state } : {}) }

@@ -131,11 +131,11 @@ test("projection rejects role drift, unknown calls, duplicate results and missin
   assert.throws(() => apply("tool-prune-all", [...request.slice(0, 3), Message.tool({ id: "call_fixture", name: "wrong", result: "output" }), request[4]]), /identity/)
 })
 
-test("opaque state and failed reasoning are refused while unselected hosted results remain unchanged", () => {
+test("opaque state is refused and failed reasoning is retained while unselected hosted results remain unchanged", () => {
   const { request, assistant, apply } = fixture()
   for (const role of ["assistant", "tool"]) assert.throws(() => apply("tool-prune-all", request.map((message) => message.role === role ? Message.make({ ...message, native: { fixture: "opaque" } }) : message)), /Opaque/)
   assistant.error = { type: "aborted", message: "interrupted" }
-  assert.throws(() => apply("prune-reason"), /Failed-assistant reasoning/)
+  assert.deepEqual(apply("prune-reason"), request)
   delete assistant.error
   const result = request[3].content[0]
   assert.equal(result.type, "tool-result")
@@ -150,11 +150,11 @@ test("interrupted reasoning without a message error is not mistaken for removabl
   assert.equal(reasoning.type, "reasoning")
   reasoning.time = { created: 2 }
   request[2] = Message.make({ ...request[2], content: [{ type: "text", text: reasoning.text }, ...request[2].content.slice(1)] })
-  for (const mode of ["prune-reason", "tool-delete"] as const) assert.throws(() => apply(mode), /interrupted reasoning/)
+  for (const mode of ["prune-reason", "tool-delete"] as const) assert.ok(JSON.stringify(apply(mode)).includes("REASON"))
   assert.ok(JSON.stringify(apply("tool-prune-all")).includes("REASON"))
 })
 
-test("reasoning errors identify the original turn for a failed response, without changing inputs", () => {
+test("failed responses do not block combined pruning or change inputs", () => {
   const { session, native, canonical } = nativeFixture()
   const failed = native.find((message) => message.id === "msg_a1")!
   assert.equal(failed.type, "assistant")
@@ -167,13 +167,13 @@ test("reasoning errors identify the original turn for a failed response, without
   const policy = append(empty, { ...op, pruneReason: true })
   const before = JSON.stringify({ native, raw, canonical, policy })
   for (const check of [() => validateNativePolicy(native, raw, policy), () => projectRequest(native, raw, canonical, policy)])
-    assert.throws(check, /^Error: Turn 2: Failed-assistant reasoning or interrupted reasoning/)
+    assert.doesNotThrow(check)
   assert.equal(JSON.stringify({ native, raw, canonical, policy }), before)
   assert.doesNotThrow(() => validateNativePolicy(native, raw, append(empty, op)))
   assert.doesNotThrow(() => projectRequest(native, raw, canonical, append(empty, op)))
 })
 
-test("reasoning errors list all offending turns across disjoint operations, sorted and deduplicated", () => {
+test("multiple failed and interrupted attempts do not block disjoint pruning", () => {
   const { session, native, canonical } = nativeFixture()
   const failed = native.find((message) => message.id === "msg_a0")!
   const interrupted = native.find((message) => message.id === "msg_a2")!
@@ -189,13 +189,13 @@ test("reasoning errors list all offending turns across disjoint operations, sort
   const blocks = project(activeMessages(raw), empty)
   const policy = append(append(empty, operation("prune-reason", [blocks[2]])), operation("prune-reason", [blocks[0]]))
   for (const check of [() => validateNativePolicy(native, raw, policy), () => projectRequest(native, raw, canonical, policy)])
-    assert.throws(check, /^Error: Turns 1, 3: Failed-assistant reasoning or interrupted reasoning/)
+    assert.doesNotThrow(check)
   const safe = append(empty, operation("prune-reason", [blocks[1]]))
   assert.doesNotThrow(() => validateNativePolicy(native, raw, safe))
   assert.doesNotThrow(() => projectRequest(native, raw, canonical, safe))
 })
 
-test("reasoning error turn numbers match the inspector after summaries and deletions", () => {
+test("failed reasoning remains editable after summaries and deletions", () => {
   for (const mode of ["compact", "delete"] as const) {
     const { session, native, canonical } = nativeFixture()
     for (const message of native) if (message.type === "assistant" && ["msg_a0", "msg_a2"].includes(message.id))
@@ -208,11 +208,11 @@ test("reasoning error turn numbers match the inspector after summaries and delet
     assert.equal(selected.length, 2)
     const policy = append(reduced, operation("prune-reason", selected))
     for (const check of [() => validateNativePolicy(native, raw, policy), () => projectRequest(native, raw, canonical, policy)])
-      assert.throws(check, /^Error: Turn 3: Failed-assistant reasoning or interrupted reasoning/)
+      assert.doesNotThrow(check)
   }
 })
 
-test("reasoning errors keep the source turn number for a split continuation", () => {
+test("failed reasoning in split continuations is retained", () => {
   const { session, native, canonical } = nativeFixture()
   const failed: SessionMessageInfo = {
     id: "msg_tail", type: "assistant", agent: "build", model: session.model!, time: { created: 4, completed: 5 },
@@ -226,5 +226,6 @@ test("reasoning errors keep the source turn number for a split continuation", ()
   assert.equal(blocks.length, 4)
   const policy = append(empty, operation("prune-reason", [blocks[1]]))
   for (const check of [() => validateNativePolicy(native, raw, policy), () => projectRequest(native, raw, canonical, policy)])
-    assert.throws(check, /^Error: Turn 1: Failed-assistant reasoning or interrupted reasoning/)
+    assert.doesNotThrow(check)
+  assert.match(JSON.stringify(project(activeMessages(raw), policy)), /Failed tail/)
 })

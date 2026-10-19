@@ -2,7 +2,7 @@ import type { Block, Policy } from "./context.ts"
 import { messageText } from "./turn-view.ts"
 import type { toolStatus } from "./status.ts"
 
-export type RangeRow = { title: string; size: string; stats?: string; preview: string; warning?: boolean }
+export type RangeRow = { title: string; size: string; stats?: string; preview: string }
 
 export function rangePreview(block: Block, policy: Policy) {
   return previewText(block, policy).replace(/\r\n?/g, "\n").split("\n").filter((line) => line.trim()).join("\n") || "[No text recorded]"

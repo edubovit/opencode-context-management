@@ -80,6 +80,40 @@ try {
     assert.ok(!restoredRequest.includes("Tool output pruned") && !restoredRequest.includes("middle omitted from tool output"))
     checks.push(`one-layer restoration ${JSON.stringify(options)}; original content and calls on the next request`)
   }
+  const interrupted = await make()
+  test.respond(() => ({ tool: { name: "fixture_wait", input: {} } }))
+  await test.client.session.prompt({ sessionID: interrupted.sessionID, text: "Synthetic failed reasoning attempt" })
+  await test.until(async () => (await test.client.session.context({ sessionID: interrupted.sessionID })).some((message) => message.type === "assistant" && message.content.some((part) => part.type === "tool" && part.state.status === "running")), "reasoning-bearing attempt awaiting interruption")
+  await test.client.session.interrupt({ sessionID: interrupted.sessionID, resume: false })
+  await test.client.session.wait({ sessionID: interrupted.sessionID })
+  let retriedTool = false
+  test.respond(() => {
+    if (retriedTool) return undefined
+    retriedTool = true
+    return { tool: { name: "fixture_tool", input: {} } }
+  })
+  await send(interrupted, "Successful later turn EXERCISE_TOOL")
+  test.respond(() => undefined)
+  const retryView = await interrupted.load()
+  assert.ok(retryView.raw.some((message) => message.info.role === "assistant" && message.info.retainReasoning))
+  assert.equal(retryView.raw.flatMap((message) => message.parts).filter((part) => part.type === "reasoning" && part.text.includes("REASONING_FIXTURE")).length, 2)
+  const retrySource = await test.client.session.context({ sessionID: interrupted.sessionID })
+  const retryIDs = retryView.blocks.flatMap((block) => block.sourceIDs)
+  const beforePruning = test.requests.length
+  await interrupted.prune(retryIDs, { reasoning: true, tools: "all" })
+  assert.equal(test.requests.length, beforePruning)
+  assert.ok((await interrupted.load()).blocks.every((block) => block.reasonPruned))
+  await send(interrupted, "Check retained failed reasoning and pruned successful reasoning")
+  const retainedWire = test.requests.at(-1)!.messages
+  assert.equal((JSON.stringify(retainedWire).match(/REASONING_FIXTURE/g) ?? []).length, 1)
+  assert.ok(retainedWire.some((message) => JSON.stringify(message.content).includes("REASONING_FIXTURE")))
+  assert.doesNotMatch(JSON.stringify(retainedWire), /HEAD_FIXTURE/)
+  assert.deepEqual((await test.client.session.context({ sessionID: interrupted.sessionID })).filter((message) => retrySource.some((original) => original.id === message.id)), retrySource)
+  await interrupted.applyRestore(await interrupted.prepareRestore("expand", retryIDs))
+  await send(interrupted, "Check restored successful reasoning")
+  assert.equal((JSON.stringify(test.requests.at(-1)!.messages).match(/REASONING_FIXTURE/g) ?? []).length, 2)
+  await interrupted.dispose()
+  checks.push("failed-attempt reasoning retained while safe reasoning/tool outputs prune; next same-model request and restoration preserve native history")
   let deleting = await make()
   await send(deleting, "DELETE_SOURCE_FACT EXERCISE_TOOL")
   await send(deleting, "DELETE_SUMMARY_SOURCE")

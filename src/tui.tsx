@@ -72,7 +72,6 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
   onCleanup(() => { popMode(); void Promise.all([summaries.dispose(), props.controller.dispose()]).catch((error) => api.ui.toast.show({ message: String(error), variant: "warning" })) })
   const blocks = () => loaded()?.blocks ?? []
   const sourceTurns = createMemo(() => turnIndex(activeMessages(loaded()?.raw ?? [], loaded()?.session.revert)))
-  const reasoningBlocked = createMemo(() => new Set(loaded()?.reasoningBlocked))
   const ranges = () => visibleRanges(selection(), cursor())
   const inspected = () => selectedBlocks(blocks(), ranges())
   const localCounts = createMemo(() => distribution(blocks(), loaded()?.runtime, basis(), unit()))
@@ -331,12 +330,10 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
     const tag = rangeTag(selection(), cursor(), index)
     const status = toolStatus([block], rule(), basis())
     const protectedTurn = auto().pause && block.sourceIDs.some((id) => (auto().pause!.protectedIDs ?? [auto().pause!.userID]).includes(id))
-    const warning = block.kind === "turn" && block.sourceIDs.some((id) => reasoningBlocked().has(id))
     return {
       title: `${selected ? "●" : "○"} ${tag ? `${tag} · ` : ""}${rangeLabel(block.sourceIDs, sourceTurns())} · ${block.kind === "deleted" ? "DELETED" : block.kind === "turn" ? block.messages[0]?.info.role === "user" ? "USER" : block.messages[0]?.info.kind === "assistant" ? "CONTINUATION" : "HOST CONTEXT" : "SUMMARY"}`,
       size: shortSize(distribution([block], undefined, basis(), unit()).total),
-      warning,
-      stats: [warning ? "Reasoning blocked" : "", protectedTurn ? "PROTECTED" : !block.closed ? "Unfinished" : "", block.kind === "turn" ? rangeToolStats(status) : ""].filter(Boolean).join(" · ") || undefined,
+      stats: [protectedTurn ? "PROTECTED" : !block.closed ? "Unfinished" : "", block.kind === "turn" ? rangeToolStats(status) : ""].filter(Boolean).join(" · ") || undefined,
       preview: rangePreview(block, loaded()!.policy),
     }
   }))
@@ -496,8 +493,7 @@ c configures actions for selected ranges.
 In configuration: arrows choose, Space toggles, Enter runs.
 m/t selects the summary model/effort, also from the main view.
 Reasoning combines with one tool mode. Tool deletion requires reasoning removal.
-Reasoning blocked marks failed/interrupted reasoning that cannot be safely pruned.
-Prune tool results only, exclude the marked turns, or summarize them instead.
+Reasoning pruning leaves failed/interrupted attempts untouched and prunes safe reasoning.
 Summaries and Delete are standalone modes. Parallel summaries apply together.
 Summary options: Isolated (head included) sends preceding context + selection;
 Isolated (total) sends selection only. Both omit runtime/later background.

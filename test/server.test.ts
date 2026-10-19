@@ -78,7 +78,7 @@ test("fork accounting excludes copied reports until its own request receives usa
   assert.equal(capture?.budget?.reported?.messageID, reply.id)
 })
 
-test("RPC rejects combined pruning with all offending turn numbers and no partial write", async (t) => {
+test("RPC commits combined pruning while retaining failed-attempt reasoning", async (t) => {
   const mock = await setup(t)
   const { native } = nativeFixture()
   for (const message of native) if (message.type === "assistant" && ["msg_a0", "msg_a2"].includes(message.id))
@@ -89,26 +89,27 @@ test("RPC rejects combined pruning with all offending turn numbers and no partia
   const policy = emptyPolicy(session.id)
   const blocks = project(activeMessages(raw), policy)
   const operations = [blocks[0], blocks[2]].map((block) => operation("tool-prune", [block], pruneRule()))
-  const before = JSON.stringify({ session, native })
+  const before = JSON.stringify(native)
   const inspected = await mock.rpc.inspect({ sessionID: session.id }, call)
   assert.ok("messages" in inspected)
   assert.deepEqual(inspected.messages, JSON.parse(JSON.stringify(raw)))
   assert.equal(historyHash(inspected.messages), historyHash(raw))
-  assert.ok("reasoningBlocked" in inspected)
-  assert.deepEqual(inspected.reasoningBlocked, ["msg_a0", "msg_a2"])
+  assert.ok(!("reasoningBlocked" in inspected))
   const expected = { revision: 0, fingerprint: historyHash(raw) }
-  await assert.rejects(() => mock.rpc.commit({ sessionID: session.id, expected,
+  await mock.rpc.commit({ sessionID: session.id, expected,
     policy: operations.reduce((saved, op) => append(saved, { ...op, pruneReason: true }), policy),
-  }, call), /^Error: Turns 1, 3: Failed-assistant reasoning or interrupted reasoning/)
-  assert.equal(JSON.stringify({ session, native }), before)
+  }, call)
+  assert.equal(JSON.stringify(native), before)
   assert.equal(mock.state.prompts.length, 0)
   assert.equal(mock.state.created.length, 0)
-  await mock.rpc.commit({ sessionID: session.id, expected, policy: operations.reduce(append, policy) }, call)
   assert.equal(readPolicy(session).revision, 2)
   assert.deepEqual(mock.messages.get(session.id), native)
+  const effective = project(activeMessages(raw), readPolicy(session))
+  assert.ok(effective[0].reasonPruned)
+  assert.ok(effective[0].messages.some((message) => message.parts.some((part) => part.type === "reasoning")))
 })
 
-test("inspection marks interrupted reasoning without an error, but not failures without reasoning", async (t) => {
+test("inspection carries replay retention facts without a blocked-turn diagnostic", async (t) => {
   const mock = await setup(t)
   const { native } = nativeFixture()
   for (const message of native) if (message.type === "assistant") {
@@ -120,8 +121,10 @@ test("inspection marks interrupted reasoning without an error, but not failures 
   }
   mock.messages.set("ses_native", native)
   const inspected = await mock.rpc.inspect({ sessionID: "ses_native" }, call)
-  assert.ok("reasoningBlocked" in inspected)
-  assert.deepEqual(inspected.reasoningBlocked, ["msg_a0"])
+  assert.ok("messages" in inspected)
+  assert.ok(!("reasoningBlocked" in inspected))
+  const retained = inspected.messages.filter((message) => message.info.role === "assistant" && message.info.retainReasoning)
+  assert.deepEqual(retained.map((message) => message.info.id), ["msg_a0"])
 })
 
 test("committed revert resets historical usage scope and matches the new request without reviving removed context", async (t) => {

@@ -1,5 +1,6 @@
 import { Plugin } from "@opencode/plugin"
 import { syntheticImage } from "../media-fixture.ts"
+import { setTimeout } from "node:timers/promises"
 
 export default Plugin.define({
   id: "context-manager-test-tools",
@@ -9,6 +10,13 @@ export default Plugin.define({
       execute: async (input) => input && typeof input === "object" && "image" in input && input.image === true
         ? { content: [{ type: "text", text: "Synthetic screenshot attached." }, syntheticImage] }
         : { content: `HEAD_FIXTURE\n${"Synthetic tool line 0123456789\n".repeat(input && typeof input === "object" && "small" in input && input.small === true ? 100 : 4000)}TAIL_FIXTURE` },
+    }))
+    await ctx.tool.transform((tools) => tools.add({
+      name: "fixture_wait", description: "Wait for synthetic interruption", input: { type: "object", properties: {} }, options: { codemode: false },
+      execute: async (_input, context) => {
+        await setTimeout(30000, undefined, { signal: context.signal })
+        return { content: "Wait completed" }
+      },
     }))
   },
 })

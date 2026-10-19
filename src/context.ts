@@ -214,7 +214,8 @@ export function project(active: Envelope[], policy: Policy, observe?: (op: Opera
         }
         b.messages = b.messages.map((message) => {
           const parts = message.parts.flatMap((part): Part[] => {
-            if (part.type === "reasoning" && (op.pruneReason || op.mode === "prune-reason")) return []
+            if (part.type === "reasoning" && (op.pruneReason || op.mode === "prune-reason") &&
+                !(message.info.role === "assistant" && message.info.retainReasoning)) return []
             if (part.type !== "tool") return [part]
             if (op.mode === "tool-delete") { pruned.delete(part.id); return [] }
             if (pruned.get(part.id) === "all") return [part]

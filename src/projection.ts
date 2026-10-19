@@ -2,7 +2,7 @@ import { Message, type ContentPart } from "@opencode/ai"
 import type { SessionMessageInfo } from "@opencode/client"
 import { hash, activeMessages, project, replacement, type Block, type Envelope, type Operation, type Policy } from "./context.ts"
 import { pruneResult } from "./tool-result.ts"
-import { turnIndex } from "./status.ts"
+import { retainsReasoning } from "./normalize.ts"
 
 type Assistant = Extract<SessionMessageInfo, { type: "assistant" }>
 type Tool = Extract<Assistant["content"][number], { type: "tool" }>
@@ -27,7 +27,6 @@ export function projectRequest(native: readonly SessionMessageInfo[], raw: Envel
   const observed = new Set<string>()
   const seenCalls = new Set<string>()
   const seenResults = new Set<string>()
-  const rejectedReasoning = new Set<string>()
   let entries: Entry[] = incoming.map((message, anchor) => {
     let owner = message.id && selectable.has(message.id) ? message.id : undefined
     if (owner && edited.has(owner)) {
@@ -128,11 +127,10 @@ export function projectRequest(native: readonly SessionMessageInfo[], raw: Envel
       if (entry.message.native || entry.message.providerMetadata) throw new Error("Opaque message-level provider state cannot be safely edited")
       const owner = entry.sourceIDs[0]
       const original = originals.get(owner)
-      if (reason && original?.type === "assistant" && convertedReasoning(original))
-        rejectedReasoning.add(owner)
+      const removeReasoning = reason && !(original?.type === "assistant" && retainsReasoning(original))
       const rules = new Map(entry.rules)
       const content = entry.message.content.flatMap((part): ContentPart[] => {
-        if (part.type === "reasoning" && reason) return []
+        if (part.type === "reasoning" && removeReasoning) return []
         if (part.type !== "tool-call" && part.type !== "tool-result") return [part]
         const tool = tools.get(owner)?.get(part.id)
         if (!tool || tool.name !== part.name) throw new Error("Selected tool identity changed before projection")
@@ -149,14 +147,12 @@ export function projectRequest(native: readonly SessionMessageInfo[], raw: Envel
       return [{ ...entry, rules, message: Message.make({ ...entry.message, content }) }]
     })
   })
-  rejectReasoning(active, rejectedReasoning)
   return entries.sort((a, b) => a.anchor - b.anchor || a.slot - b.slot).map((entry) => entry.message)
 }
 
 export function validateNativePolicy(native: readonly SessionMessageInfo[], raw: Envelope[], policy: Policy) {
   const source = new Map(native.map((message) => [message.id, message]))
   const active = activeMessages(raw)
-  const rejectedReasoning = new Set<string>()
   project(active, policy, (op, selected) => {
     for (const block of selected) {
       if (block.kind !== "turn") continue
@@ -166,27 +162,9 @@ export function validateNativePolicy(native: readonly SessionMessageInfo[], raw:
         if (message?.type !== "assistant") continue
         if (message.content.some((part) => part.type === "tool" && ["streaming", "running"].includes(part.state.status)))
           throw new Error("The host must settle unfinished tool calls before editing this historical turn")
-        if ((op.pruneReason || op.mode === "prune-reason") && convertedReasoning(message))
-          rejectedReasoning.add(id)
         if (["tool-prune", "tool-prune-all"].includes(op.mode) && message.content.some((part) => part.type === "tool" && part.executed && (part.providerResultState || part.providerState)))
           throw new Error("Opaque provider-executed results cannot be pruned; summarize or delete the complete calls with reasoning")
       }
     }
   })
-  rejectReasoning(active, rejectedReasoning)
-}
-
-function rejectReasoning(active: Envelope[], ids: ReadonlySet<string>) {
-  if (!ids.size) return
-  const index = turnIndex(active)
-  const numbers = [...new Set([...ids].map((id) => index.get(id)!))].sort((a, b) => a - b)
-  throw new Error(`Turn${numbers.length === 1 ? "" : "s"} ${numbers.join(", ")}: Failed-assistant reasoning or interrupted reasoning cannot be removed safely; summarize or deselect reasoning.`)
-}
-
-function convertedReasoning(message: Assistant) {
-  return message.content.some((part) => part.type === "reasoning" && (message.error || (part.time && part.time.completed === undefined)))
-}
-
-export function reasoningBlockedIDs(native: readonly SessionMessageInfo[]) {
-  return native.flatMap((message) => message.type === "assistant" && convertedReasoning(message) ? [message.id] : [])
 }

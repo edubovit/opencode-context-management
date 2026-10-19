@@ -156,6 +156,14 @@ These checks use synthetic providers and owned private servers. No shared-servic
 - Packaged **OpenCode 2.0.32 / Windows x64** passed **35 production server/ConPTY checks**, including an actual `length → stop` continuation rejected through public RPC, atomic batch refusal, successful retry and immediate same-model wire verification. Owned fixture cleanup passed. No shared-service restart or frozen-deployment update.
 - Dependencies remain pinned to 2.0.28; ledger/export/cache remain **13/7/2**. No fresh install/audit, separate usage/subagent/revert/fork suite rerun, current Linux/macOS test or live-provider calls for this fix. This is not universal host/provider compatibility or automatic repair of previously saved incomplete summaries.
 
+### Version 4.4.4 validation
+
+- Reasoning pruning retains failed/interrupted attempts rather than refusing the selected action; successful reasoning in the same turn remains removable. The UI uses the ordinary pruning status without blocked/partial markers. Existing native-checkpoint, unsettled-tool, source-identity and opaque-state guards remain.
+- Native normalization supplies an optional assistant `retainReasoning` replay fact; original native payloads remain hashed, and the existing `historyHash` representation is unchanged. Retained reasoning stays in effective counts/helper input/exports. Canonical projection preserves current-hook text without reconstructing or matching prose. One-layer restoration preserves earlier hook redactions.
+- Two retry regressions failed before the change. Typecheck, **302 unit/adapter tests** and **46 renderer tests** passed on Node 24.21.0 / bundled Bun 1.4.2. Coverage includes failed/interrupted attempts followed by successful reasoning in the same turn, disjoint selections, collapsed/split ranges, combined tool pruning, RPC commits, source fingerprints, restoration, and ordinary status at 80/60 columns.
+- Packaged **OpenCode 2.0.32 / Windows x64** passed **36 production server/ConPTY checks**, with owned cleanup verified. A native interrupted tool attempt followed by a successful reasoning-bearing turn retains only failed reasoning on the immediate same-model request; restoration brings safe reasoning back without changing native history. Same-turn retry cases use native/canonical adapter fixtures, not a live WebSocket failure. No fresh install/audit, separate usage/subagent/revert/fork suite rerun, Linux/macOS or live-provider test.
+- Dependencies and ledger/export/cache formats remain **13/7/2**. No legacy reductions are reset; previously valid reasoning-prune operations could not include these failed/interrupted attempts. This does not establish universal WebSocket retry or signed-provider compatibility.
+
 ## Architecture
 
 | Area | Files |
@@ -237,7 +245,7 @@ Native `session.context` exposes the active window, not arbitrary pre-checkpoint
 - Whole-tool deletion removes both calls and results, including hosted pairs, and requires reasoning removal. Empty wrappers disappear without invented assistant prose.
 - Leave unselected messages, typed tool output, and provider call state alone. Never put plugin provenance in `providerMetadata`.
 - Operate on the **current canonical result**, not an earlier unredacted stored result. Reject unknown shapes/ownership rather than guessing.
-- Native checkpoints, unsettled historical tool calls, ambiguous failed reasoning, and opaque provider-result pruning have explicit pre-write guards. Summary/whole-call deletion is available where it can safely replace the whole selected material.
+- Native checkpoints, unsettled historical tool calls and opaque provider-result pruning have explicit pre-write guards. Failed/interrupted reasoning is retained during reasoning pruning, never guessed out of ordinary canonical text; safe reasoning in the same range is still removed. Summary/whole-call deletion is available where it can safely replace the whole selected material.
 - Pending work must be invalidated by source/revision changes, native revert, location changes, or cancellation. Metadata writes are not host-wide CAS; concurrent arbitrary external writers remain unsupported.
 
 ### Summaries and edits

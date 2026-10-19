@@ -2,7 +2,7 @@
 
 Choose what stays in your coding session's context. Prune reasoning or tool results, summarize or delete selected ranges, and restore them later—without deleting the stored conversation.
 
-**Plugin 4.4.3 · OpenCode V2**.
+**Plugin 4.4.4 · OpenCode V2**.
 
 ## Features
 
@@ -23,6 +23,8 @@ Initial summaries apply automatically; inspect/edit/expand them afterward. Summa
 This is a **source-based, private package**, not a published npm plugin. Requires a compatible local OpenCode **V2 (2.0.27 or newer)** installation and npm.
 
 Version 4.4.3 rejects summary output if any assistant response to the current helper prompt was truncated, even when OpenCode continues and finishes successfully. It does not accept a continuation tail as a complete summary or assemble truncated chunks. Earlier saved summaries are not automatically repaired: restore affected ranges and regenerate them, keeping the normal budget guard enabled. See [validation details](CONTRIBUTING.md#version-443-validation).
+
+Version 4.4.4 lets reasoning pruning proceed across failed/interrupted attempts by retaining their ambiguous reasoning and pruning safe responses. It uses the ordinary pruning status without extra warnings. See [current validation](CONTRIBUTING.md#version-444-validation).
 
 Development checks run on Node.js 22+; renderer tests use the bundled Bun runtime. OpenTUI's Node-backend engine warning on Node 22 does not apply to the bundled Bun renderer. Using its Node backend directly requires Node 26.4+.
 
@@ -71,7 +73,7 @@ Use **Space → move → Space** to close a range; repeat for more ranges. Press
 
 | Mode | Effect |
 | --- | --- |
-| Prune reasoning | Remove reasoning parts; preserve prompts, calls and visible assistant text. |
+| Prune reasoning | Remove safe reasoning parts; retain failed/interrupted attempts, prompts, calls and visible assistant text. |
 | Prune tools (large) | Token-budgeted head + omission notice + tail. Preserve inputs and attachments. |
 | Prune tools (all) | Replace completed/error results with `[Tool output pruned]`, including result attachments. Keep calls and inputs. |
 | Prune tools (delete) | Remove entire calls and results. Requires reasoning removal. |
@@ -317,9 +319,9 @@ Opening a crossing summary can enlarge the context. The normal main-request budg
 
 Malformed or unrelated ledgers are preserved and refused, never silently reset. Verified new forks inherit independent reversible reductions; ordinary fresh child sessions get an empty own ledger.
 
-Native checkpoints are read-only; edit later USER turns. Historical tools still marked running/streaming must be settled by the host before editing. Opaque provider-executed results cannot be safely pruned; use a summary or whole-call deletion with reasoning instead. Errored or interrupted reasoning that the host converted to visible text is also refused rather than guessed at. Affected turns show **Reasoning blocked** in warning color in the range list, even before selection. The error lists their turn numbers as shown in the inspector; deselect reasoning to prune only tool results, exclude those turns, or summarize them instead. The rejected action applies no partial pruning. Summarized/deleted ranges hide the marker until restored. Signed/opaque reasoning, encrypted checkpoints and stateful provider transports are not universally validated.
+Native checkpoints are read-only; edit later USER turns. Historical tools still marked running/streaming must be settled by the host before editing. Opaque provider-executed results cannot be safely pruned; use a summary or whole-call deletion with reasoning instead. Reasoning pruning skips failed/interrupted assistant attempts, whose reasoning may have become ordinary text, while pruning safe reasoning in the same turn or range. Tool pruning still applies. These turns use the normal **reasoning pruned** status, with no blocked or partial-pruning marker. Retained content remains included in local counts, summaries and exports; restoration returns the prior effective layer. Signed/opaque reasoning, encrypted checkpoints and stateful provider transports are not universally validated.
 
-Version 4.4.3 writes ledger format **13** and exports schema **7**; accounting cache remains **2**. Existing ordinary-session V2 ledgers **7–12** retain their operations and fingerprints. An intact ledger gains a source manifest on checked server access without changing its reductions; no original message text is copied into that manifest. Normal edits append operations. A committed native revert instead rebuilds the retained reversible layers and removes obsolete source references. Do not downgrade after a format-13 write. Fork/revert turn boundaries and source provenance cannot be rewritten by ordinary context maintenance. Restoration never bypasses the Resume budget check.
+Version 4.4.4 writes ledger format **13** and exports schema **7**; accounting cache remains **2**. Existing ordinary-session V2 ledgers **7–12** retain their operations and fingerprints. An intact ledger gains a source manifest on checked server access without changing its reductions; no original message text is copied into that manifest. Normal edits append operations. A committed native revert instead rebuilds the retained reversible layers and removes obsolete source references. Do not downgrade after a format-13 write. Fork/revert turn boundaries and source provenance cannot be rewritten by ordinary context maintenance. Restoration never bypasses the Resume budget check.
 
 Captures, spill files and exports live in `~/.local/state/opencode-context-manager/<project-hash>/` on the server. The ledger and strategy live in OpenCode session metadata. Control uses authenticated native RPC, with no separate control port or credential file.
 
