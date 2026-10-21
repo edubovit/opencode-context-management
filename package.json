@@ -1,6 +1,6 @@
 {
   "name": "opencode-context-manager",
-  "version": "4.4.6",
+  "version": "4.4.7",
   "private": true,
   "type": "module",
   "engines": { "opencode": ">=2.0.27 <3", "node": ">=22" },
@@ -17,15 +17,15 @@
     "test:upgrade": "tsx script/upgrade-smoke.ts"
   },
   "peerDependencies": {
-    "@opentui/core": ">=0.5.17 <0.6",
-    "@opentui/solid": ">=0.5.17 <0.6",
+    "@opentui/core": ">=0.5.17 <0.7",
+    "@opentui/solid": ">=0.5.17 <0.7",
     "solid-js": ">=1.9.15 <2"
   },
   "dependencies": {
     "gpt-tokenizer": "4.0.0",
-    "@opencode/ai": "2.0.28",
-    "@opencode/client": "2.0.28",
-    "@opencode/plugin": "2.0.28",
+    "@opencode/ai": "2.1.2",
+    "@opencode/client": "2.1.2",
+    "@opencode/plugin": "2.1.2",
     "zod": "4.6.5"
   },
   "overrides": {
@@ -35,9 +35,9 @@
   "devDependencies": {
     "@lydell/node-pty": "1.2.0-beta.15",
     "@xterm/headless": "6.0.0",
-    "@opencode/theme": "2.0.28",
-    "@opentui/core": "0.5.17",
-    "@opentui/solid": "0.5.17",
+    "@opencode/theme": "2.1.2",
+    "@opentui/core": "0.6.6",
+    "@opentui/solid": "0.6.6",
     "@types/node": "24.19.1",
     "bun": "1.4.2",
     "solid-js": "1.9.17",

@@ -4,6 +4,20 @@ import type { FilePart, Model, Part, Session, ToolPart, Usage } from "./model.ts
 
 const zero = (): Usage => ({ input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } })
 
+type ProviderData = Record<string, unknown>
+export function toolNative(tool: { native?: ProviderData; providerState?: ProviderData; providerResultState?: ProviderData }) {
+  return tool.native ?? tool.providerState ?? tool.providerResultState
+}
+
+function sourceMessage(message: SessionMessageInfo) {
+  if (message.type !== "assistant") return message
+  const legacy = (value: { native?: ProviderData }, key: string) => {
+    const { native, ...rest } = value
+    return native === undefined || key in value ? value : { ...rest, [key]: native }
+  }
+  return { ...legacy(message, "providerState"), content: message.content.map(part => legacy(part, part.type === "tool" ? "providerState" : "state")) }
+}
+
 export function retainsReasoning(message: Extract<SessionMessageInfo, { type: "assistant" }>) {
   return message.content.some((part) => part.type === "reasoning" && (message.error || (part.time && part.time.completed === undefined)))
 }
@@ -30,7 +44,7 @@ export function modelView(value: ModelInfo): Model {
 
 export function transcriptView(session: SessionInfo, messages: readonly SessionMessageInfo[]): Envelope[] {
   return messages.map((message) => {
-    const base = { id: message.id, sessionID: session.id, agent: session.agent ?? "build", kind: message.type, sourceHash: hash(message), time: { created: message.time.created } }
+    const base = { id: message.id, sessionID: session.id, agent: session.agent ?? "build", kind: message.type, sourceHash: hash(sourceMessage(message)), time: { created: message.time.created } }
     const model = session.model ?? { providerID: "", id: "" }
     const partBase = (index: string | number) => ({ id: `${message.id}:${index}`, messageID: message.id, sessionID: session.id })
     if (message.type === "user") return {
@@ -56,9 +70,13 @@ export function transcriptView(session: SessionInfo, messages: readonly SessionM
         ...(retainsReasoning(message) ? { retainReasoning: true as const } : {}),
       },
       parts: message.content.map((content, index): Part => {
-        if (content.type !== "tool") return { ...partBase(index), type: content.type, text: content.text, ...(content.state ? { metadata: content.state } : {}) }
+        if (content.type !== "tool") {
+          const metadata = content.native ?? (content as { state?: ProviderData }).state
+          return { ...partBase(index), type: content.type, text: content.text, ...(metadata ? { metadata } : {}) }
+        }
         const key = partBase(`tool:${content.id}`)
-        const common = { ...key, type: "tool" as const, callID: content.id, tool: content.name, ...(content.providerState ? { metadata: content.providerState } : {}) }
+        const metadata = content.native ?? (content as { providerState?: ProviderData }).providerState
+        const common = { ...key, type: "tool" as const, callID: content.id, tool: content.name, ...(metadata ? { metadata } : {}) }
         if (content.state.status === "streaming") return { ...common, state: { status: "pending", input: { partial: content.state.input } } }
         if (content.state.status === "running") return { ...common, state: { status: "running", input: content.state.input, metadata: content.state.metadata } }
         if (content.state.status === "error") return {
@@ -79,7 +97,7 @@ export function transcriptView(session: SessionInfo, messages: readonly SessionM
     }
     const text = message.type === "skill" || message.type === "system" || message.type === "synthetic" ? message.text
       : message.type === "shell" ? `[Shell ${message.command}]\n${message.output?.output ?? ""}`
-      : message.type === "compaction" ? (message.status === "completed" ? `${message.summary}\n${message.recent}` : `[Native compaction ${message.status}]`)
+      : message.type === "compaction" ? (message.status === "completed" ? `${message.summary}\n${(message as { recent?: string }).recent ?? (typeof message.metadata?.recent === "string" ? message.metadata.recent : "")}` : `[Native compaction ${message.status}]`)
       : `[${message.type}]`
     return {
       info: { ...base, role: "assistant" as const, providerID: model.providerID, modelID: model.id, cost: 0, tokens: zero() },

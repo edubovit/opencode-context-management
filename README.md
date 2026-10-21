@@ -286,3 +286,5 @@ Open the inspector on intact history before reverting so source provenance is av
 - Original history and spills remain. Disabling the plugin exposes stored context again. Pruning/deletion is not secure erasure.
 - There is no automatic repair of damaged summaries, orphan-helper crash recovery, exact billing count, losslessness guarantee or transaction against arbitrary external metadata writers.
 - Do not downgrade to a plugin that cannot read the session's persisted formats. See [persistence rules](CONTRIBUTING.md#persistence) and [testing](CONTRIBUTING.md#testing).
+
+Provider replay data is read from both current `native` fields and older state fields. Reversible field renames preserve saved fingerprints; content changes still fail validation. Host migrations that merge or discard previously distinct provider state cannot always preserve those fingerprints. Such histories remain refused rather than guessed or reset; keep a backup before upgrading OpenCode and do not clear the ledger to force continuation.

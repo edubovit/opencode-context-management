@@ -2,7 +2,7 @@ import { Message, type ContentPart } from "@opencode/ai"
 import type { SessionMessageInfo } from "@opencode/client"
 import { hash, activeMessages, project, replacement, type Block, type Envelope, type Operation, type Policy } from "./context.ts"
 import { pruneResult } from "./tool-result.ts"
-import { retainsReasoning } from "./normalize.ts"
+import { retainsReasoning, toolNative } from "./normalize.ts"
 
 type Assistant = Extract<SessionMessageInfo, { type: "assistant" }>
 type Tool = Extract<Assistant["content"][number], { type: "tool" }>
@@ -162,7 +162,7 @@ export function validateNativePolicy(native: readonly SessionMessageInfo[], raw:
         if (message?.type !== "assistant") continue
         if (message.content.some((part) => part.type === "tool" && ["streaming", "running"].includes(part.state.status)))
           throw new Error("The host must settle unfinished tool calls before editing this historical turn")
-        if (["tool-prune", "tool-prune-all"].includes(op.mode) && message.content.some((part) => part.type === "tool" && part.executed && (part.providerResultState || part.providerState)))
+        if (["tool-prune", "tool-prune-all"].includes(op.mode) && message.content.some((part) => part.type === "tool" && part.executed && toolNative(part)))
           throw new Error("Opaque provider-executed results cannot be pruned; summarize or delete the complete calls with reasoning")
       }
     }

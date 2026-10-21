@@ -12,8 +12,8 @@ function fixture() {
   const native: SessionMessageInfo[] = [
     { id: "msg_user", type: "user", text: "Question", time: { created: 1 } },
     { id: "msg_assistant", type: "assistant", agent: "build", model: { providerID: "fixture", id: "model" }, time: { created: 2, completed: 4 }, finish: "stop", content: [
-      { type: "reasoning", text: "REASON", state: { encrypted: "opaque" } },
-      { type: "tool", id: "call_fixture", name: "fixture", time: { created: 2, completed: 3 }, providerState: { signature: "call-proof" }, state: { status: "completed", input: { keep: "input" }, content: [{ type: "text", text: "HEAD " + "long output ".repeat(500) + " TAIL" }, { type: "file", mime: "image/png", uri: "data:image/png;base64,AA==", name: "image.png" }] } },
+      { type: "reasoning", text: "REASON", native: { encrypted: "opaque" } },
+      { type: "tool", id: "call_fixture", name: "fixture", time: { created: 2, completed: 3 }, native: { signature: "call-proof" }, state: { status: "completed", input: { keep: "input" }, content: [{ type: "text", text: "HEAD " + "long output ".repeat(500) + " TAIL" }, { type: "file", mime: "image/png", uri: "data:image/png;base64,AA==", name: "image.png" }] } },
       { type: "text", text: "ANSWER" },
     ] },
     { id: "msg_idle", type: "idle", outcome: "succeeded", time: { created: 5 } },
@@ -29,7 +29,7 @@ function fixture() {
     Message.make({ id: "msg_user", role: "user", content: "Question" }),
     Message.make({ id: assistant.id, role: "assistant", content: [
       { type: "reasoning", text: "REASON", providerMetadata: { fixture: { encrypted: "opaque" } } },
-      ToolCallPart.make({ id: tool.id, name: tool.name, input: tool.state.input, providerMetadata: { fixture: tool.providerState! } }),
+      ToolCallPart.make({ id: tool.id, name: tool.name, input: tool.state.input, providerMetadata: { fixture: tool.native! } }),
       { type: "text", text: "ANSWER", providerMetadata: { fixture: { phase: "final" } } },
     ] }),
     Message.tool({ id: tool.id, name: tool.name, result: { type: "content", value: tool.state.content }, providerMetadata: { fixture: { resultProof: "result-proof" } } }),

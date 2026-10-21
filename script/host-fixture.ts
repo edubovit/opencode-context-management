@@ -15,8 +15,9 @@ type Reply = string | { text: string; finish: "stop" | "length"; pause?: Promise
 
 export async function fixture(executable = "opencode", destination?: string, options: { subagents?: boolean; keep?: number; plugin?: string } = {}) {
   const version = spawnSync(executable, ["--version"], { encoding: "utf8" })
-  const hostVersion = version.stdout?.trim().match(/^opencode v(2\.\S+)$/)?.[1]
+  let hostVersion = version.stdout?.trim().match(/^opencode v(2\.\S+)$/)?.[1]
   if (version.status !== 0 || !hostVersion) throw new Error("This smoke test requires OpenCode V2")
+  const versions = [hostVersion]
   const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
   await mkdir(path.join(tmpdir(), "opencode"), { recursive: true })
   const root = destination ? path.resolve(destination) : await mkdtemp(path.join(tmpdir(), "opencode", "context-manager-full-"))
@@ -128,7 +129,7 @@ export async function fixture(executable = "opencode", destination?: string, opt
     await writeFile(path.join(root, "stdout.log"), log)
     await writeFile(path.join(root, "host.log"), await readFile(path.join(root, "data/opencode/log/opencode.log"), "utf8").catch(() => ""))
     await writeFile(path.join(root, "requests.json"), JSON.stringify(requests, null, 2))
-    await writeFile(path.join(root, "result.json"), JSON.stringify({ version: hostVersion, result, ...status }, null, 2))
+    await writeFile(path.join(root, "result.json"), JSON.stringify({ version: hostVersion, versions, result, ...status }, null, 2))
     if (!status.cleaned) throw new Error("Owned host did not stop cleanly")
   }
   try { await until(() => url, "server ready") }
@@ -136,10 +137,16 @@ export async function fixture(executable = "opencode", destination?: string, opt
   const connect = () => OpenCode.make({ baseUrl: url, headers: { authorization: `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}` } })
   let client = connect()
   return {
-    root, repo, project, hostVersion, get client() { return client }, env, get url() { return url }, config, configPath, requests, calls, until, close,
-    restart: async () => {
+    root, repo, project, get hostVersion() { return hostVersion! }, get client() { return client }, env, get url() { return url }, config, configPath, requests, calls, until, close,
+    restart: async (nextExecutable = executable) => {
+      const version = spawnSync(nextExecutable, ["--version"], { encoding: "utf8" })
+      const nextVersion = version.stdout?.trim().match(/^opencode v(2\.\S+)$/)?.[1]
+      if (version.status !== 0 || !nextVersion) throw new Error("Restart requires an OpenCode V2 executable")
       const status = await stop()
       if (!status.cleaned) throw new Error("Owned host did not stop cleanly before restart")
+      executable = nextExecutable
+      hostVersion = nextVersion
+      versions.push(nextVersion)
       url = ""
       running = start()
       await until(() => url, "restarted host")

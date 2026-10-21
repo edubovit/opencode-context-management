@@ -165,7 +165,7 @@ test("interrupted or retried requests cannot falsely pair a later response with 
 
 test("native checkpoints and changed raw history invalidate old prefix evidence", () => {
   const { state, response, messages } = paired()
-  const checkpoint: SessionMessageInfo = { id: "msg_compact", type: "compaction", status: "completed", reason: "manual", summary: "Summary", recent: "", time: { created: 4 } }
+  const checkpoint: SessionMessageInfo = { id: "msg_compact", type: "compaction", status: "completed", reason: "manual", summary: "Summary", time: { created: 4 } }
   assert.equal(prepareBudget(identity, [user, response, checkpoint], messages, system, tools, FALLBACK_BASIS, "policy0", state).anchor, undefined)
   const changed = prepareBudget(identity, [{ ...user, text: "Changed" }, response], messages, system, tools, FALLBACK_BASIS, "policy0", state)
   assert.equal(changed.anchor?.matched, false)

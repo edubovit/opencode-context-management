@@ -92,6 +92,14 @@ npm run test:upgrade -- /absolute/path/to/opencode /absolute/path/to/baseline/sr
 
 The runner uses one host executable for both sources. Check its supported baseline shapes before choosing an archive; it does not establish a cross-host runtime upgrade. Default tests must not depend on archived sources or `.local/`.
 
+To exercise an actual host upgrade with an installed baseline source that exports `rememberPolicy`:
+
+```sh
+node --import tsx script/host-upgrade-smoke.ts /path/to/old-opencode /path/to/new-opencode /path/to/baseline/src
+```
+
+This runner imports synthetic provider-state history through the public API, saves reductions using the baseline, and restarts the same private fixture on the new executable. It checks unchanged policy fingerprints, the next request, independent summary/pruning restoration and another restart. It never upgrades the shared service or edits a live database.
+
 For dependency or packaging changes, copy only public files into a clean directory, run `npm ci --ignore-scripts`, full local checks, audit and the relevant installed-host suites. Confirm manifest/lock/source version agreement and review dependency drift.
 
 Synthetic providers prove protocol and workflow behavior, not summary quality, real-provider capacity/billing or universal signed/opaque/stateful-transport compatibility. Record the actual host/platform and commands used when reporting a change. Do not imply unrun suites or platforms passed. Live-provider tests require explicit provider/model and request-limit authorization.
@@ -143,6 +151,8 @@ Stored transcript, normalized effective view, canonical hook request, provider w
 Package, host, RPC and persisted-format compatibility are separate concerns. Do not downgrade sessions to a reader that cannot understand their stored format. Decoder compatibility is defined by `src/ledger.ts` and its frozen fixtures, not by release prose. Preserve supported records and fingerprints; refuse malformed/foreign state rather than resetting it. Unreleased source checkouts can persist real state too.
 
 Normal maintenance appends operations. Verified committed native revert rebuilds retained reversible layers instead. `historyHash` retains its established representation, including the fixed `nativeVersion: 2` discriminator inside the hash; this is not a runtime switch. Native-derived `retainReasoning` is a replay fact, not an extra fingerprint field.
+
+Normalization accepts current `native` provider data and legacy text/reasoning `state` and tool `providerState` fields. Source hashing uses the established field names for reversible assistant/part renames without mutating native input. Conflicting aliases remain hashed, not silently discarded. Opaque hosted-tool checks include both current and legacy call/result state. Checkpoint text reads current `metadata.recent` or legacy `recent`; checkpoints stay read-only. Do not reconstruct a legacy split tool payload from merged native data or rewrite saved hashes to conceal a lossy host migration.
 
 ### Reversible layers
 

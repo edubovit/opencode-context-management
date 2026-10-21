@@ -21,7 +21,7 @@ export function nativeFixture() {
     const assistant: Extract<SessionMessageInfo, { type: "assistant" }> = {
       id: `msg_a${n}`, type: "assistant", agent: "build", model: session.model!, finish: "stop", time: { created: n * 10 + 3, completed: n * 10 + 4 },
       content: [
-        { type: "reasoning", text: `REASON_${n}`, state: { signature: `proof_${n}` } },
+        { type: "reasoning", text: `REASON_${n}`, native: { signature: `proof_${n}` } },
         { type: "tool", id: `call_${n}`, name: "fixture", time: { created: 3, completed: 4 }, state: { status: "completed", input: { untouched: n }, content: [{ type: "text", text: output }], metadata: {} } },
         { type: "text", text: `ANSWER_${n}` },
       ],
