@@ -158,6 +158,7 @@ export function validateNativePolicy(native: readonly SessionMessageInfo[], raw:
       if (block.kind !== "turn") continue
       for (const id of block.sourceIDs) {
         const message = source.get(id)
+        if (message?.type === "shell" && (message.status === "running" || message.time.completed === undefined)) throw new Error("The host must settle shell input before editing this historical turn")
         if (message?.type === "compaction") throw new Error("Native checkpoints are read-only; select later USER turns")
         if (message?.type !== "assistant") continue
         if (message.content.some((part) => part.type === "tool" && ["streaming", "running"].includes(part.state.status)))

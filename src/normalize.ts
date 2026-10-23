@@ -100,7 +100,7 @@ export function transcriptView(session: SessionInfo, messages: readonly SessionM
       : message.type === "compaction" ? (message.status === "completed" ? `${message.summary}\n${(message as { recent?: string }).recent ?? (typeof message.metadata?.recent === "string" ? message.metadata.recent : "")}` : `[Native compaction ${message.status}]`)
       : `[${message.type}]`
     return {
-      info: { ...base, role: "assistant" as const, providerID: model.providerID, modelID: model.id, cost: 0, tokens: zero() },
+      info: { ...base, role: "assistant" as const, providerID: model.providerID, modelID: model.id, cost: 0, tokens: zero(), ...(message.type === "shell" ? { shell: { settled: message.status !== "running" && message.time.completed !== undefined, background: message.metadata?.background === true } } : {}) },
       parts: [{ ...partBase("context"), type: "context" as const, category: message.type === "skill" ? "skill" as const : message.type === "shell" ? "shell" as const : message.type === "synthetic" ? "synthetic" as const : "system" as const, text }],
     }
   })

@@ -16,7 +16,7 @@ function previewText(block: Block, policy: Policy) {
     return op?.summary ?? "[Summary text unavailable]"
   }
   const first = block.messages[0]
-  return first?.info.role === "user" ? messageText(first) || "[No user text recorded]" : "[Native checkpoint / continuation]"
+  return first?.info.role === "user" || first?.info.kind === "shell" ? messageText(first) || "[No user text recorded]" : "[Native checkpoint / continuation]"
 }
 
 export function rangeToolStats(status: ReturnType<typeof toolStatus>) {

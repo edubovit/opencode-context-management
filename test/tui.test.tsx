@@ -64,6 +64,30 @@ async function setup(t: { after(fn: () => Promise<void>): void }, width = 140, h
   return { ...fixture, controller, screen, frame, until, navigations, compact, setInputMode: (mode: string) => { inputMode = mode }, type: screen.mockInput.typeText, key, esc: screen.mockInput.pressEscape }
 }
 
+for (const width of [80, 60]) test(`shell-led range summarizes and restores at ${width} columns`, async (t) => {
+  const view = await setup(t, width, 24, ({ data }) => {
+    const { session, native } = nativeFixture()
+    native.unshift({ id: "msg_shell", type: "shell", shellID: "sh_fixture", command: "echo SHELL_FACT", status: "exited", time: { created: 0, completed: 1 } })
+    session.model = { providerID: data.model.providerID, id: data.model.id }
+    data.session = sessionView(session)
+    data.messages = transcriptView(session, native)
+  })
+  await view.until(() => view.frame().includes("Ready."))
+  assert.match(view.frame(), /Turn 1 · SHELL/)
+  assert.match(view.frame(), /echo SHELL_FACT/)
+  const original = JSON.stringify(view.data.messages)
+  await view.type(" ")
+  await view.type(" ")
+  await view.compact(5)
+  await view.until(() => readPolicy(view.data.session).revision === 1)
+  assert.equal((await view.controller.load()).blocks[0].kind, "brief")
+  await view.until(() => view.frame().includes("Summaries applied automatically"))
+  view.key("e", { ctrl: true })
+  await view.until(() => readPolicy(view.data.session).revision === 2)
+  await view.until(() => view.frame().includes("Turn 1 · SHELL"))
+  assert.equal(JSON.stringify(view.data.messages), original)
+})
+
 for (const width of [80, 60]) test(`reasoning pruning uses ordinary status for failed attempts at ${width} columns`, async (t) => {
   const view = await setup(t, width, 24, ({ data, host }) => {
     const { session, native } = nativeFixture()

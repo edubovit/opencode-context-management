@@ -11,7 +11,7 @@ type MessageBase = {
 export type UserMessage = MessageBase & { role: "user"; model: ModelChoice }
 export type AssistantMessage = MessageBase & {
   role: "assistant"; providerID: string; modelID: string
-  finish?: string; error?: unknown; retainReasoning?: true; tokens: Usage; cost: number
+  finish?: string; error?: unknown; retainReasoning?: true; shell?: { settled: boolean; background: boolean }; tokens: Usage; cost: number
 }
 export type Message = UserMessage | AssistantMessage
 type PartBase = { id: string; sessionID: string; messageID: string; metadata?: Record<string, unknown> }

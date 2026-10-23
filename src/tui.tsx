@@ -330,7 +330,7 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
     const status = toolStatus([block], rule(), basis())
     const protectedTurn = auto().pause && block.sourceIDs.some((id) => (auto().pause!.protectedIDs ?? [auto().pause!.userID]).includes(id))
     return {
-      title: `${selected ? "●" : "○"} ${tag ? `${tag} · ` : ""}${rangeLabel(block.sourceIDs, sourceTurns())} · ${block.kind === "deleted" ? "DELETED" : block.kind === "turn" ? block.messages[0]?.info.role === "user" ? "USER" : block.messages[0]?.info.kind === "assistant" ? "CONTINUATION" : "HOST CONTEXT" : "SUMMARY"}`,
+      title: `${selected ? "●" : "○"} ${tag ? `${tag} · ` : ""}${rangeLabel(block.sourceIDs, sourceTurns())} · ${block.kind === "deleted" ? "DELETED" : block.kind === "turn" ? block.messages[0]?.info.role === "user" ? "USER" : block.messages[0]?.info.kind === "shell" ? "SHELL" : block.messages[0]?.info.kind === "assistant" ? "CONTINUATION" : "HOST CONTEXT" : "SUMMARY"}`,
       size: shortSize(distribution([block], undefined, basis(), unit()).total),
       stats: [protectedTurn ? "PROTECTED" : !block.closed ? "Unfinished" : "", block.kind === "turn" ? rangeToolStats(status) : ""].filter(Boolean).join(" · ") || undefined,
       preview: rangePreview(block, loaded()!.policy),

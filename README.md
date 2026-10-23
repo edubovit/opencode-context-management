@@ -61,6 +61,8 @@ Close a range with **Space → move → Space**. Repeat to select disjoint range
 
 Reasoning pruning combines with one tool mode. Summary modes and Delete are standalone. Pruning, deletion and restoration make no model calls, do not change past tool execution, and do not disable future tools.
 
+A range may start with completed direct shell input, shown as **SHELL** with its command/output. For a background shell, include its visible completion or subsequent user context; the omitted shell record alone is not a model-visible range. Running shells and native checkpoints remain protected. Expansion restores the original shell/completion placement without rerunning the command.
+
 Failed or interrupted assistant attempts can contain reasoning that OpenCode treats as ordinary text. The plugin retains that ambiguous content while removing safe reasoning in the same turn. These turns use the normal **reasoning pruned** status; retained content still counts and remains available to summaries and exports.
 
 Deleted ranges contribute no messages, placeholder text or local content tokens. They remain indivisible until restored. A wider deletion can contain prior summaries, pruning or deletions; an already-deleted-only selection is rejected without a write.

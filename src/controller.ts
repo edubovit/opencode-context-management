@@ -1,7 +1,7 @@
 import type { Model, ModelChoice, Session } from "./model.ts"
 export type { ModelChoice } from "./model.ts"
 import { KEY, type Settings } from "./config.ts"
-import { append, hash, historyHash, activeMessages, operation, project, readPolicy, select, serialize, type Block, type Envelope, type Operation, type Policy, type RestoreMode } from "./context.ts"
+import { append, hash, historyHash, activeMessages, operation, project, readPolicy, select, serialize, summaryStart, type Block, type Envelope, type Operation, type Policy, type RestoreMode } from "./context.ts"
 import { validatePruning, type Isolation, type Pruning } from "./compaction.ts"
 import { generateSummary, inputEstimate, refinementPrompt, summaryEditPrompt, SUMMARIZER_SYSTEM } from "./summarize.ts"
 import type { Artifacts, RuntimeCapture } from "./storage.ts"
@@ -227,7 +227,7 @@ export class Controller {
       this.requireNotReverted(loaded.session)
       const selected = this.selection(loaded.blocks, ids)
       this.requireUnprotected(loaded, ids)
-      if (selected.flatMap((block) => block.messages)[0]?.info.role !== "user") throw new Error("Summary range must start with a visible user message")
+      if (!summaryStart(selected.flatMap((block) => block.messages))) throw new Error("Summary range must start with a visible user message or settled shell input")
       const op = operation(mode, selected, undefined, loaded.tokenizer)
       const chosen = override ?? this.defaultModel(loaded)
       if (!chosen) throw new Error("Choose a compaction model first")

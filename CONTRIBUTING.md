@@ -152,6 +152,8 @@ Package, host, RPC and persisted-format compatibility are separate concerns. Do 
 
 Normal maintenance appends operations. Verified committed native revert rebuilds retained reversible layers instead. `historyHash` retains its established representation, including the fixed `nativeVersion: 2` discriminator inside the hash; this is not a runtime switch. Native-derived `retainReasoning` is a replay fact, not an extra fingerprint field.
 
+Native-derived shell settlement/background flags also stay outside fingerprints. Keep shell records' stored domain role and turn grouping stable; summary replacement alone introduces a user/assistant pair, with distinct IDs even for a single shell record. Settled leading shell input is eligible, but a background-only omitted record needs visible follow-up context. Restoration uses current canonical pre-images, never resurrects omitted background shell wrappers, and never executes a command. Exercise `script/shell-summary-smoke.ts` against an isolated host for the immediate summary/restoration requests.
+
 Normalization accepts current `native` provider data and legacy text/reasoning `state` and tool `providerState` fields. Source hashing uses the established field names for reversible assistant/part renames without mutating native input. Conflicting aliases remain hashed, not silently discarded. Opaque hosted-tool checks include both current and legacy call/result state. Checkpoint text reads current `metadata.recent` or legacy `recent`; checkpoints stay read-only. Do not reconstruct a legacy split tool payload from merged native data or rewrite saved hashes to conceal a lossy host migration.
 
 ### Reversible layers

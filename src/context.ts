@@ -67,6 +67,8 @@ export function turns(messages: Envelope[]): Block[] {
       !!last.time.completed && !!last.finish && !["tool-calls", "unknown"].includes(last.finish) &&
       !block.messages.some((m) => m.parts.some((p) => p.type === "tool" && ["pending", "running"].includes(p.state.status)))
   }
+  for (const block of result) if (block.messages[0].info.kind === "shell" && block.messages.every(m => m.info.kind === "shell" || m.info.kind === "synthetic"))
+    block.closed = summaryStart(block.messages)
   return result
 }
 
@@ -91,6 +93,14 @@ export function serialize(messages: Envelope[]) {
 
 export function blockMessages(blocks: Block[]) {
   return blocks.flatMap((b) => b.messages)
+}
+
+export function summaryStart(messages: Envelope[]) {
+  const first = messages[0]?.info
+  if (first?.role === "user") return true
+  return first?.kind === "shell" && first.shell?.settled === true &&
+    messages.every(m => m.info.kind !== "shell" || (m.info.role === "assistant" && m.info.shell?.settled === true)) &&
+    (!first.shell.background || messages.some(m => m.info.kind === "synthetic" || m.info.role === "user"))
 }
 
 export function select(blocks: Block[], start: number, end: number) {
@@ -126,10 +136,13 @@ export function replacement(op: Operation, selected: Block[]): Block {
   const messages = blockMessages(selected)
   const first = messages[0]
   const last = messages.at(-1)!
-  if (first?.info.role !== "user") throw new Error("Summary range must start with a visible user message")
+  if (!summaryStart(messages)) throw new Error("Summary range must start with a visible user message or settled shell input")
+  const user: Envelope = first.info.role === "user" ? first : {
+    info: { id: first.info.id, sessionID: first.info.sessionID, kind: "user", role: "user", agent: first.info.agent, time: first.info.time, model: { providerID: first.info.providerID, modelID: first.info.modelID } }, parts: [],
+  }
   const assistant: Envelope = {
     info: last.info.role === "assistant"
-      ? { ...last.info, error: undefined, finish: "stop", time: { ...last.info.time, completed: last.info.time.completed ?? op.created } }
+      ? { ...last.info, ...(last.info.id === user.info.id ? { id: `msg_cm_${op.id}` } : {}), error: undefined, finish: "stop", time: { ...last.info.time, completed: last.info.time.completed ?? op.created } }
       : {
         id: `msg_cm_${op.id}`, sessionID: last.info.sessionID, role: "assistant", kind: "assistant",
         providerID: last.info.model.providerID, modelID: last.info.model.modelID,
@@ -146,7 +159,7 @@ export function replacement(op: Operation, selected: Block[]): Block {
   return {
     kind: op.mode === "brief" ? "brief" : "compact", sourceIDs: op.sourceIDs, closed: true, summaryID: op.id,
     messages: [
-      { info: first.info, parts: [part(first, "Earlier conversation range, replaced with an approved summary:")] },
+      { info: user.info, parts: [part(user, "Earlier conversation range, replaced with an approved summary:")] },
       { info: assistant.info, parts: [part(assistant, summaryText(op))] },
     ],
   }
