@@ -1,8 +1,8 @@
 import type { Settings } from "./config.ts"
 import type { ToolPart } from "./model.ts"
-import { TOKENIZER_ID, tokenCount, tokenEdges, type Encoding, type TokenBasis } from "./tokens.ts"
+import { TOKENIZER_LIBRARIES, tokenCount, tokenEdges, type Encoding, type TokenBasis, type TokenizerLibrary } from "./tokens.ts"
 
-export type PruneRule = { threshold: number; head: number; tail: number; unit: "tokens"; encoding: Encoding; library: typeof TOKENIZER_ID }
+export type PruneRule = { threshold: number; head: number; tail: number; unit: "tokens"; encoding: Encoding; library: TokenizerLibrary }
 
 export function bindPruneRule(rule: Settings["prune"], basis: TokenBasis): PruneRule {
   return { ...rule, unit: "tokens", encoding: basis.encoding, library: basis.library }
@@ -13,10 +13,10 @@ export function chars(value: string) {
 }
 
 export function pruneText(value: string, rule: PruneRule, outputPath?: string) {
-  if (rule.unit !== "tokens" || rule.library !== TOKENIZER_ID) throw new Error("Saved token pruning rule is unsupported")
-  const original = tokenCount(value, rule.encoding)
+  if (rule.unit !== "tokens" || !TOKENIZER_LIBRARIES.includes(rule.library)) throw new Error("Saved token pruning rule is unsupported")
+  const original = tokenCount(value, rule.encoding, rule.library)
   if (original <= rule.threshold) return value
-  const ends = tokenEdges(value, rule.head, rule.tail, rule.encoding)
+  const ends = tokenEdges(value, rule.head, rule.tail, rule.encoding, rule.library)
   if (!ends.separated) return value
   const result = [
     ends.head,
@@ -24,7 +24,7 @@ export function pruneText(value: string, rule: PruneRule, outputPath?: string) {
     ends.tail,
     outputPath ? `[Full output: ${outputPath}]` : "",
   ].filter(Boolean).join("\n\n")
-  return tokenCount(result, rule.encoding) < original ? result : value
+  return tokenCount(result, rule.encoding, rule.library) < original ? result : value
 }
 
 export function toolText(part: ToolPart) {

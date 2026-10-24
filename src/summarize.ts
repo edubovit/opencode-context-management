@@ -98,5 +98,5 @@ export function summaryEditPrompt(summary: string, instruction: string) {
 }
 
 export function inputEstimate(prompt: string, basis: TokenBasis = FALLBACK_BASIS, history: Envelope[] = [], system = SUMMARIZER_SYSTEM) {
-  return contentTokens(history, basis) + tokenCount(prompt, basis.encoding) + tokenCount(system, basis.encoding) + 2048
+  return contentTokens(history, basis) + tokenCount(prompt, basis.encoding, basis.library) + tokenCount(system, basis.encoding, basis.library) + 2048
 }

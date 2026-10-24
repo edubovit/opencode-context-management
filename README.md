@@ -6,7 +6,7 @@ This is a source-based OpenCode V2 plugin, not a published npm package. Summariz
 
 ## Install
 
-Requires OpenCode **>=2.0.27 <3**, Node.js **22+**, and npm.
+Requires OpenCode **>=2.1.4 <3**, Node.js **22+**, and npm. Older OpenCode hosts are unsupported; existing saved plugin data remains supported.
 
 1. In the repository, install dependencies:
 
@@ -236,7 +236,7 @@ These settings apply only to **Prune tools (large)**, not all-output or whole-ca
 
 **`head + tail < threshold` is required.** With defaults, a result above 3,000 tokens keeps up to 1,000 beginning and 500 ending tokens, plus omission/path notices. Non-saving reductions are skipped. Lowering the threshold to `1500` also requires lowering head and/or tail.
 
-Inputs and attachments stay intact. Saved operations pin their rule and tokenizer, so configuration changes do not reinterpret applied cuts. Ctrl+E restores one pruning layer.
+Inputs and attachments stay intact. Saved operations pin their rule and tokenizer, so configuration or dependency changes do not reinterpret applied cuts. New operations use the current tokenizer; a separate legacy codec replays saved rules that require it. Do not downgrade after writing operations with a tokenizer the older plugin cannot read. Ctrl+E restores one pruning layer.
 
 ### Tokenizer and summary model
 
@@ -289,4 +289,4 @@ Open the inspector on intact history before reverting so source provenance is av
 - There is no automatic repair of damaged summaries, orphan-helper crash recovery, exact billing count, losslessness guarantee or transaction against arbitrary external metadata writers.
 - Do not downgrade to a plugin that cannot read the session's persisted formats. See [persistence rules](CONTRIBUTING.md#persistence) and [testing](CONTRIBUTING.md#testing).
 
-Provider replay data is read from both current `native` fields and older state fields. Reversible field renames preserve saved fingerprints; content changes still fail validation. Host migrations that merge or discard previously distinct provider state cannot always preserve those fingerprints. Such histories remain refused rather than guessed or reset; keep a backup before upgrading OpenCode and do not clear the ledger to force continuation.
+Provider replay data is read from the current host's `native` fields. The established fingerprint representation remains unchanged so existing saved reductions can replay; content changes still fail validation. Host migrations that merge or discard previously distinct provider state cannot always preserve those fingerprints. Such histories remain refused rather than guessed or reset; keep a backup before upgrading OpenCode and do not clear the ledger to force continuation.

@@ -30,7 +30,7 @@ export type BudgetIdentity = { scope: string; model: z.infer<typeof modelSchema>
 type Assistant = Extract<SessionMessageInfo, { type: "assistant" }>
 
 function unit(kind: string, id: string, value: unknown, text: string, basis: TokenBasis): BudgetUnit {
-  return { key: hash([kind, id, value]), tokens: tokenCount(text, basis.encoding) }
+  return { key: hash([kind, id, value]), tokens: tokenCount(text, basis.encoding, basis.library) }
 }
 
 function mediaTokens(mime: string) {
@@ -43,8 +43,8 @@ function partUnit(part: ContentPart, id: string, basis: TokenBasis): BudgetUnit 
   if (part.type === "tool-result") return {
     key: hash([part.type, id, { id: part.id, name: part.name, result: part.result }]),
     tokens: part.result.type === "content"
-      ? part.result.value.reduce((sum, item) => sum + (item.type === "text" ? tokenCount(item.text, basis.encoding) : mediaTokens(item.mime)), 0)
-      : tokenCount(JSON.stringify(part.result), basis.encoding),
+      ? part.result.value.reduce((sum, item) => sum + (item.type === "text" ? tokenCount(item.text, basis.encoding, basis.library) : mediaTokens(item.mime)), 0)
+      : tokenCount(JSON.stringify(part.result), basis.encoding, basis.library),
   }
   if (part.type === "compaction") return unit(part.type, id, part, part.text ?? "", basis)
   const tokens = part.type === "media" ? mediaTokens(part.media.mediaType) : 0

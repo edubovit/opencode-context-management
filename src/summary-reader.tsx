@@ -102,7 +102,7 @@ export function SummaryReader(props: {
     ]
   return <box width="100%" height="100%" flexDirection="column" overflow="hidden" padding={1}>
     <text height={1} wrapMode="none" truncate fg={props.api.theme.text.base}>Summary reader · SUMMARY · {mode() === "read" ? "READ-ONLY" : mode().toUpperCase()}{busy() ? " · WORKING" : ""}</text>
-    <text height={1} wrapMode="none" truncate>{`≈${tokenCount(text(), props.editor.view.tokenizer.encoding)} tokens · ${props.editor.draft === undefined ? "Applied summary" : "Proposed edit (not applied)"} · ${props.choice()?.providerID}/${props.choice()?.modelID} · ${props.choice()?.variant ?? "default"}`}</text>
+    <text height={1} wrapMode="none" truncate>{`≈${tokenCount(text(), props.editor.view.tokenizer.encoding, props.editor.view.tokenizer.library)} tokens · ${props.editor.draft === undefined ? "Applied summary" : "Proposed edit (not applied)"} · ${props.choice()?.providerID}/${props.choice()?.modelID} · ${props.choice()?.variant ?? "default"}`}</text>
     <text height={2} width="100%" overflow="hidden">{notice()}</text>
     <box id="cm-summary-header-rule" width="100%" height={1} flexShrink={0} border={["top"]} borderStyle="single" borderColor={props.api.theme.border.base} />
     <Show when={help()} fallback={

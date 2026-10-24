@@ -193,6 +193,27 @@ test("scope hashing covers route/model/tokenizer configuration without persistin
   assert.throws(() => budgetStateSchema.parse({ ...pending, pending: { ...pending.pending, units: [{ key: "corrupt", tokens: -1 }] } }))
 })
 
+test("tokenizer upgrades exclude old usage until a fresh current-codec request is paired", () => {
+  const legacy = { ...FALLBACK_BASIS, library: "gpt-tokenizer@4.0.0" as const }
+  const oldIdentity = { ...identity, scope: budgetScope(identity, legacy, {}) }
+  const nextIdentity = { ...identity, scope: budgetScope(identity, FALLBACK_BASIS, {}) }
+  assert.notEqual(oldIdentity.scope, nextIdentity.scope)
+  const response = reply()
+  const messages = [prompt, Message.make({ id: response.id, role: "assistant", content: "Answer" })]
+  const oldPending = recordRequest({ version: 2, scope: oldIdentity.scope }, [user], budgetUnits([prompt], system, tools, legacy), "policy")
+  const old = prepareBudget(oldIdentity, [user, response], messages, system, tools, legacy, "policy", oldPending)
+  assert.equal(old.anchor?.matched, true)
+  const reset = prepareBudget(nextIdentity, [user, response], messages, system, tools, FALLBACK_BASIS, "policy", old)
+  assert.equal(reset.anchor, undefined)
+  assert.deepEqual(reset.excludedReports, [response.id])
+  assert.equal(estimateBudget(budgetUnits(messages, system, tools, FALLBACK_BASIS), reset, 1.3).source, "local-fallback")
+  const pending = recordRequest(reset, [user, response], budgetUnits(messages, system, tools, FALLBACK_BASIS), "policy")
+  const fresh = { ...reply(), id: "msg_current_codec", time: { created: 4, completed: 5 } }
+  const paired = prepareBudget(nextIdentity, [user, response, fresh], [...messages, Message.make({ id: fresh.id, role: "assistant", content: "Answer" })], system, tools, FALLBACK_BASIS, "policy", pending)
+  assert.equal(paired.anchor?.reportID, fresh.id)
+  assert.equal(paired.anchor?.matched, true)
+})
+
 test("old budget counts and pending samples are discarded, then usage is reconstructed without false removal credit", () => {
   const { state, pending, response, messages } = paired()
   const old = { ...state, version: 1, pending: pending.pending, anchor: { ...state.anchor!, inputLocal: 1_500_000, units: [{ key: "old-image-count", tokens: 1_500_000 }] } }

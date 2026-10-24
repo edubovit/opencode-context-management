@@ -7,16 +7,71 @@ import { settings, KEY } from "../src/config.ts"
 import { bindPruneRule, pruneText } from "../src/text.ts"
 import { FALLBACK_BASIS, TOKENIZER_ID, tokenBasis, tokenCount, tokenEdges, type Encoding } from "../src/tokens.ts"
 import { contentTokens, distribution, lastReportedUsage } from "../src/metrics.ts"
-import { append, emptyPolicy, operation, project, readPolicy, replacementTokens, select, serialize, turns } from "../src/context.ts"
+import { activeMessages, append, emptyPolicy, operation, project, readPolicy, replacementTokens, select, serialize, turns } from "../src/context.ts"
 import { generateSummary, inputEstimate, SUMMARIZER_SYSTEM } from "../src/summarize.ts"
 import { Controller } from "../src/controller.ts"
 import { Storage } from "../src/storage.ts"
 import { snapshot } from "../src/snapshot.ts"
 import { fixtureHost, messages, model, pruneRule, session } from "./fixtures.ts"
+import { nativeFixture } from "./native-fixtures.ts"
+import { transcriptView } from "../src/normalize.ts"
+import { projectRequest } from "../src/projection.ts"
 
 test("tokenizer settings reject unknown encodings", () => {
   assert.throws(() => settings({ tokenizer: { fallbackEncoding: "invented" } }), /encoding|Encoding/)
   assert.throws(() => settings({ tokenizer: { overrides: { "bad/model": "invented" } } }), /overrides/)
+})
+
+test("new operations use the installed tokenizer while saved Unicode pruning retains its original codec", () => {
+  assert.equal(TOKENIZER_ID, "gpt-tokenizer@4.1.0")
+  const text = "alpha\u0085beta\uFEFFgamma 😀\n".repeat(100)
+  for (const encoding of ["o200k_base", "cl100k_base"] as const) {
+    const rule = { unit: "tokens" as const, library: "gpt-tokenizer@4.0.0" as const, encoding, threshold: 100, head: 12, tail: 12 }
+    assert.equal(pruneText(text, rule), `alpha\u0085beta\uFEFFgamma 😀\nalpha\u0085\n\n[Context manager: middle omitted from tool output; original 900 tokens (${encoding}).]\n\ngamma 😀\nalpha\u0085beta\uFEFFgamma 😀\n`)
+    const op = operation("tool-prune", turns(messages()), rule, { ...FALLBACK_BASIS, encoding, library: rule.library })
+    const saved = append(emptyPolicy("ses_test"), op)
+    assert.deepEqual(readPolicy({ ...session(), metadata: { [KEY]: saved } }), saved)
+  }
+})
+
+for (const encoding of ["o200k_base", "cl100k_base"] as const) test(`${encoding}: mixed tokenizer layers replay and restore exact canonical content`, () => {
+  const legacy = { ...FALLBACK_BASIS, encoding, library: "gpt-tokenizer@4.0.0" as const }
+  const current = { ...FALLBACK_BASIS, encoding }
+  const text = "HEAD ".repeat(50) + "x\uFEFFword\n".repeat(300) + " TAIL".repeat(50)
+  for (let i = 0; i < 2; i++) {
+    assert.equal(tokenCount(text, encoding, legacy.library), 1650)
+    assert.equal(tokenCount(text, encoding, current.library), 1350)
+  }
+  const fixture = nativeFixture()
+  const assistant = fixture.native.find(message => message.id === "msg_a0")!
+  assert.ok(assistant.type === "assistant")
+  const tool = assistant.content.find(part => part.type === "tool")!
+  assert.ok(tool.type === "tool" && tool.state.status === "completed")
+  tool.state.content = [{ type: "text", text }]
+  const toolIndex = fixture.canonical.findIndex(message => message.role === "tool")
+  const result = fixture.canonical[toolIndex].content[0]
+  assert.ok(result.type === "tool-result")
+  fixture.canonical[toolIndex] = { ...fixture.canonical[toolIndex], content: [{ ...result, result: { type: "text", value: text } }] }
+  const raw = activeMessages(transcriptView(fixture.session, fixture.native))
+  const original = JSON.stringify([fixture.native, raw, fixture.canonical])
+  const rule = bindPruneRule({ threshold: 100, head: 12, tail: 12 }, legacy)
+  let policy = append(emptyPolicy(fixture.session.id), operation("tool-prune", turns(raw).slice(0, 1), rule, legacy))
+  const oldPolicy = JSON.stringify(policy)
+  const oldWire = projectRequest(fixture.native, raw, fixture.canonical, policy)
+  const expected = `${"HEAD ".repeat(12).trimEnd()}\n\n[Context manager: middle omitted from tool output; original 1650 tokens (${encoding}).]\n\n${" TAIL".repeat(6)}`
+  assert.equal(pruneText(text, rule), expected)
+  assert.ok(JSON.stringify(oldWire).includes(JSON.stringify(expected).slice(1, -1)))
+  assert.deepEqual(readPolicy({ id: fixture.session.id, metadata: { [KEY]: JSON.parse(oldPolicy) } }), JSON.parse(oldPolicy))
+  assert.equal(JSON.stringify(policy), oldPolicy)
+  const selected = project(raw, policy).slice(0, 1)
+  policy = append(policy, { ...operation("brief", selected, undefined, current), summary: "Current replacement" })
+  policy = append(policy, operation("expand", project(raw, policy).slice(0, 1), undefined, current))
+  assert.deepEqual(projectRequest(fixture.native, raw, fixture.canonical, policy), oldWire)
+  assert.equal(policy.operations[0].rule!.library, legacy.library)
+  assert.equal(policy.operations[1].tokenizer.library, current.library)
+  policy = append(policy, operation("expand", project(raw, policy).slice(0, 1), undefined, current))
+  assert.deepEqual(projectRequest(fixture.native, raw, fixture.canonical, policy), fixture.canonical)
+  assert.equal(JSON.stringify([fixture.native, raw, fixture.canonical]), original)
 })
 
 test("local tokenization treats special-token-looking text literally and resolves aliases without pretending unknown models are mapped", () => {

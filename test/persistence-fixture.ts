@@ -2,15 +2,16 @@ import { append, blockMessages, emptyPolicy, hash, activeMessages, operation, pr
 import { transcriptView } from "../src/normalize.ts"
 import { projectRequest } from "../src/projection.ts"
 import { nativeFixture } from "./native-fixtures.ts"
-import { TOKENIZER_ID } from "../src/tokens.ts"
+import { FALLBACK_BASIS } from "../src/tokens.ts"
 
 export function persistenceFixture(checkpoint = false) {
   const { session, native, canonical } = nativeFixture()
   const raw = transcriptView(session, native)
   let policy = emptyPolicy(session.id)
   const states: { source: string; request: string }[] = []
+  const basis = { ...FALLBACK_BASIS, library: "gpt-tokenizer@4.0.0" as const }
   const save = (mode: Parameters<typeof operation>[0], selected: ReturnType<typeof project>, extra: Partial<Policy["operations"][number]> = {}) => {
-    const op = { ...operation(mode, selected, mode === "tool-prune" ? { unit: "tokens", threshold: 200, head: 10, tail: 10, encoding: "o200k_base", library: TOKENIZER_ID } : undefined), id: `saved-${states.length}`, created: 100 + states.length, ...extra }
+    const op = { ...operation(mode, selected, mode === "tool-prune" ? { unit: "tokens", threshold: 200, head: 10, tail: 10, encoding: "o200k_base", library: basis.library } : undefined, basis), id: `saved-${states.length}`, created: 100 + states.length, ...extra }
     policy = append(policy, op)
     states.push({ source: op.beforeHash, request: hash(projectRequest(native, raw, canonical, policy)) })
   }

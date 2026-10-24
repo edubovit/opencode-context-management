@@ -1,7 +1,7 @@
 import { z } from "zod"
 import { KEY } from "./config.ts"
 import type { Session } from "./model.ts"
-import { TOKENIZER_ID } from "./tokens.ts"
+import { TOKENIZER_LIBRARIES } from "./tokens.ts"
 
 export const POLICY_VERSION = 13
 export type Mode = "tool-prune" | "tool-prune-all" | "tool-delete" | "prune-reason" | "compact" | "brief" | "delete"
@@ -10,11 +10,11 @@ export type RestoreMode = "expand"
 const count = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)
 const encoding = z.enum(["o200k_base", "cl100k_base"])
 const tokenizer = z.object({
-  encoding, library: z.literal(TOKENIZER_ID), source: z.enum(["model-name mapping", "configured override", "fallback"]),
+  encoding, library: z.enum(TOKENIZER_LIBRARIES), source: z.enum(["model-name mapping", "configured override", "fallback"]),
   providerID: z.string().optional(), modelID: z.string().optional(), apiModelID: z.string().optional(),
 }).strict()
 const rule = z.object({
-  unit: z.literal("tokens"), encoding, library: z.literal(TOKENIZER_ID), threshold: count.positive(), head: count, tail: count,
+  unit: z.literal("tokens"), encoding, library: z.enum(TOKENIZER_LIBRARIES), threshold: count.positive(), head: count, tail: count,
 }).strict().refine((value) => value.head + value.tail < value.threshold, "Invalid saved pruning budget")
 const ids = z.array(z.string().min(1)).nonempty().refine((value) => new Set(value).size === value.length, "Duplicate source identity")
 const pruneTargets = z.array(z.object({ operationID: z.string().min(1), sourceIDs: ids }).strict()).nonempty()

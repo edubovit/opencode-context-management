@@ -30,9 +30,11 @@ npm run check
 
 Use Node.js **22+** and retain optional dependencies. On Windows, `npm.cmd` avoids PowerShell shim restrictions. No build step is required: OpenCode loads the `src/` server and TUI entrypoints.
 
-The supported host range is **>=2.0.27 <3**. Dependency pins and host compatibility are separate: use [package.json](package.json) and [package-lock.json](package-lock.json) as the exact dependency inventory, and verify the installed host rather than adding an exact-version startup gate. Server and TUI **plugin** versions must agree on their shared RPC contract.
+The supported host range is **>=2.1.4 <3**, with OpenTUI **>=0.6.8 <0.7**. Older hosts are not supported or part of the acceptance matrix. Use [package.json](package.json) and [package-lock.json](package-lock.json) as the exact dependency inventory. Saved-data compatibility is separate: keep existing ledgers, fingerprints and pinned tokenizer rules readable. Server and TUI **plugin** versions must agree on their shared RPC contract.
 
 Upgrade public OpenCode packages together. The host owns shared runtime dependencies; do not bypass runtime compatibility checks or use aliases to force mismatched packages to load. Preserve explicit dependency overrides unless a tested replacement removes their need. Do not use forced peer resolution or unrelated upgrades to silence warnings.
+
+Refresh direct pins and transitive lockfile entries, then audit both the lockfile and a clean install. Keep host-required exact runtime versions rather than forcing every transitive dependency to its newest major. The `gpt-tokenizer-legacy` alias is a persistence codec, not a host-runtime workaround: saved rules require its exact behavior. Do not upgrade or remove it while those records remain supported.
 
 Renderer tests use the bundled platform-specific Bun through `script/test-tui.mjs`, not the Node backend. OpenTUI's Node-backend requirement can produce an install warning on supported Node versions; do not replace the renderer launcher with direct Node JSX execution. Dependency changes require coordinated live-service restart and terminal reconnect when deployed.
 
@@ -53,6 +55,8 @@ npm audit
 Unit/adapter tests cover normalization, replay, canonical projection, persistence, ownership, cancellation, budget accounting and workflow transitions. Renderer tests drive production OpenTUI components, not UI replicas.
 
 Keep frozen source/request fingerprints and deterministic mixed-operation replay tests. Never regenerate expected hashes merely to make a regression pass. Check input immutability, JSON round trips and the next canonical request, not just the inspector's labels.
+
+Tokenizer upgrades must test Unicode boundary changes, mixed old/new pruning layers, exact canonical replay and restoration. Select codecs and count caches by both encoding and library version. Preserve saved tokenizer IDs; use the current library for new operations and request accounting. A changed tokenizer invalidates the accounting scope and excludes old reports until a fresh request can be paired.
 
 ### Installed-host suites
 
@@ -154,7 +158,7 @@ Normal maintenance appends operations. Verified committed native revert rebuilds
 
 Native-derived shell settlement/background flags also stay outside fingerprints. Keep shell records' stored domain role and turn grouping stable; summary replacement alone introduces a user/assistant pair, with distinct IDs even for a single shell record. Settled leading shell input is eligible, but a background-only omitted record needs visible follow-up context. Restoration uses current canonical pre-images, never resurrects omitted background shell wrappers, and never executes a command. Exercise `script/shell-summary-smoke.ts` against an isolated host for the immediate summary/restoration requests.
 
-Normalization accepts current `native` provider data and legacy text/reasoning `state` and tool `providerState` fields. Source hashing uses the established field names for reversible assistant/part renames without mutating native input. Conflicting aliases remain hashed, not silently discarded. Opaque hosted-tool checks include both current and legacy call/result state. Checkpoint text reads current `metadata.recent` or legacy `recent`; checkpoints stay read-only. Do not reconstruct a legacy split tool payload from merged native data or rewrite saved hashes to conceal a lossy host migration.
+Normalization reads current `native` provider data and checkpoint `metadata.recent`, without old-host DTO fallbacks. Source hashing still uses the established field names for assistant/part data so saved reductions retain their fingerprints; this is persistence compatibility, not an old-host adapter. Conflicting aliases remain hashed, not silently discarded. Opaque hosted-tool checks use `native`; checkpoints stay read-only. Do not reconstruct a legacy split tool payload from merged native data or rewrite saved hashes to conceal a lossy host migration.
 
 ### Reversible layers
 

@@ -5,17 +5,14 @@ import type { FilePart, Model, Part, Session, ToolPart, Usage } from "./model.ts
 const zero = (): Usage => ({ input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } })
 
 type ProviderData = Record<string, unknown>
-export function toolNative(tool: { native?: ProviderData; providerState?: ProviderData; providerResultState?: ProviderData }) {
-  return tool.native ?? tool.providerState ?? tool.providerResultState
-}
 
 function sourceMessage(message: SessionMessageInfo) {
   if (message.type !== "assistant") return message
-  const legacy = (value: { native?: ProviderData }, key: string) => {
+  const persisted = (value: { native?: ProviderData }, key: string) => {
     const { native, ...rest } = value
     return native === undefined || key in value ? value : { ...rest, [key]: native }
   }
-  return { ...legacy(message, "providerState"), content: message.content.map(part => legacy(part, part.type === "tool" ? "providerState" : "state")) }
+  return { ...persisted(message, "providerState"), content: message.content.map(part => persisted(part, part.type === "tool" ? "providerState" : "state")) }
 }
 
 export function retainsReasoning(message: Extract<SessionMessageInfo, { type: "assistant" }>) {
@@ -71,11 +68,11 @@ export function transcriptView(session: SessionInfo, messages: readonly SessionM
       },
       parts: message.content.map((content, index): Part => {
         if (content.type !== "tool") {
-          const metadata = content.native ?? (content as { state?: ProviderData }).state
+          const metadata = content.native
           return { ...partBase(index), type: content.type, text: content.text, ...(metadata ? { metadata } : {}) }
         }
         const key = partBase(`tool:${content.id}`)
-        const metadata = content.native ?? (content as { providerState?: ProviderData }).providerState
+        const metadata = content.native
         const common = { ...key, type: "tool" as const, callID: content.id, tool: content.name, ...(metadata ? { metadata } : {}) }
         if (content.state.status === "streaming") return { ...common, state: { status: "pending", input: { partial: content.state.input } } }
         if (content.state.status === "running") return { ...common, state: { status: "running", input: content.state.input, metadata: content.state.metadata } }
@@ -97,7 +94,7 @@ export function transcriptView(session: SessionInfo, messages: readonly SessionM
     }
     const text = message.type === "skill" || message.type === "system" || message.type === "synthetic" ? message.text
       : message.type === "shell" ? `[Shell ${message.command}]\n${message.output?.output ?? ""}`
-      : message.type === "compaction" ? (message.status === "completed" ? `${message.summary}\n${(message as { recent?: string }).recent ?? (typeof message.metadata?.recent === "string" ? message.metadata.recent : "")}` : `[Native compaction ${message.status}]`)
+      : message.type === "compaction" ? (message.status === "completed" ? `${message.summary}\n${typeof message.metadata?.recent === "string" ? message.metadata.recent : ""}` : `[Native compaction ${message.status}]`)
       : `[${message.type}]`
     return {
       info: { ...base, role: "assistant" as const, providerID: model.providerID, modelID: model.id, cost: 0, tokens: zero(), ...(message.type === "shell" ? { shell: { settled: message.status !== "running" && message.time.completed !== undefined, background: message.metadata?.background === true } } : {}) },

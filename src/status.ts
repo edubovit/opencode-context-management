@@ -25,7 +25,7 @@ export function toolStatus(blocks: Block[], rule: PruneRule, basis: TokenBasis =
       const after = prior === signature || prior === "all" ? before : pruneText(before, rule, outputPath)
       if (before !== after) {
         result.eligible++
-        result.pruneDelta += tokenCount(after, basis.encoding) - tokenCount(before, basis.encoding)
+        result.pruneDelta += tokenCount(after, basis.encoding, basis.library) - tokenCount(before, basis.encoding, basis.library)
         result.pruneCharDelta += chars(after) - chars(before)
       }
     }

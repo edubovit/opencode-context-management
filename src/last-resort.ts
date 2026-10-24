@@ -65,7 +65,7 @@ export class LastResort {
       }
       if (summaries.length === 1) return summaries[0]
       const merged = summaries.map((summary, index) => `[Chronological chunk ${index + 1}/${summaries.length}]\n${summary}`).join("\n\n")
-      if (tokenCount(merged, basis.encoding) >= tokenCount(text, basis.encoding)) throw new Error("Last-resort chunk summaries did not reduce the input")
+      if (tokenCount(merged, basis.encoding, basis.library) >= tokenCount(text, basis.encoding, basis.library)) throw new Error("Last-resort chunk summaries did not reduce the input")
       text = merged
     }
     throw new Error("Last-resort summary exceeded four merge rounds")
@@ -80,12 +80,12 @@ export class LastResort {
 export function splitText(text: string, limit: number, basis: TokenBasis) {
   const chunks: string[] = []
   while (text) {
-    if (tokenCount(text, basis.encoding) <= limit) { chunks.push(text); break }
+    if (tokenCount(text, basis.encoding, basis.library) <= limit) { chunks.push(text); break }
     let low = 0
     let high = text.length
     while (low + 1 < high) {
       const middle = Math.floor((low + high) / 2)
-      if (tokenCount(text.slice(0, middle), basis.encoding) <= limit) low = middle
+      if (tokenCount(text.slice(0, middle), basis.encoding, basis.library) <= limit) low = middle
       else high = middle
     }
     if (low > 0 && /[\uD800-\uDBFF]/.test(text[low - 1])) low--

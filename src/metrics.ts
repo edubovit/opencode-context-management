@@ -4,7 +4,7 @@ import { chars, toolText } from "./text.ts"
 import { FALLBACK_BASIS, tokenCount, type TokenBasis } from "./tokens.ts"
 
 export function distribution(blocks: Block[], runtime?: RuntimeCapture, basis: TokenBasis = FALLBACK_BASIS, unit: "tokens" | "characters" = "tokens") {
-  const measure = (text: string) => unit === "tokens" ? tokenCount(text, basis.encoding) : chars(text)
+  const measure = (text: string) => unit === "tokens" ? tokenCount(text, basis.encoding, basis.library) : chars(text)
   const counts: Record<string, number> = {
     user: 0, assistant: 0, summaries: 0, reasoning: 0, toolInputs: 0, toolOutputs: 0, loadedSkills: 0,
     systemPrompts: 0, advertisedSkills: 0, capturedToolDefinitions: 0,

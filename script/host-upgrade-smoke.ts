@@ -14,6 +14,7 @@ if (!oldHost || !newHost || !baseline) throw new Error("Supply the old executabl
 const original = await import(pathToFileURL(path.resolve(baseline, "context.ts")).href)
 const normalize = await import(pathToFileURL(path.resolve(baseline, "normalize.ts")).href)
 const { rememberPolicy } = await import(pathToFileURL(path.resolve(baseline, "revert.ts")).href)
+const { FALLBACK_BASIS } = await import(pathToFileURL(path.resolve(baseline, "tokens.ts")).href)
 const test = await fixture(oldHost, undefined, { plugin: path.resolve(baseline) })
 const checks: string[] = []
 let passed = false
@@ -22,7 +23,7 @@ try {
   const messages = nativeFixture().native.map(message => {
     if (message.type !== "assistant") return message
     return { ...message, model: source.model!, providerState: { step: "native-step" }, content: message.content.map(part => {
-      if (part.type === "tool") return { ...part, providerState: { call: "native-call" } }
+      if (part.type === "tool") return { ...part, providerState: { call: "native-call" }, state: { ...part.state, content: [{ type: "text", text: "HEAD_0 ".repeat(50) + "x\uFEFFword\n".repeat(300) + " TAIL_0".repeat(50) }] } }
       const { native, ...rest } = part
       return { ...rest, state: native ?? { phase: "native-text" } }
     }) }
@@ -33,7 +34,10 @@ try {
   const raw = normalize.transcriptView(session, before)
   let policy = original.emptyPolicy(session.id)
   const blocks = () => original.project(original.activeMessages(raw), policy)
-  policy = original.append(policy, { ...original.operation("tool-prune-all", [blocks()[0]]), pruneReason: true })
+  const rule = { unit: "tokens", threshold: 100, head: 12, tail: 12, encoding: "o200k_base", library: FALLBACK_BASIS.library }
+  policy = original.append(policy, { ...original.operation("tool-prune", [blocks()[0]], rule), pruneReason: true })
+  const prunedMessages = hash(blocks()[0].messages)
+  const savedOutput = blocks()[0].messages.flatMap((message: { parts: { type: string; state?: { output?: string } }[] }) => message.parts).find((part: { type: string }) => part.type === "tool")!.state!.output!
   policy = original.append(policy, { ...original.operation("compact", blocks().slice(0, 2)), summary: "UPGRADE_SAVED_SUMMARY" })
   policy = rememberPolicy(raw, policy)
   await test.client.session.update({ sessionID: session.id, metadata: JSON.parse(JSON.stringify({ ...session.metadata, [KEY]: policy })) })
@@ -58,8 +62,9 @@ try {
   await controller.applyRestore(await controller.prepareRestore("expand", loaded.blocks[0].sourceIDs))
   const pruned = await controller.load()
   assert.equal(pruned.blocks[0].reasonPruned, true)
+  assert.equal(hash(pruned.blocks[0].messages), prunedMessages)
   const wire = await send("First request after summary expansion")
-  assert.ok(!wire.includes("UPGRADE_SAVED_SUMMARY") && !wire.includes("REASON_0") && wire.includes("Tool output pruned"))
+  assert.ok(!wire.includes("UPGRADE_SAVED_SUMMARY") && !wire.includes("REASON_0") && wire.includes(JSON.stringify(savedOutput).slice(1, -1)))
   await controller.applyRestore(await controller.prepareRestore("expand", pruned.blocks[0].sourceIDs))
   const restored = await send("First request after pruning restoration")
   assert.ok(restored.includes("REASON_0") && restored.includes("HEAD_0"))
