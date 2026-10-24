@@ -1,8 +1,8 @@
 import type { ContentPart, Message } from "@opencode/ai"
 import type { SessionMessageInfo } from "@opencode/client"
 import { z } from "zod"
-import { hash } from "./context.ts"
-import { tokenCount, type TokenBasis } from "./tokens.ts"
+import { hash } from "./fingerprint.ts"
+import { mediaTokens, tokenCount, type TokenBasis } from "./tokens.ts"
 
 const count = z.number().int().nonnegative()
 const unitSchema = z.object({ key: z.string(), tokens: count })
@@ -31,10 +31,6 @@ type Assistant = Extract<SessionMessageInfo, { type: "assistant" }>
 
 function unit(kind: string, id: string, value: unknown, text: string, basis: TokenBasis): BudgetUnit {
   return { key: hash([kind, id, value]), tokens: tokenCount(text, basis.encoding, basis.library) }
-}
-
-function mediaTokens(mime: string) {
-  return mime.startsWith("image/") ? 1500 : mime === "application/pdf" ? 2000 : 0
 }
 
 function partUnit(part: ContentPart, id: string, basis: TokenBasis): BudgetUnit {

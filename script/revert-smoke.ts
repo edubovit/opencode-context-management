@@ -1,3 +1,4 @@
+import { applySummary } from "../test/fixtures.ts"
 import assert from "node:assert/strict"
 import { writeFile } from "node:fs/promises"
 import path from "node:path"
@@ -49,10 +50,10 @@ const summarize = async (value: Controller, start: number, length: number, mode:
   summary++
   const loaded = await value.load()
   const draft = await value.summarize(mode, loaded.blocks.slice(start, start + length).flatMap((block) => block.sourceIDs), undefined, undefined, "total")
-  await value.apply(draft, draft.operation.summary!)
+  await applySummary(value, draft)
 }
 const range = async (value: Controller, start: number, length: number) => (await value.load()).blocks.slice(start, start + length).flatMap((block) => block.sourceIDs)
-const restore = async (value: Controller) => value.applyRestore(await value.prepareRestore("expand", (await value.load()).blocks[0].sourceIDs))
+const restore = async (value: Controller) => value.restoreRanges([(await value.load()).blocks[0].sourceIDs])
 
 async function probe(value: Controller, label: string, cut: number, restart = false) {
   const id = value.sessionID
@@ -116,7 +117,7 @@ async function probe(value: Controller, label: string, cut: number, restart = fa
   const restored = await value.load()
   const groups = restored.blocks.filter((block) => block.summaryID || block.deletionID || block.pruning?.length).map((block) => block.sourceIDs)
   if (groups.length) {
-    const preview = await value.prepareRestoreRanges("expand", groups)
+    const preview = await value.prepareRestore(groups)
     await value.applyOperations(preview.operations, preview)
     await send(id, "AFTER_ONE_LAYER_RESTORATION")
   }
@@ -148,7 +149,7 @@ try {
     ...(["large", "all", "delete", undefined] as const).map((tools) => ({ label: `prune-crossing-${tools ?? "reason"}`, setup: async (value: Controller) => value.prune(await range(value, 0, 10), { reasoning: true, ...(tools ? { tools } : {}) }) })),
     { label: "prune-before-boundary", setup: async (value) => value.prune(await range(value, 0, 1), { reasoning: true, tools: "all" }) },
     { label: "summary-before-boundary", setup: (value) => summarize(value, 0, 3) },
-    { label: "fully-restored-prune-audit", setup: async (value) => { await value.prune(await range(value, 0, 10), { reasoning: true, tools: "all" }); const preview = await value.prepareRestoreRanges("expand", [await range(value, 0, 10)]); await value.applyOperations(preview.operations, preview) } },
+    { label: "fully-restored-prune-audit", setup: async (value) => { const ids = await range(value, 0, 10); await value.prune(ids, { reasoning: true, tools: "all" }); await value.restoreRanges([ids]) } },
   ]
   for (const scenario of cases) {
     const value = await seed(scenario.label)

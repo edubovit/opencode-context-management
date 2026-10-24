@@ -1,4 +1,4 @@
-import { hash, toolText, turns, type Block, type Envelope, type Operation } from "./context.ts"
+import { hash, toolText, turns, type Block, type Envelope } from "./context.ts"
 import { chars, pruneText, type PruneRule } from "./text.ts"
 import { FALLBACK_BASIS, tokenCount, type TokenBasis } from "./tokens.ts"
 
@@ -43,10 +43,4 @@ export function rangeLabel(sourceIDs: string[], index: ReadonlyMap<string, numbe
   const first = Math.min(...numbers)
   const last = Math.max(...numbers)
   return first === last ? `Turn ${first}` : `Turns ${first}–${last}`
-}
-
-export function operationLabel(op: Operation | undefined, index: ReadonlyMap<string, number>) {
-  if (!op) return "nothing"
-  const name = op.mode === "expand" ? op.pruneTargets?.length || op.deletedIDs?.length ? "restore context" : "expand summaries" : op.mode === "revise" ? "edit summary" : op.mode
-  return `${name}: ${rangeLabel(op.sourceIDs, index)}`
 }

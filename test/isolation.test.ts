@@ -21,7 +21,7 @@ for (const mode of ["compact", "brief"] as const) for (const isolation of ["off"
   })
 }
 
-test("isolated batches freeze scope across failed-job retries and refinements", async () => {
+test("isolated batches freeze scope across failed-job retries and automatic size review", async () => {
   const { host, data } = fixtureHost()
   const controller = new Controller(host, data.session.id, settings(), { capture: async () => ({ sessionID: data.session.id, time: 1, warnings: [], system: ["PRIVATE_RUNTIME"] }), write: async () => "unused" })
   const loaded = await controller.load()
@@ -29,13 +29,12 @@ test("isolated batches freeze scope across failed-job retries and refinements", 
   let fail = true
   host.generate = async (...args) => { if (fail) { fail = false; throw new Error("Retry me") }; return generate(...args) }
   const batch = new SummaryBatch(controller)
-  await batch.start("brief", [loaded.blocks[1].sourceIDs], undefined, "total")
+  await batch.start("compact", [loaded.blocks[1].sourceIDs], undefined, "total")
   await batch.generate()
   assert.equal(batch.ready, false)
   await batch.generate()
   assert.equal(batch.ready, true)
-  batch.entries[0].request = "Clarify the selected answer"
-  await batch.refine(0)
+  assert.equal(batch.entries[0].draft?.attempts, 2)
   for (const call of data.calls) assert.doesNotMatch(call.text, /Question 0|Question 2|PRIVATE_RUNTIME/)
   assert.match(data.calls[0].text, /Question 1/)
   await batch.dispose()

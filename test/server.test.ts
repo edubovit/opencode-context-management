@@ -15,6 +15,7 @@ import { mockContext } from "./host-mock.ts"
 import { Message } from "@opencode/ai"
 import { AUTO_KEY } from "../src/auto-state.ts"
 import { pruneRule } from "./fixtures.ts"
+import { Autocompaction } from "../src/autocompaction.ts"
 
 const call = { signal: new AbortController().signal, error: (...args: unknown[]) => { throw new Error(String(args[1])) } }
 
@@ -75,6 +76,34 @@ test("fork accounting excludes copied reports until its own request receives usa
   const capture = await mock.store.capture(session.id)
   assert.equal(capture?.budget?.source, "provider-matched")
   assert.equal(capture?.budget?.reported?.messageID, reply.id)
+})
+
+test("request projection reuse distinguishes same-revision candidates and never crosses hook inputs", async t => {
+  const mock = await setup(t)
+  const data = nativeFixture()
+  mock.messages.set("ses_native", data.native)
+  const estimates: number[] = []
+  t.mock.method(Autocompaction.prototype, "beforeRequest", async (...[raw, input]: Parameters<Autocompaction["beforeRequest"]>) => {
+    assert.ok(input)
+    const base = emptyPolicy("ses_native")
+    const op = operation("brief", project(activeMessages(raw), base).slice(0, 1))
+    const small = append(base, { ...op, summary: "Selected facts" })
+    const large = append(base, { ...op, summary: "Additional detail. ".repeat(10000) })
+    const measure = (policy: typeof base) => {
+      const reading = input.estimate(policy)
+      return typeof reading === "number" ? reading : reading.tokens
+    }
+    const first = measure(small)
+    assert.ok(measure(large) > first)
+    assert.equal(measure(small), first)
+    estimates.push(measure(base))
+  })
+  for (const text of ["System", "Larger system. ".repeat(2000)]) {
+    const event = { sessionID: "ses_native", agent: "build", model: { providerID: "fixture", id: "model" }, system: [{ type: "text", text }], messages: data.canonical, tools: {}, options: {} }
+    await mock.hooks.get("context")!(event)
+    assert.deepEqual(event.messages, data.canonical)
+  }
+  assert.ok(estimates[1] > estimates[0])
 })
 
 test("RPC commits combined pruning while retaining failed-attempt reasoning", async (t) => {

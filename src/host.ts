@@ -2,7 +2,7 @@ import type { Plugin } from "@opencode/plugin"
 import type { SessionInfo } from "@opencode/client"
 import { AGENT, EDIT_AGENT, KEY } from "./config.ts"
 import { AUTO_KEY, strategy } from "./auto-state.ts"
-import type { HelperTrigger, Host } from "./controller.ts"
+import type { HelperTrigger, Host } from "./host-contract.ts"
 import { Activity } from "./activity.ts"
 import { modelView, sessionView, transcriptView } from "./normalize.ts"
 import { emptyPolicy, hash, readPolicy, type Policy } from "./context.ts"
@@ -39,9 +39,10 @@ export function pluginHost(ctx: PluginContext) {
       if (closed) throw new Error("Context manager unloaded before fork initialization")
       if (hash(current.fork) !== hash(value.fork) || hash(current.metadata?.[KEY]) !== hash(saved) || current.location.directory !== value.location.directory)
         throw new Error("Fork changed before context initialization; reopen it")
-      const native = await ctx.session.context({ sessionID })
-      validateNativePolicy(native, transcriptView(current, native), policy)
-      policy = rememberPolicy(transcriptView(current, native), policy)
+       const native = await ctx.session.context({ sessionID })
+       const raw = transcriptView(current, native)
+       validateNativePolicy(native, raw, policy)
+       policy = rememberPolicy(raw, policy)
       const metadata: NonNullable<SessionInfo["metadata"]> = JSON.parse(JSON.stringify({ ...current.metadata, [KEY]: policy, [AUTO_KEY]: { strategy: strategy(sessionView(current)) } }))
       if (closed) throw new Error("Context manager unloaded before fork initialization")
       await ctx.session.update({ sessionID, metadata })
@@ -116,10 +117,11 @@ export function pluginHost(ctx: PluginContext) {
     update: async (id, metadata) => {
       const session = await nativeSession(id)
       const native = await ctx.session.context({ sessionID: id })
+      const raw = transcriptView(session, native)
       const policy = readPolicy({ ...sessionView(session), metadata })
-      validateNativePolicy(native, transcriptView(session, native), policy)
+      validateNativePolicy(native, raw, policy)
       await ctx.session.update({ sessionID: id, metadata: JSON.parse(JSON.stringify({ ...metadata,
-        ...(metadata[KEY] !== undefined ? { [KEY]: rememberPolicy(transcriptView(session, native), policy) } : {}),
+        ...(metadata[KEY] !== undefined ? { [KEY]: rememberPolicy(raw, policy) } : {}),
       })) })
     },
     createJob: async (purpose = "summary", ownerID, trigger = "auto") => {
@@ -161,8 +163,8 @@ export function pluginHost(ctx: PluginContext) {
         if (response.some((message) => message.type === "user")) throw new Error("Summary helper received another input before result extraction")
         const replies = response.filter((message) => message.type === "assistant")
         const reply = replies.at(-1)
-        if (current.outcome !== "succeeded" || !reply || reply.type !== "assistant" || reply.error)
-          throw new Error(`Summarizer failed: ${reply?.type === "assistant" && reply.error ? `${reply.error.type}: ${reply.error.message}` : current.outcome ?? "no completed response"}`)
+        if (current.outcome !== "succeeded" || !reply || reply.error)
+          throw new Error(`Summarizer failed: ${reply?.error ? `${reply.error.type}: ${reply.error.message}` : current.outcome ?? "no completed response"}`)
         for (const part of replies) {
           if (part.finish === "length") throw new Error("Summarizer reached the host/provider output limit; incomplete draft rejected")
           if (part.error) throw new Error(`Summarizer failed: ${part.error.type}: ${part.error.message}`)

@@ -1,6 +1,6 @@
 import { Plugin } from "@opencode/plugin"
 import { AGENT, EDIT_AGENT, KEY, VERSION, settings } from "./config.ts"
-import { blockMessages, historyHash, activeMessages, project, readPolicy } from "./context.ts"
+import { blockMessages, hash, historyHash, activeMessages, project, readPolicy } from "./context.ts"
 import { Controller } from "./controller.ts"
 import { Storage, type RuntimeCapture } from "./storage.ts"
 import { chars, spills, spillPreview } from "./text.ts"
@@ -13,7 +13,6 @@ import { protectedMessages } from "./history.ts"
 import { projectRequest } from "./projection.ts"
 import { tokenBasis } from "./tokens.ts"
 import { budgetScope, budgetUnits, estimateBudget, prepareBudget, recordRequest } from "./budget.ts"
-import { hash } from "./context.ts"
 import { inputBudget } from "./auto-state.ts"
 import { summaryProgress } from "./summary-progress.ts"
 
@@ -146,19 +145,33 @@ export async function setupServer(ctx: PluginContext, store = new Storage(ctx.lo
       return requestScope(selected, configured) === scope && hash(selected?.limit) === hash(model?.limit)
     }
     const previous = await store.budget(event.sessionID) ?? (current.fork || currentPolicy.epoch ? { version: 2 as const, scope, excludedReports: native.filter((message) => message.type === "assistant").map((message) => message.id) } : undefined)
-    const state = prepareBudget({ scope, model: event.model, agent: event.agent }, native, projectRequest(native, raw, incoming, currentPolicy), event.system, event.tools, basis, hash(currentPolicy), previous, (response) => {
+    let projected: { key: string; messages: ReturnType<typeof projectRequest>; units?: ReturnType<typeof budgetUnits>; history?: string } | undefined
+    const request = (policy: ReturnType<typeof readPolicy>) => {
+      const key = hash(policy)
+      if (projected?.key !== key) projected = { key, messages: projectRequest(native, raw, incoming, policy) }
+      return projected
+    }
+    const effectiveHash = (policy: ReturnType<typeof readPolicy>) => {
+      const current = request(policy)
+      return current.history ??= historyHash(blockMessages(project(activeMessages(raw), policy)))
+    }
+    const state = prepareBudget({ scope, model: event.model, agent: event.agent }, native, request(currentPolicy).messages, event.system, event.tools, basis, hash(currentPolicy), previous, (response) => {
       const position = native.findIndex((message) => message.id === response.id)
       const future = new Set(native.slice(position).map((message) => message.id))
       const changed = currentPolicy.operations.findIndex((op) => op.created >= response.time.created || op.sourceIDs.some((id) => future.has(id)))
       const historical = changed < 0 ? currentPolicy : { ...currentPolicy, revision: changed, operations: currentPolicy.operations.slice(0, changed) }
-      return { messages: projectRequest(native, raw, incoming, historical), policy: hash(historical) }
+      const projected = request(historical)
+      return { messages: projected.messages, policy: projected.key }
     })
     await saveBudget(event.sessionID, state)
-    const units = (policy: ReturnType<typeof readPolicy>) => budgetUnits(projectRequest(native, raw, incoming, policy), event.system, event.tools, basis)
+    const units = (policy: ReturnType<typeof readPolicy>) => {
+      const current = request(policy)
+      return current.units ??= budgetUnits(current.messages, event.system, event.tools, basis)
+    }
     const estimate = (policy: ReturnType<typeof readPolicy>) => estimateBudget(units(policy), state, config.autocompaction.estimateMultiplier)
     const capture: RuntimeCapture = {
       sessionID: event.sessionID, time: Date.now(), model: choice, variant: event.model.variant, agent: event.agent,
-      historyHash: historyHash(blockMessages(project(activeMessages(raw), readPolicy(sessionView(current))))),
+      historyHash: effectiveHash(currentPolicy),
       system: [...event.system.map((part) => part.text), ...incoming.filter((message) => message.role === "system").map((message) => message.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("\n"))],
       tools: Object.entries(event.tools).map(([id, tool]) => ({ id, description: tool.description, parameters: tool.input })),
       warnings: ["Captured at this plugin's context hook; later hooks, provider framing, media and opaque state are not fully counted."],
@@ -177,8 +190,8 @@ export async function setupServer(ctx: PluginContext, store = new Storage(ctx.lo
       await auto.beforeRequest(raw, { model: choice, protectedIDs: [...protectedMessages(native)], estimate, valid })
     }
     const policy = readPolicy(sessionView(await requireSession(event.sessionID)))
-    event.messages = projectRequest(native, raw, incoming, policy)
-    capture.historyHash = historyHash(blockMessages(project(activeMessages(raw), policy)))
+    event.messages = request(policy).messages
+    capture.historyHash = effectiveHash(policy)
     capture.time = Date.now()
     capture.budget = estimate(policy)
     await saveBudget(event.sessionID, recordRequest(state, native, units(policy), hash(policy)))

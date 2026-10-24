@@ -1,3 +1,4 @@
+import { applySummary } from "../test/fixtures.ts"
 import assert from "node:assert/strict"
 import { fixture } from "./host-fixture.ts"
 import { remoteHost } from "../src/control.ts"
@@ -23,7 +24,7 @@ try {
     const before = await test.client.session.context({ sessionID: session.id })
     const ids = (await controller.load()).blocks[0].sourceIDs
     const draft = await controller.summarize("brief", ids)
-    await controller.apply(draft, "SHELL_SUMMARY_MARKER")
+    await applySummary(controller, draft, "SHELL_SUMMARY_MARKER")
     const send = async () => {
       await test.client.session.prompt({ sessionID: session.id, text: "Continue after context edit" })
       await test.client.session.wait({ sessionID: session.id }, { signal: AbortSignal.timeout(45000) })
@@ -32,7 +33,7 @@ try {
     }
     const compacted = await send()
     assert.ok(compacted.includes("SHELL_SUMMARY_MARKER") && !compacted.includes("SHELL_OUTPUT_MARKER"))
-    await controller.applyRestore(await controller.prepareRestore("expand", ids))
+    await controller.restoreRanges([ids])
     const restored = await send()
     assert.ok(!restored.includes("SHELL_SUMMARY_MARKER") && restored.includes("SHELL_OUTPUT_MARKER"))
     assert.equal(restored.includes("SHELL_INPUT_MARKER"), !background)

@@ -94,9 +94,9 @@ In **c**, select detailed or brief summarization and optionally toggle one isola
 
 The options are mutually exclusive, off by default, and unavailable for pruning/Delete. Switching detailed/brief preserves isolation; switching to another action clears it. These are inspector choices, not global options. Summarization instructions are always included.
 
-Each range uses its own boundary against the frozen snapshot. Sibling summaries never become another helper's background. Retries and refinements keep the chosen scope.
+Each range uses its own boundary against the frozen snapshot. Sibling summaries never become another helper's background. Retries and automatic size reviews keep the chosen scope.
 
-**Manual summaries let the provider decide whether input fits.** The plugin does not veto user-started summaries, refinements or edits based on a local token estimate. Host/provider limits still apply. Without isolation, splitting the selection into smaller ranges does not shrink each helper's full background. Total isolation can help, but the selected range must still fit. Isolation does not reduce unselected main-session history or bypass Resume checks.
+**Manual summaries let the provider decide whether input fits.** The plugin does not veto user-started summaries, size reviews or saved-summary edits based on a local token estimate. Host/provider limits still apply. Without isolation, splitting the selection into smaller ranges does not shrink each helper's full background. Total isolation can help, but the selected range must still fit. Isolation does not reduce unselected main-session history or bypass Resume checks.
 
 ## Read, edit and restore
 
@@ -164,7 +164,7 @@ These are forecasts, not exact provider counts. Images/PDFs use rough allowances
 
 Set `options` on the plugin entry in project or global **`opencode.json(c)`**, not `cli.json`. Global configuration normally lives under `~/.config/opencode/`; `XDG_CONFIG_HOME` can change that root. Preserve unrelated providers, permissions and plugins when merging settings.
 
-Every option is optional. `{}` uses the defaults below. Unknown keys and invalid values are rejected. Omitted fields keep their own defaults; they are not automatically adjusted to fit other overrides. Cleanup strategy is selected per session with **a**, not a configuration option.
+Every option is optional. `{}` uses the defaults below. Unknown keys and invalid values are rejected, including explicit `null`, numeric strings and booleans in numeric fields. Omitted fields keep their own defaults; they are not automatically adjusted to fit other overrides. Cleanup strategy is selected per session with **a**, not a configuration option.
 
 ### Complete configuration example
 

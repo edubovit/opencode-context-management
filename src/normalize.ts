@@ -1,6 +1,6 @@
 import type { ModelInfo, SessionInfo, SessionMessageInfo, ToolContent } from "@opencode/client"
-import { hash, type Envelope } from "./context.ts"
-import type { FilePart, Model, Part, Session, ToolPart, Usage } from "./model.ts"
+import { hash } from "./fingerprint.ts"
+import type { Envelope, FilePart, Model, Part, Session, ToolPart, Usage } from "./model.ts"
 
 const zero = (): Usage => ({ input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } })
 

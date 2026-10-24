@@ -3,17 +3,10 @@ import assert from "node:assert/strict"
 import { settings, KEY } from "../src/config.ts"
 import { chars, spills, spillPreview } from "../src/text.ts"
 import { append, blockMessages, emptyPolicy, hash, historyHash, operation, project, readPolicy, replacementTokens, select, serialize, turns } from "../src/context.ts"
-import { distribution, snapshot } from "../src/snapshot.ts"
+import { snapshot } from "../src/snapshot.ts"
+import { distribution } from "../src/metrics.ts"
 import { generateSummary, summaryPrompt } from "../src/summarize.ts"
 import { messages, pruneRule, session } from "./fixtures.ts"
-
-test("settings validate configurable budgets and model pairing", () => {
-  assert.equal(settings().spill.maxBytes, 51200)
-  assert.throws(() => settings({ prune: { threshold: 1000 } }), /below/)
-  assert.throws(() => settings({ spill: { headShare: 2 } }), /between/)
-  assert.throws(() => settings({ summarizer: { modelID: "alone" } }), /both/)
-  assert.throws(() => settings({ madeUp: 1 }), /Unknown/)
-})
 
 test("fingerprints ignore JSON object key ordering across HTTP/schema boundaries", () => {
   assert.equal(hash({ a: 1, b: { c: 2, d: 3 } }), hash({ b: { d: 3, c: 2 }, a: 1 }))

@@ -1,14 +1,13 @@
 import { z } from "zod"
 import { KEY } from "./config.ts"
 import type { Session } from "./model.ts"
-import { TOKENIZER_LIBRARIES } from "./tokens.ts"
+import { ENCODINGS, TOKENIZER_LIBRARIES } from "./tokens.ts"
 
 export const POLICY_VERSION = 13
 export type Mode = "tool-prune" | "tool-prune-all" | "tool-delete" | "prune-reason" | "compact" | "brief" | "delete"
-export type RestoreMode = "expand"
 
 const count = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)
-const encoding = z.enum(["o200k_base", "cl100k_base"])
+const encoding = z.enum(ENCODINGS)
 const tokenizer = z.object({
   encoding, library: z.enum(TOKENIZER_LIBRARIES), source: z.enum(["model-name mapping", "configured override", "fallback"]),
   providerID: z.string().optional(), modelID: z.string().optional(), apiModelID: z.string().optional(),

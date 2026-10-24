@@ -1,3 +1,4 @@
+import { applySummary } from "../test/fixtures.ts"
 import assert from "node:assert/strict"
 import { readFile, writeFile } from "node:fs/promises"
 import { spawnSync } from "node:child_process"
@@ -33,7 +34,7 @@ export async function verifyRevertEdges(test: Awaited<ReturnType<typeof fixture>
   const summarize = async (controller: Controller, length: number) => {
     const loaded = await controller.load()
     const draft = await controller.summarize("brief", loaded.blocks.slice(0, length).flatMap((block) => block.sourceIDs))
-    await controller.apply(draft, draft.operation.summary!)
+    await applySummary(controller, draft)
   }
   const git = (...args: string[]) => { const result = spawnSync("git", args, { cwd: test.project, encoding: "utf8" }); assert.equal(result.status, 0, result.stderr) }
   git("init")
@@ -91,7 +92,7 @@ export async function verifyRevertEdges(test: Awaited<ReturnType<typeof fixture>
     const view = await explicit.load()
     assert.deepEqual(view.blocks.map((block) => block.kind), at === 2 ? ["brief"] : Array(at).fill("turn"))
     assert.equal(hash((await info(explicit.sessionID)).metadata?.[KEY]), hash(saved[KEY]))
-    if (at === 2) await assert.rejects(explicit.prepareRestore("expand", view.blocks[0].sourceIDs), /undo\/unrevert/)
+    if (at === 2) await assert.rejects(explicit.prepareRestore([view.blocks[0].sourceIDs]), /undo\/unrevert/)
   }
   await test.client.session.revert.clear({ sessionID: explicit.sessionID })
   await test.client.session.wait({ sessionID: explicit.sessionID })
@@ -123,10 +124,10 @@ export async function verifyRevertEdges(test: Awaited<ReturnType<typeof fixture>
   const loaded = await draft.load()
   const proposal = await draft.summarize("brief", loaded.blocks.slice(0, 2).flatMap((block) => block.sourceIDs))
   await test.client.session.revert.stage({ sessionID: draft.sessionID, messageID: (await native(draft.sessionID)).filter((message) => message.type === "user")[1].id, files: false })
-  await assert.rejects(draft.apply(proposal, proposal.operation.summary!), /undo\/unrevert/)
+  await assert.rejects(applySummary(draft, proposal), /undo\/unrevert/)
   await test.client.session.revert.clear({ sessionID: draft.sessionID })
   await test.client.session.wait({ sessionID: draft.sessionID })
-  await assert.rejects(draft.apply(proposal, proposal.operation.summary!), /changed/i)
+  await assert.rejects(applySummary(draft, proposal), /changed/i)
   await draft.discard()
   observations.push({ label: "stale-helper", stagedApplyRejected: true, staleApplyRejectedAfterRedo: true })
 

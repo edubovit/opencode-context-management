@@ -1,3 +1,4 @@
+import { applySummary } from "../test/fixtures.ts"
 import assert from "node:assert/strict"
 import { readFile, writeFile, unlink } from "node:fs/promises"
 import path from "node:path"
@@ -57,7 +58,7 @@ try {
       await assert.rejects(controller.host.auto!.command(controller.sessionID, { action: "resume", pauseID: pause.id }), /Resume blocked/)
       const loaded = await controller.load()
       const draft = await controller.summarize("brief", loaded.blocks[0].sourceIDs)
-      await controller.apply(draft, draft.operation.summary!)
+      await applySummary(controller, draft)
       const reduced = (await controller.host.auto!.state(controller.sessionID)).pause!
       assert.ok(reduced.tokens < reduced.threshold)
       assert.equal(reduced.accounting?.reported?.messageID, response.id, "Helper reports cannot replace the parent's frozen usage anchor")
@@ -74,7 +75,7 @@ try {
   const { controller: forkParent } = await make()
   await send(forkParent.sessionID, "FORK_USAGE_SOURCE " + "Earlier useful facts. ".repeat(1200))
   const forkDraft = await forkParent.summarize("brief", (await forkParent.load()).blocks[0].sourceIDs)
-  await forkParent.apply(forkDraft, forkDraft.operation.summary!)
+  await applySummary(forkParent, forkDraft)
   const fork = await test.client.session.fork({ sessionID: forkParent.sessionID })
   sessions.push(fork.id)
   const forkRemote = remoteHost(test.client, fork.id)
@@ -103,7 +104,7 @@ try {
   assert.ok(pruned.tokens < pruned.threshold, JSON.stringify(pruned))
   assert.ok(pruned.accounting!.removed > 0 && pruned.accounting!.added > 0)
   const heldRequests = test.requests.length
-  await pruning.applyRestore(await pruning.prepareRestore("expand", pruneIDs))
+  await pruning.restoreRanges([pruneIDs])
   const restored = (await pruning.host.auto!.state(pruning.sessionID)).pause!
   assert.equal(restored.tokens, prunePause.tokens)
   assert.deepEqual(restored.accounting?.reported, prunePause.accounting?.reported)
@@ -129,7 +130,7 @@ try {
   const deletedPause = (await deleting.host.auto!.state(deleting.sessionID)).pause!
   assert.ok(deletedPause.tokens < deletedPause.threshold)
   assert.deepEqual(deletedPause.accounting?.reported, deletionPause.accounting?.reported)
-  await deleting.applyRestore(await deleting.prepareRestore("expand", deletionIDs))
+  await deleting.restoreRanges([deletionIDs])
   const expandedPause = (await deleting.host.auto!.state(deleting.sessionID)).pause!
   assert.equal(expandedPause.tokens, deletionPause.tokens)
   await assert.rejects(deleting.host.auto!.command(deleting.sessionID, { action: "resume", pauseID: deletionPause.id }), /Resume blocked/)
@@ -148,7 +149,7 @@ try {
   await send(legacy.sessionID, "EXISTING_SESSION " + "Earlier useful facts. ".repeat(1200))
   const old = await legacy.load()
   const oldDraft = await legacy.summarize("brief", old.blocks[0].sourceIDs)
-  await legacy.apply(oldDraft, oldDraft.operation.summary!)
+  await applySummary(legacy, oldDraft)
   const storage = new Storage(test.project, path.join(test.root, "home/.local/state/opencode-context-manager"))
   await unlink(path.join(storage.root, `budget-${hash(legacy.sessionID)}.json`))
   test.usage(() => ({ input: 2000, output: 100 }))

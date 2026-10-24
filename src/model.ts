@@ -14,6 +14,7 @@ export type AssistantMessage = MessageBase & {
   finish?: string; error?: unknown; retainReasoning?: true; shell?: { settled: boolean; background: boolean }; tokens: Usage; cost: number
 }
 export type Message = UserMessage | AssistantMessage
+export type Envelope = { info: Message; parts: Part[] }
 type PartBase = { id: string; sessionID: string; messageID: string; metadata?: Record<string, unknown> }
 export type FilePart = PartBase & { type: "file"; mime: string; filename?: string; url: string }
 export type ToolPart = PartBase & {

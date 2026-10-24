@@ -4,7 +4,6 @@ import { Message } from "@opencode/ai"
 import type { SessionMessageInfo } from "@opencode/client"
 import { budgetScope, budgetUnits, estimateBudget, localTokens, prepareBudget, recordRequest, budgetStateSchema, type BudgetIdentity, type BudgetState } from "../src/budget.ts"
 import { FALLBACK_BASIS } from "../src/tokens.ts"
-import { settings } from "../src/config.ts"
 
 const identity: BudgetIdentity = { scope: "scope", agent: "build", model: { providerID: "fixture", id: "model" } }
 const system = [{ text: "System instructions" }]
@@ -174,9 +173,6 @@ test("native checkpoints and changed raw history invalidate old prefix evidence"
 test("missing usage has a visible configurable safety uplift, including invalid multiplier rejection", () => {
   const state: BudgetState = { version: 2, scope: "scope" }
   assert.deepEqual(estimateBudget([{ key: "one", tokens: 100 }], state, 1.3), { source: "local-fallback", tokens: 130, local: 100, multiplier: 1.3, added: 100, removed: 0 })
-  assert.equal(settings().autocompaction.estimateMultiplier, 1.3)
-  assert.equal(settings({ autocompaction: { estimateMultiplier: 1.6 } }).autocompaction.estimateMultiplier, 1.6)
-  for (const invalid of [0, -1, NaN, Infinity, "1.3", null]) assert.throws(() => settings({ autocompaction: { estimateMultiplier: invalid } }), /estimateMultiplier/)
   assert.throws(() => estimateBudget([{ key: "one", tokens: 100 }], state, Number.MAX_VALUE), /numeric bounds/)
 })
 

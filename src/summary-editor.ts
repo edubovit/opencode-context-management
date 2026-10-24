@@ -1,4 +1,5 @@
-import { Controller, type ModelChoice, type SummaryView } from "./controller.ts"
+import { Controller, type SummaryView } from "./controller.ts"
+import type { ModelChoice } from "./model.ts"
 
 export class SummaryEditor {
   draft?: string

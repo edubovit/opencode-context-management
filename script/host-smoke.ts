@@ -1,3 +1,4 @@
+import { applySummary } from "../test/fixtures.ts"
 import assert from "node:assert/strict"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
@@ -67,10 +68,7 @@ try {
     assert.equal((await test.client.session.get({ sessionID: controller.sessionID })).metadata?.unrelated, "keep")
     checks.push(`actual RPC/controller ${JSON.stringify(options)} with omitted background shell; unchanged stored transcript`)
     const requestsBeforeRestore = test.requests.length
-    const preview = await controller.prepareRestore("expand", loaded.blocks[0].sourceIDs)
-    assert.equal(preview.summaries, 0)
-    assert.equal(preview.prunings, 1)
-    await controller.applyRestore(preview)
+    await controller.restoreRanges([loaded.blocks[0].sourceIDs])
     assert.equal(test.requests.length, requestsBeforeRestore, "Pruning restoration must not invoke a model")
     assert.deepEqual((await controller.load()).blocks[0].messages, loaded.blocks[0].messages)
     await send(controller, "Immediate next same-model request after restoring pruning")
@@ -109,7 +107,7 @@ try {
   assert.ok(retainedWire.some((message) => JSON.stringify(message.content).includes("REASONING_FIXTURE")))
   assert.doesNotMatch(JSON.stringify(retainedWire), /HEAD_FIXTURE/)
   assert.deepEqual((await test.client.session.context({ sessionID: interrupted.sessionID })).filter((message) => retrySource.some((original) => original.id === message.id)), retrySource)
-  await interrupted.applyRestore(await interrupted.prepareRestore("expand", retryIDs))
+  await interrupted.restoreRanges([retryIDs])
   await send(interrupted, "Check restored successful reasoning")
   assert.equal((JSON.stringify(test.requests.at(-1)!.messages).match(/REASONING_FIXTURE/g) ?? []).length, 2)
   await interrupted.dispose()
@@ -121,7 +119,7 @@ try {
   let deletionView = await deleting.load()
   await deleting.prune(deletionView.blocks[0].sourceIDs, { reasoning: true, tools: "all" })
   const savedSummary = await deleting.summarize("brief", deletionView.blocks[1].sourceIDs)
-  await deleting.apply(savedSummary, "SAVED_DELETE_SUMMARY")
+  await applySummary(deleting, savedSummary, "SAVED_DELETE_SUMMARY")
   deletionView = await deleting.load()
   const priorDeletedRange = deletionView.blocks.slice(0, 2)
   const deletionIDs = priorDeletedRange.flatMap((block) => block.sourceIDs)
@@ -143,9 +141,7 @@ try {
   deleting = new Controller(deletionRemote.host, deleting.sessionID, deleting.config, deletionRemote.artifacts)
   await test.until(async () => { try { return (await deleting.load()).blocks[0].kind === "deleted" } catch { return false } }, "deleted range after restart")
   const deletionRestoreCalls = test.requests.length
-  const deletionPreview = await deleting.prepareRestore("expand", deletionIDs)
-  assert.equal(deletionPreview.deletions, 1)
-  await deleting.applyRestore(deletionPreview)
+  await deleting.restoreRanges([deletionIDs])
   assert.equal(test.requests.length, deletionRestoreCalls)
   assert.deepEqual((await deleting.load()).blocks.slice(0, 2), priorDeletedRange)
   await send(deleting, "CHECK_RESTORED_RANGE")
@@ -154,7 +150,7 @@ try {
   assert.match(deletionWire, /SAVED_DELETE_SUMMARY/)
   assert.match(deletionWire, /Tool output pruned/)
   assert.doesNotMatch(deletionWire, /HEAD_FIXTURE|REASONING_FIXTURE|DELETE_SUMMARY_SOURCE/)
-  const innerRestore = await deleting.prepareRestoreRanges("expand", priorDeletedRange.map((block) => block.sourceIDs))
+  const innerRestore = await deleting.prepareRestore(priorDeletedRange.map((block) => block.sourceIDs))
   await deleting.applyOperations(innerRestore.operations, innerRestore)
   await send(deleting, "CHECK_INNER_RESTORATION")
   deletionWire = JSON.stringify(test.requests.at(-1)?.messages)
@@ -175,7 +171,7 @@ try {
   const before = structuredClone(loaded.blocks[0])
   const draft = await controller.summarize("compact", loaded.blocks[0].sourceIDs)
   assert.ok(draft.attempts >= 1 && draft.attempts <= 2)
-  await controller.apply(draft, draft.operation.summary!)
+  await applySummary(controller, draft)
   await send(controller, "Observe compact summary now")
   assert.match(JSON.stringify(test.requests.at(-1)?.messages), /Context manager compact summary/)
   const summary = (await controller.load()).blocks[0]
@@ -183,7 +179,7 @@ try {
   await controller.editSummary(view, "MANUAL_KEEP ROOT_FACT")
   await send(controller, "Observe edited summary now")
   assert.match(JSON.stringify(test.requests.at(-1)?.messages), /MANUAL_KEEP/)
-  await controller.applyRestore(await controller.prepareRestore("expand", summary.sourceIDs))
+  await controller.restoreRanges([summary.sourceIDs])
   assert.deepEqual((await controller.load()).blocks[0], before)
   await send(controller, "Observe expanded previously pruned context")
   assert.match(JSON.stringify(test.requests.at(-1)?.messages), /middle omitted/)
@@ -242,7 +238,7 @@ try {
       await assert.rejects(auto.prune(current.blocks.at(-1)!.sourceIDs, { reasoning: true, tools: "delete" }), /protected/)
       await assert.rejects(auto.deleteRanges([current.blocks.at(-1)!.sourceIDs]), /protected/)
       const next = await auto.summarize("brief", current.blocks[0].sourceIDs)
-      await auto.apply(next, next.operation.summary!)
+      await applySummary(auto, next)
       await auto.host.auto!.command(auto.sessionID, { action: "resume", pauseID: state.id })
     }
     await test.client.session.wait({ sessionID: auto.sessionID })
@@ -331,7 +327,7 @@ try {
   await test.client.session.prompt({ sessionID: queued.sessionID, text: "QUEUE_WHILE_PAUSED", delivery: "queue" })
   const queueView = await queued.load()
   const queueDraft = await queued.summarize("brief", queueView.blocks[0].sourceIDs)
-  await queued.apply(queueDraft, queueDraft.operation.summary!)
+  await applySummary(queued, queueDraft)
   await queued.host.auto!.command(queued.sessionID, { action: "resume", pauseID: queuePause.id })
   await test.client.session.wait({ sessionID: queued.sessionID })
   const queueHistory = await test.client.session.context({ sessionID: queued.sessionID })
@@ -359,10 +355,10 @@ try {
   const unfinished = (await stopped.load()).blocks.find((block) => block.messages[0].parts.some((part) => part.type === "text" && part.text === "NATIVE_STOP"))!
   assert.equal(unfinished.closed, false)
   const unfinishedDraft = await stopped.summarize("brief", unfinished.sourceIDs)
-  await stopped.apply(unfinishedDraft, unfinishedDraft.operation.summary!)
+  await applySummary(stopped, unfinishedDraft)
   await send(stopped, "Observe user-only summary after an interrupted turn")
   assert.match(JSON.stringify(test.requests.at(-1)?.messages), /Context manager brief summary/)
-  await stopped.applyRestore(await stopped.prepareRestore("expand", unfinished.sourceIDs))
+  await stopped.restoreRanges([unfinished.sourceIDs])
   checks.push("interrupted user-only turn summarizes with valid distinct assistant and expands")
   await test.client.session.switchModel({ sessionID: stopped.sessionID, model: { providerID: "fixture", id: "small" } })
 

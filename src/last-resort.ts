@@ -1,10 +1,11 @@
-import type { Host, ModelChoice } from "./controller.ts"
+import type { Host } from "./host-contract.ts"
+import type { ModelChoice } from "./model.ts"
 import type { Settings } from "./config.ts"
 import { blockMessages, serialize, splitAfter, summaryStart, type Block } from "./context.ts"
 import { contentTokens } from "./metrics.ts"
 import { inputBudget } from "./auto-state.ts"
 import { inputEstimate } from "./summarize.ts"
-import { tokenBasis, tokenCount, type TokenBasis } from "./tokens.ts"
+import { mediaTokens, tokenBasis, tokenCount, type TokenBasis } from "./tokens.ts"
 
 export function lastResortRange(blocks: Block[], keep: number, basis: TokenBasis) {
   const units = blocks.flatMap((block) => block.kind === "turn" ? block.messages.map((message, index) => ({ id: block.sourceIDs[index], messages: [message] })) : [{ id: block.sourceIDs.at(-1)!, messages: block.messages }])
@@ -15,7 +16,7 @@ export function lastResortRange(blocks: Block[], keep: number, basis: TokenBasis
     tokens += contentTokens(unit.messages, basis)
     for (const message of unit.messages) for (const part of message.parts) {
       const files = part.type === "file" ? [part] : part.type === "tool" && (part.state.status === "completed" || part.state.status === "error") ? part.state.attachments ?? [] : []
-      for (const file of files) tokens += file.mime.startsWith("image/") ? 1500 : file.mime === "application/pdf" ? 2000 : 0
+      for (const file of files) tokens += mediaTokens(file.mime)
     }
   }
   if (!cut) throw new Error(`Last resort has no eligible prefix before the exempt ${keep} token tail`)

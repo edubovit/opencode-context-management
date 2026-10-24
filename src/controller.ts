@@ -1,64 +1,31 @@
 import type { Model, ModelChoice, Session } from "./model.ts"
-export type { ModelChoice } from "./model.ts"
 import { KEY, type Settings } from "./config.ts"
-import { append, hash, historyHash, activeMessages, operation, project, readPolicy, select, serialize, summaryStart, type Block, type Envelope, type Operation, type Policy, type RestoreMode } from "./context.ts"
+import { append, hash, historyHash, activeMessages, operation, project, readPolicy, summaryStart, type Block, type Envelope, type Operation, type Policy } from "./context.ts"
 import { validatePruning, type Isolation, type Pruning } from "./compaction.ts"
-import { generateSummary, inputEstimate, refinementPrompt, summaryEditPrompt, SUMMARIZER_SYSTEM } from "./summarize.ts"
+import { generateSummary, inputEstimate, summaryEditPrompt, SUMMARIZER_SYSTEM } from "./summarize.ts"
 import type { Artifacts, RuntimeCapture } from "./storage.ts"
 import { snapshot } from "./snapshot.ts"
-import { toolStatus } from "./status.ts"
-import { bindPruneRule, chars, type PruneRule } from "./text.ts"
+import { bindPruneRule, type PruneRule } from "./text.ts"
 import { tokenBasis, type TokenBasis } from "./tokens.ts"
-import { contentTokens, lastReportedUsage } from "./metrics.ts"
+import { lastReportedUsage } from "./metrics.ts"
 import { resolveRanges } from "./ranges.ts"
 import { revertPolicy } from "./revert.ts"
-import type { AutoControl, AutoState, Expected } from "./auto-state.ts"
-import { summaryProgress, type SummaryProgress } from "./summary-progress.ts"
+import type { AutoState, Expected } from "./auto-state.ts"
+import { summaryProgress } from "./summary-progress.ts"
+import type { HelperPurpose, HelperTrigger, Host } from "./host-contract.ts"
 
-export type HelperTrigger = "manual" | "auto"
-
-export interface Host {
-  auto?: AutoControl
-  session(id: string): Promise<Session>
-  messages(id: string): Promise<Envelope[]>
-  progress?(id: string): Promise<SummaryProgress>
-  idle(id: string): Promise<boolean>
-  update(id: string, metadata: Record<string, unknown>, expected?: Expected): Promise<void>
-  models(): Promise<Model[]>
-  configured(): Promise<boolean>
-  createJob(purpose?: "summary" | "edit", ownerID?: string, trigger?: HelperTrigger): Promise<string>
-  generate(id: string, model: ModelChoice, text: string, purpose?: "summary" | "edit"): Promise<string>
-  abort(id: string): Promise<void>
-  remove(id: string): Promise<void>
-}
 export type Loaded = { session: Session; raw: Envelope[]; policy: Policy; blocks: Block[]; fingerprint: string; runtime?: RuntimeCapture; models: Model[]; tokenizer: TokenBasis; pruneRule: PruneRule; usage?: ReturnType<typeof lastReportedUsage>; auto?: AutoState }
-export type Draft = { operation: Operation; attempts: number; refinements: number; revision: number; fingerprint: string; selected: Block[]; totalBlocks: number; model: ModelChoice; jobID: string }
+export type Draft = Expected & { operation: Operation; attempts: number; model: ModelChoice; jobID: string }
 export type SummaryView = { id: string; text: string; block: Block; revision: number; fingerprint: string; tokenizer: TokenBasis }
-export type RestorePreview = {
-  operation: Operation & { mode: RestoreMode }
-  revision: number
-  fingerprint: string
-  before: Block[]
-  after: Block[]
-  afterChars: number
-  afterTokens: number
-  summaries: number
-  prunings: number
-  deletions: number
-}
-export type MultiRestorePreview = {
-  mode: RestoreMode; operations: Operation[]; revision: number; fingerprint: string; ranges: string[][]
-  before: Block[]; after: Block[]; beforeTokens: number; afterTokens: number; tokenizer: TokenBasis; summaries: number; prunings: number; deletions: number
-}
+export type RestorePlan = Expected & { operations: Operation[] }
 
 export class Controller {
   private job?: string
-  private preview?: Draft
   private cleanup?: Promise<void>
   private cancelled = false
   private working = false
   private disposed = false
-  constructor(readonly host: Host, readonly sessionID: string, readonly config: Settings, readonly storage: Artifacts, private readonly purpose: "summary" | "edit" = "summary", private readonly trigger: HelperTrigger = "manual") {}
+  constructor(readonly host: Host, readonly sessionID: string, readonly config: Settings, readonly storage: Artifacts, private readonly purpose: HelperPurpose = "summary", private readonly trigger: HelperTrigger = "manual") {}
 
   async load(): Promise<Loaded> {
     const [session, raw, runtime, models, auto] = await Promise.all([this.host.session(this.sessionID), this.host.messages(this.sessionID), this.storage.capture(this.sessionID), this.host.models(), this.host.auto?.state(this.sessionID)])
@@ -70,6 +37,7 @@ export class Controller {
   }
 
   async requireIdle() {
+    this.requireOpen()
     if (!await this.host.configured()) throw new Error("Server plugin is not active. Enable the plugin directory and reload OpenCode.")
     if (!await this.host.idle(this.sessionID)) throw new Error("Wait for the main session to become idle")
   }
@@ -86,12 +54,13 @@ export class Controller {
     const selected = resolveRanges(loaded.blocks, ranges)
     this.requireUnprotected(loaded, ranges.flat())
     const mode = options.tools === "large" ? "tool-prune" : options.tools === "all" ? "tool-prune-all" : options.tools === "delete" ? "tool-delete" : "prune-reason"
+    const before = historyHash(loaded.blocks.flatMap((block) => block.messages))
     const operations = selected.map((blocks) => ({
       ...operation(mode, blocks, options.tools === "large" ? loaded.pruneRule : undefined, loaded.tokenizer),
       ...(options.reasoning && mode !== "prune-reason" ? { pruneReason: true as const } : {}),
     })).filter((op) => {
       const after = project(activeMessages(loaded.raw, loaded.session.revert), append(loaded.policy, op))
-      return historyHash(after.flatMap((block) => block.messages)) !== historyHash(loaded.blocks.flatMap((block) => block.messages))
+      return historyHash(after.flatMap((block) => block.messages)) !== before
     })
     if (!operations.length) throw new Error("No eligible content for the selected pruning modes")
     await this.applyOperations(operations, { revision: loaded.policy.revision, fingerprint: loaded.fingerprint })
@@ -109,46 +78,40 @@ export class Controller {
     await this.applyOperations(operations, { revision: loaded.policy.revision, fingerprint: loaded.fingerprint })
   }
 
-  async prepareRestoreRanges(mode: RestoreMode, ranges: string[][]): Promise<MultiRestorePreview> {
-    if (mode !== "expand") throw new Error("Only one-layer context restoration is supported")
+  async prepareRestore(ranges: string[][]): Promise<RestorePlan> {
     if (this.job) throw new Error("Apply or discard the summary draft before restoring context")
     await this.requireIdle()
     const loaded = await this.load()
     this.requireNotReverted(loaded.session)
     const groups = resolveRanges(loaded.blocks, ranges)
     this.requireUnprotected(loaded, ranges.flat())
-    const before = groups.flat()
-    const status = toolStatus(before, loaded.pruneRule, loaded.tokenizer)
-    const operations = groups.map((blocks) => operation(mode, blocks, undefined, loaded.tokenizer)).filter((op) => op.summaryIDs?.length || op.pruneTargets?.length || op.deletedIDs?.length)
+    const operations = groups.map((blocks) => operation("expand", blocks, undefined, loaded.tokenizer)).filter((op) => op.summaryIDs?.length || op.pruneTargets?.length || op.deletedIDs?.length)
     if (!operations.length) throw new Error("No restorable summaries, pruning or deleted ranges in the selection")
-    const next = operations.reduce(append, loaded.policy)
-    const projected = project(activeMessages(loaded.raw, loaded.session.revert), next)
-    const after = resolveRanges(projected, ranges).flat()
-    return {
-      mode, operations, revision: loaded.policy.revision, fingerprint: loaded.fingerprint, ranges, before, after,
-      beforeTokens: contentTokens(before.flatMap((block) => block.messages), loaded.tokenizer),
-      afterTokens: contentTokens(after.flatMap((block) => block.messages), loaded.tokenizer), tokenizer: loaded.tokenizer,
-      summaries: status.summaries, prunings: status.prunings, deletions: status.deletions,
-    }
+    return { operations, revision: loaded.policy.revision, fingerprint: loaded.fingerprint }
   }
 
-  async checkSnapshot(expected: { revision: number; fingerprint: string }) {
+  async restoreRanges(ranges: string[][]) {
+    const plan = await this.prepareRestore(ranges)
+    await this.applyOperations(plan.operations, plan)
+  }
+
+  async checkSnapshot(expected: Expected) {
     await this.requireIdle()
     const loaded = await this.load()
     this.requireNotReverted(loaded.session)
     if (loaded.policy.revision !== expected.revision || loaded.fingerprint !== expected.fingerprint)
-      throw new Error("Session changed since preview. Discard and select again.")
+      throw new Error("Session changed; refresh and select again.")
     return loaded
   }
 
-  async applyOperations(operations: Operation[], expected: { revision: number; fingerprint: string }, guard?: () => void) {
+  async applyOperations(operations: Operation[], expected: Expected, guard?: () => void) {
     if (!operations.length) throw new Error("No operations to apply")
     const loaded = await this.checkSnapshot(expected)
     this.requireUnprotected(loaded, operations.flatMap((op) => op.sourceIDs))
     const next = operations.reduce(append, loaded.policy)
     readPolicy({ id: this.sessionID, metadata: { [KEY]: next } })
     project(activeMessages(loaded.raw, loaded.session.revert), next)
-    await this.save(loaded.policy, next, loaded.fingerprint, guard)
+    await this.save(next, expected, guard)
   }
 
   async summary(id: string): Promise<SummaryView> {
@@ -184,40 +147,6 @@ export class Controller {
     }
   }
 
-  async prepareRestore(mode: RestoreMode, ids: string[]): Promise<RestorePreview> {
-    if (mode !== "expand") throw new Error("Only one-layer context restoration is supported")
-    if (this.job) throw new Error("Apply or discard the summary draft before restoring context")
-    await this.requireIdle()
-    const loaded = await this.load()
-    this.requireNotReverted(loaded.session)
-    const before = this.selection(loaded.blocks, ids)
-    this.requireUnprotected(loaded, ids)
-    const status = toolStatus(before, loaded.pruneRule, loaded.tokenizer)
-    if (!status.summaries && !status.prunings && !status.deletions) throw new Error("No restorable summaries, pruning or deleted ranges in the selected range")
-    const op = { ...operation(mode, before, undefined, loaded.tokenizer), mode }
-    const projected = project(activeMessages(loaded.raw, loaded.session.revert), append(loaded.policy, op))
-    const after = this.selection(projected, ids)
-    return {
-      operation: op, revision: loaded.policy.revision, fingerprint: loaded.fingerprint, before, after,
-      afterChars: chars(serialize(after.flatMap((block) => block.messages))),
-      afterTokens: contentTokens(after.flatMap((block) => block.messages), loaded.tokenizer),
-      summaries: status.summaries, prunings: status.prunings, deletions: status.deletions,
-    }
-  }
-
-  async applyRestore(preview: RestorePreview) {
-    if (preview.operation.mode !== "expand") throw new Error("Only one-layer context restoration is supported")
-    await this.requireIdle()
-    const loaded = await this.load()
-    this.requireNotReverted(loaded.session)
-    if (loaded.policy.revision !== preview.revision || loaded.fingerprint !== preview.fingerprint)
-      throw new Error("Session changed since restore preview. Cancel and preview again.")
-    this.requireUnprotected(loaded, preview.operation.sourceIDs)
-    const next = append(loaded.policy, preview.operation)
-    project(activeMessages(loaded.raw, loaded.session.revert), next)
-    await this.save(loaded.policy, next, preview.fingerprint)
-  }
-
   async summarize(mode: "compact" | "brief", ids: string[], override?: ModelChoice, frozen?: Loaded, isolation: Isolation = "off"): Promise<Draft> {
     if (this.job) throw new Error("Apply or discard the current draft before starting another compaction")
     this.beginWork()
@@ -225,7 +154,7 @@ export class Controller {
       await this.requireIdle()
       const loaded = frozen ?? await this.load()
       this.requireNotReverted(loaded.session)
-      const selected = this.selection(loaded.blocks, ids)
+      const selected = resolveRanges(loaded.blocks, [ids])[0]
       this.requireUnprotected(loaded, ids)
       if (!summaryStart(selected.flatMap((block) => block.messages))) throw new Error("Summary range must start with a visible user message or settled shell input")
       const op = operation(mode, selected, undefined, loaded.tokenizer)
@@ -234,9 +163,7 @@ export class Controller {
       const choice = { ...chosen }
       const model = await this.resolveModel(choice)
       const result = await generateSummary(op, loaded.blocks, selected, (text) => this.request(choice, model, text), isolation === "off" && loaded.runtime ? JSON.stringify(loaded.runtime) : undefined, isolation)
-      const draft = { ...result, refinements: 0, revision: loaded.policy.revision, fingerprint: loaded.fingerprint, selected, totalBlocks: loaded.blocks.length, model: choice, jobID: this.job! }
-      this.preview = draft
-      return draft
+      return { ...result, revision: loaded.policy.revision, fingerprint: loaded.fingerprint, model: choice, jobID: this.job! }
     } catch (error) {
       await this.releaseJob()
       throw error
@@ -244,35 +171,6 @@ export class Controller {
       this.working = false
       if (this.disposed) await this.releaseJob()
     }
-  }
-
-  async refine(draft: Draft, summary: string, instruction: string, override?: ModelChoice): Promise<Draft> {
-    this.beginWork()
-    try {
-      this.requirePreview(draft)
-      if (!instruction.trim()) throw new Error("Describe the changes you want first")
-      await this.requireIdle()
-      await this.unchanged(draft)
-      const choice = { ...(override ?? draft.model) }
-      const model = await this.resolveModel(choice)
-      const text = await this.request(choice, model, refinementPrompt(summary, instruction))
-      const revised = { ...draft, operation: { ...draft.operation, summary: text }, refinements: draft.refinements + 1, model: choice }
-      this.preview = revised
-      return revised
-    } finally {
-      this.working = false
-      if (this.disposed) await this.releaseJob()
-    }
-  }
-
-  async apply(draft: Draft, text: string) {
-    if (this.working) throw new Error("Wait for the summary request to finish")
-    this.requirePreview(draft)
-    if (!text.trim()) throw new Error("Summary cannot be empty")
-    const loaded = await this.unchanged(draft)
-    await this.save(loaded.policy, append(loaded.policy, { ...draft.operation, summary: text.trim() }), draft.fingerprint)
-    try { await this.releaseJob() }
-    catch { return `Summary applied, but temporary conversation ${draft.jobID} could not be deleted. Close the inspector to retry cleanup.` }
   }
 
   async dump(hostVersion: string) {
@@ -316,7 +214,7 @@ export class Controller {
   }
 
   private beginWork() {
-    if (this.disposed) throw new Error("Context inspector is closed")
+    this.requireOpen()
     if (this.working) throw new Error("A summary is already running")
     this.working = true
     this.cancelled = false
@@ -351,36 +249,20 @@ export class Controller {
     return summary
   }
 
-  private requirePreview(draft: Draft) {
-    if (this.job !== draft.jobID || this.preview?.operation.id !== draft.operation.id || this.preview.refinements !== draft.refinements)
-      throw new Error("This draft's conversation is no longer active; generate a new draft")
-  }
-
-  private async unchanged(draft: Draft) {
-    const loaded = await this.load()
-    if (loaded.policy.revision !== draft.revision || loaded.fingerprint !== draft.fingerprint)
-      throw new Error("Session changed since summary generation. Discard this draft and generate again.")
-    return loaded
-  }
-
   private async releaseJob() {
     if (this.cleanup) return this.cleanup
     if (!this.job) return
     const id = this.job
-    this.cleanup = this.host.remove(id).then(() => { this.job = undefined; this.preview = undefined }).finally(() => { this.cleanup = undefined })
+    this.cleanup = this.host.remove(id).then(() => { this.job = undefined }).finally(() => { this.cleanup = undefined })
     return this.cleanup
-  }
-
-  private selection(blocks: Block[], ids: string[]) {
-    const start = blocks.findIndex((b) => b.sourceIDs[0] === ids[0])
-    const end = blocks.findIndex((b) => b.sourceIDs.at(-1) === ids.at(-1))
-    const chosen = select(blocks, start, end)
-    if (hash(chosen.flatMap((b) => b.sourceIDs)) !== hash(ids)) throw new Error("Selection changed; refresh and select again")
-    return chosen
   }
 
   private requireNotReverted(session: Session) {
     if (session.revert) throw new Error("Finish OpenCode's undo/unrevert before creating context operations")
+  }
+
+  private requireOpen() {
+    if (this.disposed) throw new Error("Context inspector is closed")
   }
 
   private requireUnprotected(loaded: Loaded, ids: string[]) {
@@ -388,13 +270,15 @@ export class Controller {
     if (pause && ids.some((id) => (pause.protectedIDs ?? [pause.userID]).includes(id))) throw new Error("The entire active USER turn is protected until this run ends")
   }
 
-  private async save(before: Policy, next: Policy, fingerprint: string, guard?: () => void) {
+  private async save(next: Policy, expected: Expected, guard?: () => void) {
     await this.requireIdle()
     const [session, raw] = await Promise.all([this.host.session(this.sessionID), this.host.messages(this.sessionID)])
-    if (readPolicy(session).revision !== before.revision || historyHash(raw) !== fingerprint)
+    this.requireNotReverted(session)
+    if (readPolicy(session).revision !== expected.revision || historyHash(raw) !== expected.fingerprint)
       throw new Error("Session or policy changed; refresh before applying")
+    this.requireOpen()
     guard?.()
-    await this.host.update(this.sessionID, { ...session.metadata, [KEY]: next }, { revision: before.revision, fingerprint })
+    await this.host.update(this.sessionID, { ...session.metadata, [KEY]: next }, { revision: expected.revision, fingerprint: expected.fingerprint })
   }
 }
 

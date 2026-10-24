@@ -1,6 +1,6 @@
 import type { OpenCodeClient } from "@opencode/client"
 import { ContextManager, errorMessage, type Inspection } from "./rpc.ts"
-import type { Host } from "./controller.ts"
+import type { Host } from "./host-contract.ts"
 import type { Artifacts } from "./storage.ts"
 import { KEY } from "./config.ts"
 import type { Policy } from "./context.ts"

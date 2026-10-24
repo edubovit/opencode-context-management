@@ -1,4 +1,5 @@
-import { hash, select, type Block } from "./context.ts"
+import { select, type Block } from "./context.ts"
+import { sameIDs } from "./fingerprint.ts"
 
 export type Range = { start: number; end: number }
 export type Selection = { ranges: Range[]; anchor?: number }
@@ -52,7 +53,7 @@ export function resolveRanges(blocks: Block[], ranges: string[][]) {
     const start = blocks.findIndex((block) => block.sourceIDs[0] === ids[0])
     const end = blocks.findIndex((block) => block.sourceIDs.at(-1) === ids.at(-1))
     const chosen = select(blocks, start, end)
-    if (hash(chosen.flatMap((block) => block.sourceIDs)) !== hash(ids)) throw new Error("Selection changed; refresh and select again")
+    if (!sameIDs(chosen.flatMap((block) => block.sourceIDs), ids)) throw new Error("Selection changed; refresh and select again")
     for (const id of ids) {
       if (occupied.has(id)) throw new Error("Selected ranges overlap")
       occupied.add(id)

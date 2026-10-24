@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto"
-import { Controller, type Host, type Loaded, type ModelChoice } from "./controller.ts"
+import { Controller, type Loaded } from "./controller.ts"
+import type { Host } from "./host-contract.ts"
+import type { ModelChoice } from "./model.ts"
 import { AUTO_KEY, STRATEGIES, inputBudget, strategy, type AutoCommand, type AutoControl, type AutoState, type Expected, type Pause } from "./auto-state.ts"
 import { AGENT, EDIT_AGENT, KEY, type Settings } from "./config.ts"
 import { append, blockMessages, hash, historyHash, activeMessages, operation, project, readPolicy, type Envelope, type Policy } from "./context.ts"

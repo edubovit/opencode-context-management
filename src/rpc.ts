@@ -1,10 +1,9 @@
 import { Rpc } from "@opencode/plugin/rpc"
 import { z } from "zod"
-import type { Envelope } from "./context.ts"
 import { policySchema } from "./ledger.ts"
 import type { AutoState } from "./auto-state.ts"
 import type { Settings } from "./config.ts"
-import type { Model, Session } from "./model.ts"
+import type { Envelope, Model, Session } from "./model.ts"
 import type { RuntimeCapture } from "./storage.ts"
 
 const id = z.string().startsWith("ses_")

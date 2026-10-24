@@ -1,4 +1,4 @@
-import type { Envelope } from "./context.ts"
+import type { Envelope } from "./model.ts"
 import { chars } from "./text.ts"
 
 export type SummaryProgress = { output: number; reasoning: number; requests: number }

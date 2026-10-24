@@ -1,7 +1,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { operation, select } from "../src/context.ts"
-import { generateSummary, refinementPrompt, summaryPrompt, SUMMARIZER_SYSTEM } from "../src/summarize.ts"
+import { generateSummary, summaryEditPrompt, summaryPrompt, SUMMARY_EDIT_SYSTEM, SUMMARIZER_SYSTEM } from "../src/summarize.ts"
 import { scopeFixture } from "./scope-fixture.ts"
 
 test("brief puts only the exact selected block in the selected payload, after all background", () => {
@@ -40,12 +40,13 @@ test("range prompt rejects missing, noncontiguous or reversed boundaries before 
   assert.throws(() => summaryPrompt(operation("brief", []), blocks), /range/i)
 })
 
-test("the system contract and revision prompt forbid importing background-only facts", () => {
+test("summary and editing contracts keep their distinct source boundaries", () => {
   assert.match(SUMMARIZER_SYSTEM, /selected range/i)
   assert.match(SUMMARIZER_SYSTEM, /background-only/i)
-  const request = refinementPrompt("Human-edited draft", "Add detail")
+  const request = summaryEditPrompt("Human-edited draft", "Add detail")
   assert.match(request, /Human-edited draft/)
-  assert.match(request, /background-only/i)
+  assert.match(request, /authoritative over earlier drafts/)
+  assert.match(SUMMARY_EDIT_SYSTEM, /Do not claim access to the original conversation/)
 })
 
 test("compact and full-range selections use the same explicit scope framing", () => {

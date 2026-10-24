@@ -1,3 +1,4 @@
+import { applySummary } from "../test/fixtures.ts"
 import assert from "node:assert/strict"
 import { writeFile } from "node:fs/promises"
 import { performance } from "node:perf_hooks"
@@ -49,7 +50,7 @@ const seed = async (title: string, tool = false) => {
 const summarize = async (value: Controller, start: number, length = 1, mode: "compact" | "brief" = "compact", isolation: "off" | "head" | "total" = "off") => {
   const loaded = await value.load()
   const draft = await value.summarize(mode, loaded.blocks.slice(start, start + length).flatMap((block) => block.sourceIDs), undefined, undefined, isolation)
-  await value.apply(draft, draft.operation.summary!)
+  await applySummary(value, draft)
 }
 const meaning = (blocks: Block[]) => blocks.map((block) => ({ kind: block.kind, messages: block.messages.map((message) => ({ role: message.info.role, parts: JSON.parse(JSON.stringify(message.parts, (key, value) => ["id", "sessionID", "messageID", "operationID"].includes(key) ? undefined : value)) })) }))
 const retained = (blocks: Block[], ids: Set<string>): Block[] => blocks.flatMap((block) => {
@@ -125,7 +126,7 @@ try {
     const loaded = await independent.load()
     const ranges = loaded.blocks.filter((block) => block.summaryID || block.deletionID || block.pruning?.length).map((block) => block.sourceIDs)
     if (!ranges.length) break
-    const preview = await independent.prepareRestoreRanges("expand", ranges)
+    const preview = await independent.prepareRestore(ranges)
     await independent.applyOperations(preview.operations, preview)
   }
   await send(restoredFork, "RESTORED_FORK_REQUEST")
@@ -170,7 +171,7 @@ try {
   await test.client.session.remove({ sessionID: compact.sessionID })
   await send(full, "FORK_AFTER_PARENT_DELETION")
   const afterRemoval = await controller(full)
-  await afterRemoval.applyRestore(await afterRemoval.prepareRestore("expand", (await afterRemoval.load()).blocks[0].sourceIDs))
+  await afterRemoval.restoreRanges([(await afterRemoval.load()).blocks[0].sourceIDs])
   await send(full, "RESTORE_WITHOUT_PARENT")
   checks.push("forks survive restart and parent deletion; inherited summaries still expand without reading the parent")
 
@@ -231,7 +232,7 @@ try {
     const child = await controller(forkID)
     const parentBefore = hash({ info: await info(large.sessionID), native: await native(large.sessionID) })
     const view = await child.load()
-    const preview = await child.prepareRestoreRanges("expand", view.blocks.filter((block) => block.summaryID).map((block) => block.sourceIDs))
+    const preview = await child.prepareRestore(view.blocks.filter((block) => block.summaryID).map((block) => block.sourceIDs))
     await child.applyOperations(preview.operations, preview)
     const expanded = await child.load()
     assert.ok(contentTokens(expanded.blocks.flatMap((block) => block.messages)) > 2000000)

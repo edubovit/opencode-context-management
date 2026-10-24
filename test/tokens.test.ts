@@ -12,7 +12,7 @@ import { generateSummary, inputEstimate, SUMMARIZER_SYSTEM } from "../src/summar
 import { Controller } from "../src/controller.ts"
 import { Storage } from "../src/storage.ts"
 import { snapshot } from "../src/snapshot.ts"
-import { fixtureHost, messages, model, pruneRule, session } from "./fixtures.ts"
+import { applySummary, fixtureHost, messages, model, pruneRule, session } from "./fixtures.ts"
 import { nativeFixture } from "./native-fixtures.ts"
 import { transcriptView } from "../src/normalize.ts"
 import { projectRequest } from "../src/projection.ts"
@@ -201,7 +201,7 @@ test("the main encoding drives operations while a different helper model is sele
     const draft = await controller.summarize("brief", loaded.blocks[0].sourceIDs, { providerID: "alternate", modelID: "other" })
     assert.equal(draft.operation.tokenizer?.encoding, "cl100k_base")
     assert.equal(draft.model.providerID, "alternate")
-    await controller.apply(draft, draft.operation.summary!)
+    await applySummary(controller, draft)
     const current = await controller.load()
     await controller.prune(current.blocks[1].sourceIDs)
     const saved = readPolicy(data.session).operations.at(-1)!.rule

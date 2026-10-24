@@ -1,14 +1,16 @@
-import { createHash, randomUUID } from "node:crypto"
-import type { Message, Part, Session, ToolPart } from "./model.ts"
+import { randomUUID } from "node:crypto"
+import type { Envelope, Part, Session, ToolPart } from "./model.ts"
+import { hash, historyHash, sameIDs } from "./fingerprint.ts"
+export { hash, historyHash } from "./fingerprint.ts"
+export type { Envelope } from "./model.ts"
 import { KEY } from "./config.ts"
 import { chars, pruneText, toolText, type PruneRule } from "./text.ts"
 import { contentTokens } from "./metrics.ts"
 import { FALLBACK_BASIS, type TokenBasis } from "./tokens.ts"
 import type { Operation, Policy } from "./ledger.ts"
-export { append, emptyPolicy, readPolicy, POLICY_VERSION, type Mode, type Operation, type Policy, type RestoreMode } from "./ledger.ts"
+export { append, emptyPolicy, readPolicy, POLICY_VERSION, type Mode, type Operation, type Policy } from "./ledger.ts"
 export { toolText } from "./text.ts"
 
-export type Envelope = { info: Message; parts: Part[] }
 export type Block = {
   kind: "turn" | "compact" | "brief" | "deleted"
   sourceIDs: string[]
@@ -27,20 +29,6 @@ export type Block = {
 type PruningLayer = {
   operationID: string
   before: Pick<Block, "messages" | "pruned" | "reasonPruned" | "toolsDeleted" | "allToolsPruned">
-}
-
-export function hash(value: unknown) {
-  const canonical = JSON.stringify(value, (_key, item) => item && typeof item === "object" && !Array.isArray(item)
-    ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) : item)
-  return createHash("sha256").update(canonical ?? "null").digest("hex")
-}
-
-export function historyHash(messages: Envelope[]) {
-  return hash(messages.map(({ info, parts }) => ({
-    id: info.id, role: info.role,
-    parts: parts.map((part) => part.type === "tool" ? { ...part, nativeVersion: 2 } : part),
-    ...(info.sourceHash ? { sourceHash: info.sourceHash } : {}),
-  })))
 }
 
 export function activeMessages(messages: Envelope[], revert?: Session["revert"]) {
@@ -171,8 +159,9 @@ export function replacementTokens(op: Operation, selected: Block[]) {
 
 export function project(active: Envelope[], policy: Policy, observe?: (op: Operation, selected: Block[]) => void, unavailable?: ReadonlySet<string>): Block[] {
   let blocks = turns(structuredClone(active))
+  const sourceIDs = new Set(active.map(message => message.info.id))
   for (const id of policy.turnEnds ?? []) {
-    if (!active.some((message) => message.info.id === id)) throw new Error("Saved fork turn boundary no longer exists")
+    if (!sourceIDs.has(id)) throw new Error("Saved fork turn boundary no longer exists")
     blocks = splitAfter(blocks, id)
   }
   const pruned = new Map<string, string>()
@@ -183,7 +172,7 @@ export function project(active: Envelope[], policy: Policy, observe?: (op: Opera
     if (start < 0 || end < start) throw new Error("Saved range no longer exists. Restore the original host history before continuing.")
     const selected = blocks.slice(start, end + 1)
     const selectedMessages = blockMessages(selected)
-    if (hash(selected.flatMap((b) => b.sourceIDs)) !== hash(op.sourceIDs) ||
+    if (!sameIDs(selected.flatMap((b) => b.sourceIDs), op.sourceIDs) ||
         (historyHash(selectedMessages) !== op.beforeHash && !op.sourceIDs.some((id) => unavailable?.has(id))))
       throw new Error("Saved range content changed. Restore the original host history before continuing.")
     observe?.(op, selected)
@@ -198,7 +187,7 @@ export function project(active: Envelope[], policy: Policy, observe?: (op: Opera
       if (selected.every((block) => block.kind === "deleted")) throw new Error("Selected range is already deleted")
       blocks.splice(start, selected.length, {
         kind: "deleted", sourceIDs: [...op.sourceIDs], messages: [], closed: true, deletionID: op.id,
-        previous: structuredClone(withPruning(selected, pruned)),
+        previous: withPruning(selected, pruned),
       })
       continue
     }
@@ -256,15 +245,15 @@ export function project(active: Envelope[], policy: Policy, observe?: (op: Opera
       if (selected.filter((block) => block.kind === "deleted" && block.deletionID && deletions.has(block.deletionID)).length !== deletions.size)
         throw new Error("Selected deletion is no longer available for expansion")
       if (new Set(pruneTargets.flatMap((target) => target.sourceIDs)).size !== pruneTargets.reduce((sum, target) => sum + target.sourceIDs.length, 0) ||
-          pruneTargets.some((target) => !selected.some((block) => block.kind === "turn" && block.pruning?.at(-1)?.operationID === target.operationID && hash(block.sourceIDs) === hash(target.sourceIDs))))
+          pruneTargets.some((target) => !selected.some((block) => block.kind === "turn" && block.pruning?.at(-1)?.operationID === target.operationID && sameIDs(block.sourceIDs, target.sourceIDs))))
         throw new Error("Selected pruning layer is no longer available for restoration")
       const expanded = selected.flatMap((block) => {
-        const pruning = pruneTargets.find((target) => hash(target.sourceIDs) === hash(block.sourceIDs))
+        const pruning = pruneTargets.find((target) => sameIDs(target.sourceIDs, block.sourceIDs))
         if (pruning) {
           const layer = block.pruning!.at(-1)!
           const { pruning: _pruning, reasonPruned: _reason, toolsDeleted: _tools, allToolsPruned: _all, ...current } = block
           const messages = layer.before.messages.filter((message) => block.sourceIDs.includes(message.info.id))
-          if (hash(messages.map((message) => message.info.id)) !== hash(block.sourceIDs)) throw new Error("Pruning restoration source changed")
+          if (!sameIDs(messages.map((message) => message.info.id), block.sourceIDs)) throw new Error("Pruning restoration source changed")
           const earlier = block.pruning!.slice(0, -1)
           const restored: Block = { ...current, ...layer.before, messages, ...(earlier.length ? { pruning: earlier } : {}) }
           restorePruning([restored], pruned)
@@ -272,7 +261,7 @@ export function project(active: Envelope[], policy: Policy, observe?: (op: Opera
         }
         if (!(block.summaryID && targets.has(block.summaryID)) && !(block.deletionID && deletions.has(block.deletionID))) return [block]
         if (!block.previous) throw new Error("Selected range has no pre-compaction state")
-        const previous = structuredClone(block.previous)
+        const previous = block.previous.map((item) => ({ ...item }))
         restorePruning(previous, pruned)
         return previous
       })
@@ -280,7 +269,7 @@ export function project(active: Envelope[], policy: Policy, observe?: (op: Opera
       continue
     }
     const summary = replacement(op, selected)
-    summary.previous = structuredClone(withPruning(selected, pruned))
+    summary.previous = withPruning(selected, pruned)
     blocks.splice(start, selected.length, summary)
   }
   return withPruning(blocks, pruned)

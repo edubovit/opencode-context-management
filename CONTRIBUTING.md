@@ -88,21 +88,13 @@ Renderer coverage must include narrow/short screens, semantic colors, modal owne
 
 ### Persistence and installation checks
 
-For a persisted-state transition, run the optional archive harness with a compatible baseline plugin:
+For a persisted-state transition, use an installed baseline source that exports `rememberPolicy`:
 
 ```sh
-npm run test:upgrade -- /absolute/path/to/opencode /absolute/path/to/baseline/src
+npm run test:upgrade -- /path/to/baseline-opencode /path/to/current-opencode /path/to/baseline/src
 ```
 
-The runner uses one host executable for both sources. Check its supported baseline shapes before choosing an archive; it does not establish a cross-host runtime upgrade. Default tests must not depend on archived sources or `.local/`.
-
-To exercise an actual host upgrade with an installed baseline source that exports `rememberPolicy`:
-
-```sh
-node --import tsx script/host-upgrade-smoke.ts /path/to/old-opencode /path/to/new-opencode /path/to/baseline/src
-```
-
-This runner imports synthetic provider-state history through the public API, saves reductions using the baseline, and restarts the same private fixture on the new executable. It checks unchanged policy fingerprints, the next request, independent summary/pruning restoration and another restart. It never upgrades the shared service or edits a live database.
+Use the same executable twice for a plugin-only upgrade. The runner imports synthetic provider-state history through the public API, saves reductions using the baseline, and restarts the same private fixture with current code. It checks unchanged policy fingerprints, exact pinned-tokenizer output, the next request, independent summary/pruning restoration and another restart. It never upgrades the shared service or edits a live database. Default tests cover older ledger formats with frozen fixtures and do not depend on archives or `.local/`.
 
 For dependency or packaging changes, copy only public files into a clean directory, run `npm ci --ignore-scripts`, full local checks, audit and the relevant installed-host suites. Confirm manifest/lock/source version agreement and review dependency drift.
 
@@ -114,7 +106,8 @@ Synthetic providers prove protocol and workflow behavior, not summary quality, r
 | --- | --- |
 | Lifecycle, hooks, hidden agents and RPC registration | `src/server.ts` |
 | Public session/model/helper adapter | `src/host.ts` |
-| Native/domain normalization | `src/model.ts`, `src/normalize.ts` |
+| Host contract and native/domain normalization | `src/host-contract.ts`, `src/model.ts`, `src/normalize.ts` |
+| Stable content and source fingerprints | `src/fingerprint.ts` |
 | Shared RPC contract and remote inspector adapter | `src/rpc.ts`, `src/control.ts` |
 | Ledger schema and decoding | `src/ledger.ts` |
 | Turn grouping, replay, summaries and restoration | `src/context.ts` |
@@ -128,7 +121,8 @@ Synthetic providers prove protocol and workflow behavior, not summary quality, r
 | Helper progress counters | `src/summary-progress.ts`, `src/server.ts` |
 | Token rules, metrics and status | `src/text.ts`, `src/tokens.ts`, `src/metrics.ts`, `src/status.ts` |
 | Server artifacts and effective export | `src/storage.ts`, `src/snapshot.ts` |
-| Inspector and public input guard | `src/tui.tsx`, `src/ui.ts`, list/menu/reader/help TSX modules |
+| Terminal registration and suspension-event lifecycle | `src/tui.tsx` |
+| Inspector and public input guard | `src/inspector.tsx`, `src/ui.ts`, list/menu/reader/help TSX modules |
 | Overview and display-only accounting | `src/context-overview.tsx`, `src/inspector-view.ts` |
 
 ### Data flow
@@ -142,6 +136,8 @@ Synthetic providers prove protocol and workflow behavior, not summary quality, r
 7. The request guard measures the projected request plus available system/tool context. Resume releases that same held hook with updated policy, not a new prompt.
 
 Stored transcript, normalized effective view, canonical hook request, provider wire and export are distinct. Do not claim counters/exports are wire-accurate.
+
+Replay owns one detached copy of native-domain input and shares immutable retained layers. Restoration copies the block wrappers before editing them; never mutate a saved pre-image. Request projections and counted units may be reused only inside one hook invocation, keyed by the complete policy hash. A revision number alone cannot distinguish alternative candidates, and a cache must not cross changed hook inputs.
 
 ## Persistence
 
@@ -203,6 +199,7 @@ Reconstruction changes the ledger `epoch`, invalidates incompatible usage and ex
 - Check source/role/call/result identity. The host's deliberate omission of background shell records is a specific exception, not permission to ignore missing arbitrary messages or tool pairs.
 - Native checkpoints are read-only. Unsettled historical tools and ambiguous opaque provider results retain explicit guards. Public active context is not arbitrary full pre-checkpoint history.
 - Recheck idle, revision, source, native-revert and protected-span state before applying. Ctrl+E removes only the UI confirmation; it does not bypass these checks.
+- All manual writes share `Controller.applyOperations`; restoration prepares only operation targets and expected state, not a display preview. Recheck native revert again immediately before writing.
 
 ### Summaries and edits
 
@@ -212,6 +209,7 @@ Reconstruction changes the ledger `epoch`, invalidates incompatible usage and ex
 - Detailed mode uses a soft 2×–20× review band on the complete wrapped replacement, with at most one follow-up. Brief mode is single-pass. Manual summaries need not save tokens; automatic candidates must fit the guard.
 - Validate every assistant response after the exact admitted helper prompt. Empty, failed, unfinished, cancelled or output-limited sequences are invalid, even if a later continuation ends successfully. Do not concatenate truncated chunks or return only their tail. Prior review/edit prompts belong to separate generations.
 - Apply only a complete successful batch in one checked write. Retry unresolved ranges only; preserve ready siblings. Cancellation prevents late application but cannot promise rollback of a write already in flight.
+- Batch start/generation/application acquire their lock before asynchronous preflight. Progress belongs to an attempt counter, not a wall-clock timestamp. Initial drafts have no separate refinement workflow; edit applied summaries through the summary reader.
 - Saved-summary editing starts a deny-all helper with only that summary and edit dialogue. Model proposals require explicit application.
 - Track helpers by live generation and parent ownership. Cleanup only owned helpers on discard/apply/close/abort/reload. Do not derive authority from copied metadata.
 - Manual helpers skip plugin input-budget vetoes, not ownership/source/result checks or host/provider limits. Automatic helpers and main Resume remain guarded; do not silently omit background or weaken the global multiplier.
@@ -221,6 +219,8 @@ Reconstruction changes the ledger `epoch`, invalidates incompatible usage and ex
 Use public `session.text.delta` and `session.reasoning.delta` events for owned helper counters: `session.context` is not a reliable source of in-flight text. Return numeric counters through ownership-checked RPC, not full prompts or reasoning text. History supplies a fallback; take the maximum of saved/live totals rather than adding overlapping counts.
 
 The inspector polls once per second while showing a batch, coalesces slow reads, ignores cancelled/late results and clears its timer on disposal. Server counters are removed with helpers/unload. These are observed character counts, not billing, ETA, acceptance or Resume authority. Missing ephemeral events and buffered provider output are uncertainty, not failure.
+
+Unsubscribing suspension events also revokes pending asynchronous navigation. A late state read must not reopen a disposed inspector or issue a toast after plugin unload.
 
 Test with a synthetic SSE response paused after a content delta but before finish. The actual terminal must show output while generation remains unresolved and parent metadata remains unchanged. Always release the provider gate in cleanup.
 

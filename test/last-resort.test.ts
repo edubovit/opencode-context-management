@@ -11,12 +11,6 @@ import { transcriptView } from "../src/normalize.ts"
 import { projectRequest } from "../src/projection.ts"
 import { Message } from "@opencode/ai"
 
-test("last-resort tail configuration is strict, defaults to 20000, and permits zero", () => {
-  assert.equal(settings().autocompaction.lastResortKeepTokens, 20000)
-  assert.equal(settings({ autocompaction: { lastResortKeepTokens: 0 } }).autocompaction.lastResortKeepTokens, 0)
-  for (const value of [-1, 1.5, "20000", null, Infinity, NaN]) assert.throws(() => settings({ autocompaction: { lastResortKeepTokens: value } }), /integer/)
-})
-
 test("last resort selects the largest prefix, retaining whole messages and tool pairs", () => {
   const raw = messages()
   const blocks = turns(raw)

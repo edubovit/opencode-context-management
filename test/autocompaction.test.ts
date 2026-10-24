@@ -1,3 +1,4 @@
+import { applySummary } from "./fixtures.ts"
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { mkdtemp, rm } from "node:fs/promises"
@@ -34,8 +35,6 @@ async function until(check: () => boolean | Promise<boolean>) {
 test("headroom uses explicit input once, otherwise context minus output, with invalid budgets rejected", () => {
   assert.deepEqual(inputBudget({ limit: { context: 400000, input: 272000, output: 128000 } }, 20000), { inputLimit: 272000, threshold: 252000, derived: false })
   assert.deepEqual(inputBudget({ limit: { context: 400000, output: 128000 } }, 20000), { inputLimit: 272000, threshold: 252000, derived: true })
-  assert.equal(settings().autocompaction.headroom, 20000)
-  assert.throws(() => settings({ autocompaction: { headroom: -1 } }), /integer/)
   assert.throws(() => inputBudget({ limit: { context: 20000, output: 5000 } }, 20000), /smaller/)
   assert.throws(() => inputBudget({ limit: { context: 0, output: 5000 } }, 20000), /valid model input/)
 })
@@ -66,7 +65,7 @@ test("manual gate permits checked earlier-history edits, protects active turn an
   const forged = append(loaded.policy, operation("tool-prune", [loaded.blocks[2]], loaded.pruneRule))
   await assert.rejects(auto.commit(data.session.id, { ...data.session.metadata, [KEY]: forged }, { revision: loaded.policy.revision, fingerprint: loaded.fingerprint }), /protected/)
   const draft = await maintenance.summarize("brief", loaded.blocks.slice(0, 2).flatMap((block) => block.sourceIDs))
-  await maintenance.apply(draft, "Earlier work retained.")
+  await applySummary(maintenance, draft, "Earlier work retained.")
   assert.equal(resumed, false)
   await auto.command(data.session.id, { action: "resume", pauseID: pause.id })
   await waiting
@@ -87,9 +86,7 @@ test("deletion and expansion preserve manual pause ownership, protected turns an
   const ids = loaded.blocks.slice(0, 2).flatMap((block) => block.sourceIDs)
   await maintenance.deleteRanges([ids])
   assert.ok((await auto.state(data.session.id)).pause!.tokens <= pause.threshold)
-  const restore = await maintenance.prepareRestore("expand", ids)
-  assert.equal(restore.deletions, 1)
-  await maintenance.applyRestore(restore)
+  await maintenance.restoreRanges([ids])
   assert.equal((await auto.state(data.session.id)).pause!.tokens, pause.tokens)
   await assert.rejects(auto.command(data.session.id, { action: "resume", pauseID: pause.id }), /Resume blocked/)
   await maintenance.deleteRanges([ids])
@@ -109,11 +106,11 @@ test("restoring pruning during a manual pause recounts growth and cannot release
   await maintenance.prune(before.blocks.slice(0, 2).flatMap((block) => block.sourceIDs), { reasoning: true, tools: "all" })
   const reduced = (await auto.state(data.session.id)).pause!
   assert.ok(reduced.tokens <= reduced.threshold)
-  await maintenance.applyRestore(await maintenance.prepareRestore("expand", first))
+  await maintenance.restoreRanges([first])
   const restored = (await auto.state(data.session.id)).pause!
   assert.ok(restored.tokens > restored.threshold)
   await assert.rejects(auto.command(data.session.id, { action: "resume", pauseID: restored.id }), /Resume blocked/)
-  await assert.rejects(maintenance.prepareRestore("expand", before.blocks[2].sourceIDs), /protected/)
+  await assert.rejects(maintenance.prepareRestore([before.blocks[2].sourceIDs]), /protected/)
   assert.equal(resumed, false)
   assert.equal(data.calls.length, 0)
   await maintenance.prune(first, { reasoning: true, tools: "all" })

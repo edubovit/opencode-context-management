@@ -9,7 +9,8 @@ import { KeyCodes } from "@opentui/core/testing"
 import { RGBA, type ScrollBoxRenderable, type SelectRenderable, type TextRenderable } from "@opentui/core"
 import type { InspectorUI } from "../src/ui.ts"
 import { themeFixture } from "./theme-fixture.ts"
-import { Inspector, watchSuspensions } from "../src/tui.tsx"
+import { Inspector } from "../src/inspector.tsx"
+import { watchSuspensions } from "../src/tui.tsx"
 import { Controller } from "../src/controller.ts"
 import { Storage } from "../src/storage.ts"
 import type { RuntimeCapture } from "../src/storage.ts"
@@ -23,6 +24,7 @@ import { AUTO_KEY, type AutoCommand, type AutoControl, type AutoState } from "..
 import { nativeFixture } from "./native-fixtures.ts"
 import { sessionView, transcriptView } from "../src/normalize.ts"
 import { validateNativePolicy } from "../src/projection.ts"
+import { deferred } from "./async.ts"
 
 async function setup(t: { after(fn: () => Promise<void>): void }, width = 140, height = 40, prepare?: (fixture: ReturnType<typeof fixtureHost>) => void, options: unknown = {}, runtime?: RuntimeCapture) {
   const dir = await mkdtemp(path.join(tmpdir(), "cm-tui-"))
@@ -35,7 +37,7 @@ async function setup(t: { after(fn: () => Promise<void>): void }, width = 140, h
   const navigations: string[] = []
   let inputMode = "context-manager"
   const api = {
-    app: { version: "2.0.26" }, keymap: { mode: { current: () => inputMode, push: () => () => {} } },
+    app: { version: "2.1.4" }, keymap: { mode: { current: () => inputMode, push: () => () => {} } },
     theme: themeFixture(),
     ui: { toast: { show: () => {} }, router: { navigate: (route: { type: string }) => { navigations.push(route.type) } } },
   } as unknown as InspectorUI
@@ -121,7 +123,7 @@ for (const width of [80, 60]) test(`reasoning pruning uses ordinary status for f
   await view.type("f")
   await view.until(() => view.frame().includes("DELETED"))
   assert.doesNotMatch(stats(0), /Reasoning blocked/)
-  await view.controller.applyRestore(await view.controller.prepareRestore("expand", loaded.blocks[0].sourceIDs))
+  await view.controller.restoreRanges([loaded.blocks[0].sourceIDs])
   await view.type("f")
   await view.until(() => !view.frame().includes("DELETED"))
   assert.doesNotMatch(stats(0), /Reasoning blocked|Partially pruned/)
@@ -370,8 +372,8 @@ test("immediate restoration applies disjoint mixed ranges once and respects nati
   t.after(async () => release())
   let preparations = 0
   let writes = 0
-  const prepare = view.controller.prepareRestoreRanges.bind(view.controller)
-  view.controller.prepareRestoreRanges = async (...args) => {
+  const prepare = view.controller.prepareRestore.bind(view.controller)
+  view.controller.prepareRestore = async (...args) => {
     preparations++
     const result = await prepare(...args)
     await waiting
@@ -398,8 +400,8 @@ test("immediate restoration still rechecks idle state before applying", async (t
   await view.type("  ")
   await view.compact(0)
   await view.until(() => view.frame().includes("Pruning applied"))
-  const prepare = view.controller.prepareRestoreRanges.bind(view.controller)
-  view.controller.prepareRestoreRanges = async (...args) => {
+  const prepare = view.controller.prepareRestore.bind(view.controller)
+  view.controller.prepareRestore = async (...args) => {
     const result = await prepare(...args)
     view.data.idle = false
     return result
@@ -1105,4 +1107,24 @@ test("automatic inspector opening verifies a live gate and ignores stale metadat
   assert.deepEqual(opened, ["context-manager"])
   off()
   assert.equal(handler, undefined)
+})
+
+test("unsubscribing suspension events prevents a late inspection from reopening the UI", async () => {
+  const { state, control } = pausedControl()
+  const gate = deferred()
+  const entered = deferred()
+  let handler!: (event: { data: { sessionID: string; metadata: Record<string, unknown> } }) => void
+  const opened: unknown[] = []
+  const api = {
+    data: { on: (_type: string, fn: typeof handler) => { handler = fn; return () => {} } },
+    keymap: { mode: { current: () => "base" } },
+    ui: { router: { current: () => ({ type: "session", sessionID: "ses_test" }), navigate: (route: unknown) => opened.push(route) }, toast: { show: (value: unknown) => opened.push(value) } },
+  } as unknown as InspectorUI
+  const off = watchSuspensions(api, async () => { entered.resolve(); await gate.promise; return control })
+  handler({ data: { sessionID: "ses_test", metadata: { [AUTO_KEY]: structuredClone(state) } } })
+  await entered.promise
+  off()
+  gate.resolve()
+  await new Promise(resolve => setTimeout(resolve, 10))
+  assert.deepEqual(opened, [])
 })

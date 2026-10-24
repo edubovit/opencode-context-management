@@ -58,13 +58,20 @@ export function projectRequest(native: readonly SessionMessageInfo[], raw: Envel
     return { message, sourceIDs: owner ? [owner] : [], anchor, slot: 0, rules: new Map() }
   })
   const saved = new Map<string, Entry[]>()
-  const selectedEntries = (ids: readonly string[]) => entries.filter((entry) => entry.sourceIDs.length && entry.sourceIDs.every((id) => ids.includes(id)))
+  const selectedEntries = (ids: readonly string[]) => {
+    const selected = new Set(ids)
+    return entries.filter((entry) => entry.sourceIDs.length && entry.sourceIDs.every((id) => selected.has(id)))
+  }
+  const removeEntries = (removed: Entry[]) => {
+    const selected = new Set(removed)
+    entries = entries.filter(entry => !selected.has(entry))
+  }
   const replace = (op: Operation, selected: Block[], summaryID = op.id) => {
     const removed = selectedEntries(op.sourceIDs)
     if (!removed.length) throw new Error("Selected summary range is absent from model context")
     const anchor = Math.min(...removed.map((entry) => entry.anchor))
     const normalized = replacement({ ...op, id: summaryID }, selected)
-    entries = entries.filter((entry) => !removed.includes(entry))
+    removeEntries(removed)
     entries.push(...normalized.messages.map((message, slot): Entry => ({
       message: Message.make({ id: message.info.id, role: message.info.role, content: message.parts.flatMap((part) => part.type === "text" ? [Message.text(part.text)] : []) }),
       sourceIDs: [...op.sourceIDs], anchor, slot, summaryID, rules: new Map(),
@@ -90,7 +97,7 @@ export function projectRequest(native: readonly SessionMessageInfo[], raw: Envel
     if (op.mode === "delete") {
       const removed = selectedEntries(op.sourceIDs)
       saved.set(op.id, removed)
-      entries = entries.filter((entry) => !removed.includes(entry))
+      removeEntries(removed)
       return
     }
     if (op.mode === "revise") {
@@ -113,17 +120,19 @@ export function projectRequest(native: readonly SessionMessageInfo[], raw: Envel
       for (const target of op.pruneTargets ?? []) {
         const previous = saved.get(target.operationID)
         if (!previous) throw new Error("Pruning restoration layer unavailable")
-        entries = entries.filter((entry) => !entry.sourceIDs.some((id) => target.sourceIDs.includes(id)))
-        entries.push(...previous.filter((entry) => entry.sourceIDs.length && entry.sourceIDs.every((id) => target.sourceIDs.includes(id))))
+        const ids = new Set(target.sourceIDs)
+        entries = entries.filter((entry) => !entry.sourceIDs.some((id) => ids.has(id)))
+        entries.push(...previous.filter((entry) => entry.sourceIDs.length && entry.sourceIDs.every((id) => ids.has(id))))
       }
       return
     }
     const ids = selected.filter((block) => block.kind === "turn").flatMap((block) => block.sourceIDs)
+    const sources = new Set(ids)
     saved.set(op.id, selectedEntries(ids))
     const reason = op.pruneReason || op.mode === "prune-reason"
     const signature = op.mode === "tool-prune" ? hash(op.rule) : "all"
     entries = entries.flatMap((entry): Entry[] => {
-      if (entry.summaryID || !entry.sourceIDs.some((id) => ids.includes(id))) return [entry]
+      if (entry.summaryID || !entry.sourceIDs.some((id) => sources.has(id))) return [entry]
       if (entry.message.native || entry.message.providerMetadata) throw new Error("Opaque message-level provider state cannot be safely edited")
       const owner = entry.sourceIDs[0]
       const original = originals.get(owner)

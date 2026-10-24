@@ -206,16 +206,16 @@ test("controller deletes disjoint ranges atomically without helpers and rejects 
   assert.deepEqual(deleted.blocks.map((block) => block.kind), ["deleted", "turn", "deleted"])
   await assert.rejects(controller.deleteRanges([deleted.blocks[0].sourceIDs]), /already deleted|No .*content/i)
   await assert.rejects(controller.summarize("brief", deleted.blocks[0].sourceIDs), /visible|user message/)
-  const preview = await controller.prepareRestoreRanges("expand", [deleted.blocks[0].sourceIDs, deleted.blocks[2].sourceIDs])
-  assert.equal(preview.deletions, 2)
-  assert.equal(preview.beforeTokens, 0)
+  const ranges = [deleted.blocks[0].sourceIDs, deleted.blocks[2].sourceIDs]
+  const preview = await controller.prepareRestore(ranges)
+  assert.equal(preview.operations.flatMap(op => op.deletedIDs ?? []).length, 2)
   data.idle = false
   await assert.rejects(controller.deleteRanges([deleted.blocks[1].sourceIDs]), /idle/)
   await assert.rejects(controller.applyOperations(preview.operations, preview), /idle/)
   data.idle = true
   await controller.prune(deleted.blocks[1].sourceIDs, { reasoning: true })
   await assert.rejects(controller.applyOperations(preview.operations, preview), /changed/)
-  const fresh = await controller.prepareRestoreRanges("expand", preview.ranges)
+  const fresh = await controller.prepareRestore(ranges)
   await controller.applyOperations(fresh.operations, fresh)
   const restored = await controller.load()
   assert.deepEqual(restored.blocks[0], before.blocks[0])

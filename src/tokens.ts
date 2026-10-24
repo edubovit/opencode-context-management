@@ -5,7 +5,8 @@ import type { Model } from "./model.ts"
 export const TOKENIZER_ID = "gpt-tokenizer@4.1.0" as const
 export const TOKENIZER_LIBRARIES = ["gpt-tokenizer@4.0.0", TOKENIZER_ID] as const
 export type TokenizerLibrary = typeof TOKENIZER_LIBRARIES[number]
-export type Encoding = "o200k_base" | "cl100k_base"
+export const ENCODINGS = ["o200k_base", "cl100k_base"] as const
+export type Encoding = typeof ENCODINGS[number]
 export type TokenBasis = {
   encoding: Encoding
   library: TokenizerLibrary
@@ -87,4 +88,8 @@ export function tokenBasis(choice: { providerID: string; modelID: string } | und
 
 export function tokenLabel(basis: TokenBasis) {
   return `${basis.providerID && basis.modelID ? `${basis.providerID}/${basis.modelID} · ` : ""}${basis.encoding} · ${basis.source} · local estimate`
+}
+
+export function mediaTokens(mime: string) {
+  return mime.startsWith("image/") ? 1500 : mime === "application/pdf" ? 2000 : 0
 }

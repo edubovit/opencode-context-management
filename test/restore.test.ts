@@ -2,7 +2,7 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 import { append, blockMessages, emptyPolicy, operation, project, select, turns } from "../src/context.ts"
 import { snapshot } from "../src/snapshot.ts"
-import { operationLabel, rangeLabel, toolStatus, turnIndex } from "../src/status.ts"
+import { rangeLabel, toolStatus, turnIndex } from "../src/status.ts"
 import { summaryPrompt } from "../src/summarize.ts"
 import { messages, pruneRule } from "./fixtures.ts"
 
@@ -109,8 +109,6 @@ test("source-turn spans keep action labels meaningful after summary collapse", (
   const index = turnIndex(raw)
   const op = operation("tool-prune", select(turns(raw), 0, 1), pruneRule())
   assert.equal(rangeLabel(op.sourceIDs, index), "Turns 1–2")
-  assert.equal(operationLabel(op, index), "tool-prune: Turns 1–2")
-  assert.equal(operationLabel(undefined, index), "nothing")
   const collapsed = project(raw, append(emptyPolicy("ses_test"), { ...operation("brief", select(turns(raw), 0, 1)), summary: "First two" }))
   assert.equal(rangeLabel(collapsed[1].sourceIDs, index), "Turn 3")
 })

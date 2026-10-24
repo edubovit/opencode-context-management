@@ -1,9 +1,10 @@
 import type { SessionMessageInfo } from "@opencode/client"
-import type { Model, Session } from "../src/model.ts"
+import type { Model, ModelChoice, Session } from "../src/model.ts"
 import type { Envelope } from "../src/context.ts"
 import { transcriptView, sessionView } from "../src/normalize.ts"
 import { nativeSession } from "./native-fixtures.ts"
-import type { Host, ModelChoice } from "../src/controller.ts"
+import type { Controller, Draft } from "../src/controller.ts"
+import type { Host } from "../src/host-contract.ts"
 import { settings } from "../src/config.ts"
 import { bindPruneRule } from "../src/text.ts"
 import { FALLBACK_BASIS } from "../src/tokens.ts"
@@ -16,6 +17,11 @@ export const suppliedOptions = {
 
 export function pruneRule(input: Partial<ReturnType<typeof settings>["prune"]> = {}) {
   return bindPruneRule({ ...settings().prune, ...input }, FALLBACK_BASIS)
+}
+
+export async function applySummary(controller: Controller, draft: Draft, text = draft.operation.summary!) {
+  await controller.applyOperations([{ ...draft.operation, summary: text.trim() }], draft)
+  await controller.discard()
 }
 
 export function session(id = "ses_test"): Session {

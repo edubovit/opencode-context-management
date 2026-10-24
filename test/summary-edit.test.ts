@@ -1,24 +1,17 @@
+import { applySummary } from "./fixtures.ts"
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { mkdtemp, rm } from "node:fs/promises"
-import { tmpdir } from "node:os"
-import path from "node:path"
-import { Controller } from "../src/controller.ts"
 import { SummaryEditor } from "../src/summary-editor.ts"
-import { Storage } from "../src/storage.ts"
-import { settings } from "../src/config.ts"
 import { project, readPolicy } from "../src/context.ts"
-import { fixtureHost, messages } from "./fixtures.ts"
+import { messages } from "./fixtures.ts"
+import { setupController } from "./controller-fixture.ts"
 
 async function setup(t: { after(fn: () => Promise<void>): void }) {
-  const dir = await mkdtemp(path.join(tmpdir(), "cm-summary-edit-"))
-  const { data, host } = fixtureHost()
-  const controller = new Controller(host, data.session.id, settings(), new Storage(dir, dir))
-  const ids = data.messages.slice(0, 2).map((message) => message.info.id)
+  const { data, host, controller, ids } = await setupController(t)
   const draft = await controller.summarize("brief", ids)
-  await controller.apply(draft, "APPLIED_SUMMARY_ONLY")
+  await applySummary(controller, draft, "APPLIED_SUMMARY_ONLY")
   const editor = new SummaryEditor(controller, await controller.summary(draft.operation.id))
-  t.after(async () => { await editor.dispose(); await controller.dispose(); await rm(dir, { recursive: true, force: true }) })
+  t.after(() => editor.dispose())
   return { data, host, controller, editor, id: draft.operation.id, ids, choice: { providerID: "test", modelID: "model", variant: "high" } }
 }
 
@@ -56,12 +49,10 @@ test("summary revision operations survive dependent compaction and expansion wit
   assert.equal((await controller.summary(id)).text, "MANUAL_EDIT")
   const all = (await controller.load()).blocks.slice(0, 2).flatMap((block) => block.sourceIDs)
   const outer = await controller.summarize("brief", all)
-  await controller.apply(outer, "OUTER_SUMMARY")
-  const expand = await controller.prepareRestore("expand", all)
-  await controller.applyRestore(expand)
+  await applySummary(controller, outer, "OUTER_SUMMARY")
+  await controller.restoreRanges([all])
   assert.equal((await controller.summary(id)).text, "MANUAL_EDIT")
-  const inner = await controller.prepareRestore("expand", ids)
-  await controller.applyRestore(inner)
+  await controller.restoreRanges([ids])
   assert.deepEqual((await controller.load()).blocks[0].messages, original.slice(0, 2))
   assert.deepEqual(data.messages, original)
 })

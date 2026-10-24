@@ -1,11 +1,40 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { activeMessages, append, emptyPolicy, hash, operation, project, readPolicy } from "../src/context.ts"
+import { activeMessages, append, blockMessages, emptyPolicy, hash, operation, project, readPolicy } from "../src/context.ts"
 import { projectRequest, validateNativePolicy } from "../src/projection.ts"
 import { transcriptView } from "../src/normalize.ts"
 import { KEY } from "../src/config.ts"
 import { nativeFixture } from "./native-fixtures.ts"
 import { pruneRule } from "./fixtures.ts"
+
+test("replay never mutates retained layers when later operations restore and prune them", () => {
+  const { session, native, canonical } = nativeFixture()
+  const raw = activeMessages(transcriptView(session, native))
+  const original = hash(raw)
+  let policy = emptyPolicy(session.id)
+  for (const mode of ["tool-prune", "brief", "delete", "expand", "expand", "prune-reason", "expand", "expand"] as const) {
+    const op = operation(mode, project(raw, policy).slice(0, 1), mode === "tool-prune" ? pruneRule({ threshold: 200, head: 10, tail: 10 }) : undefined)
+    policy = append(policy, mode === "brief" ? { ...op, summary: "Retained findings" } : op)
+  }
+  const freeze = (value: unknown) => {
+    if (!value || typeof value !== "object" || Object.isFrozen(value)) return
+    Object.freeze(value)
+    for (const child of Object.values(value)) freeze(child)
+  }
+  freeze(raw)
+  freeze(policy)
+  const saved: { value: unknown; hash: string }[] = []
+  const restored = project(raw, policy, (_op, selected) => {
+    for (const block of selected) if (block.previous) {
+      freeze(block.previous)
+      saved.push({ value: block.previous, hash: hash(block.previous) })
+    }
+  })
+  assert.deepEqual(blockMessages(restored), raw)
+  assert.equal(hash(raw), original)
+  for (const layer of saved) assert.equal(hash(layer.value), layer.hash)
+  assert.deepEqual(projectRequest(native, raw, canonical, policy), canonical)
+})
 
 test("200 deterministic mixed ledgers preserve source, round-trip replay, and exact nested expansion", () => {
   for (let seed = 1; seed <= 200; seed++) {
