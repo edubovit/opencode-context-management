@@ -8,7 +8,7 @@ import { Autocompaction } from "../src/autocompaction.ts"
 import { AUTO_KEY, inputBudget, strategy, type Strategy } from "../src/auto-state.ts"
 import { settings, KEY } from "../src/config.ts"
 import { Controller } from "../src/controller.ts"
-import { append, historyHash, operation, readPolicy, turns } from "../src/context.ts"
+import { append, historyHash, operation, readPolicy, turns, project } from "../src/context.ts"
 import { Storage } from "../src/storage.ts"
 import { fixtureHost, pruneRule } from "./fixtures.ts"
 import { contentTokens } from "../src/metrics.ts"
@@ -117,6 +117,33 @@ test("restoring pruning during a manual pause recounts growth and cannot release
   await auto.command(data.session.id, { action: "resume", pauseID: restored.id })
   await waiting
   assert.equal(resumed, true)
+})
+
+test("background completion remains protected after replay separates an earlier pruned prefix", async (t) => {
+  const { data, auto, maintenance } = await setup(t)
+  data.session.metadata![KEY] = append(readPolicy(data.session), operation("tool-prune-all", turns(data.messages)))
+  const note = structuredClone(data.messages.at(-1)!)
+  note.info.id = "msg_child_done"
+  note.info.kind = "synthetic"
+  note.parts = [{ id: "part_child_done", messageID: note.info.id, sessionID: data.session.id, type: "context", category: "synthetic", text: "PROTECTED_CHILD_RESULT" }]
+  data.messages.push(note)
+  const waiting = auto.beforeRequest(data.messages, {
+    model: { providerID: data.model.providerID, modelID: data.model.id }, protectedIDs: [note.info.id],
+    estimate: policy => contentTokens(project(data.messages, policy).flatMap(b => b.messages)) + 9000,
+  })
+  const outcome = waiting.catch(e => e)
+  await until(async () => !!(await auto.state(data.session.id)).pause)
+  const pause = (await auto.state(data.session.id)).pause!
+  assert.deepEqual(pause.protectedIDs, [note.info.id])
+  await assert.rejects(maintenance.deleteRanges([[note.info.id]]), /protected/)
+  await assert.rejects(auto.command(data.session.id, { action: "resume", pauseID: pause.id }), /Resume blocked/)
+  const loaded = await maintenance.load()
+  const forged = append(loaded.policy, operation("delete", [loaded.blocks.at(-1)!]))
+  await assert.rejects(auto.commit(data.session.id, { ...data.session.metadata, [KEY]: forged }, { revision: loaded.policy.revision, fingerprint: loaded.fingerprint }), /protected/)
+  await auto.command(data.session.id, { action: "abort", pauseID: pause.id })
+  assert.ok(await outcome instanceof Error)
+  assert.deepEqual(data.messages.at(-1), note)
+  assert.equal(data.calls.length, 0)
 })
 
 for (const mode of ["AUTO_PER_TURN", "AUTO_SESSION"] as const) test(`${mode} reduces only older history and resumes automatically`, async (t) => {

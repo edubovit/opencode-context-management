@@ -189,6 +189,8 @@ try {
       const before = requests(value.sessionID).length
       tui.keys("_EDITED\r")
       await test.until(async () => !(await info(value.sessionID)).revert, "UI submit commits revert")
+      await test.until(async () => (await native(value.sessionID)).some(message => message.type === "user" && message.text === "TURN_08_RAW_EDITED"), "edited UI prompt admitted after revert commit")
+      await test.until(() => requests(value.sessionID).length > before, "edited UI prompt reaches provider")
       await test.client.session.wait({ sessionID: value.sessionID }, { signal: AbortSignal.timeout(60000) })
       assert.equal((await info(value.sessionID)).outcome, "succeeded")
       assert.equal(requests(value.sessionID).length, before + 1)

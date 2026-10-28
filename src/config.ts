@@ -1,7 +1,7 @@
 import { z } from "zod"
 import { ENCODINGS } from "./tokens.ts"
 
-export const VERSION = "4.5.0"
+export const VERSION = "4.5.1"
 export const KEY = "opencode_context_manager"
 export const AGENT = "context-manager-summarizer"
 export const EDIT_AGENT = "context-manager-editor"

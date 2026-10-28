@@ -66,6 +66,31 @@ async function setup(t: { after(fn: () => Promise<void>): void }, width = 140, h
   return { ...fixture, controller, screen, frame, until, navigations, compact, setInputMode: (mode: string) => { inputMode = mode }, type: screen.mockInput.typeText, key, esc: screen.mockInput.pressEscape }
 }
 
+for (const width of [80, 60]) test(`saved pruning opens and restores after a background result at ${width} columns`, async (t) => {
+  const view = await setup(t, width, 30, ({ data }) => {
+    const { session, native } = nativeFixture()
+    session.model = { providerID: data.model.providerID, id: data.model.id }
+    data.session = sessionView(session)
+    data.messages = transcriptView(session, native)
+    data.session.metadata![KEY] = append(emptyPolicy(session.id), operation("tool-prune-all", turns(data.messages.filter(m => !["system", "idle"].includes(m.info.kind)))))
+    data.messages.push(...transcriptView(session, [{ id: "msg_child_done", type: "synthetic", text: "CHILD_COMPLETION", time: { created: 100 } }]))
+  })
+  await view.until(() => view.frame().includes("Ready."))
+  const original = JSON.stringify(view.data.messages)
+  const before = await view.controller.load()
+  assert.equal(before.blocks.length, 4)
+  await view.type(" ")
+  await view.type(" ")
+  view.key("e", { ctrl: true })
+  await view.until(() => readPolicy(view.data.session).revision === 2)
+  const after = await view.controller.load()
+  assert.equal(after.blocks[0].allToolsPruned, undefined)
+  assert.equal(after.blocks[2].allToolsPruned, true)
+  assert.deepEqual(after.blocks[3], before.blocks[3])
+  assert.equal(JSON.stringify(view.data.messages), original)
+  assert.equal(view.data.jobs, 0)
+})
+
 for (const width of [80, 60]) test(`shell-led range summarizes and restores at ${width} columns`, async (t) => {
   const view = await setup(t, width, 24, ({ data }) => {
     const { session, native } = nativeFixture()

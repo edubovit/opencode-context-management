@@ -166,7 +166,8 @@ export function project(active: Envelope[], policy: Policy, observe?: (op: Opera
   }
   const pruned = new Map<string, string>()
   for (const op of policy.operations) {
-    if (op.checkpoint) blocks = splitAfter(blocks, op.sourceIDs.at(-1)!)
+    const last = op.sourceIDs.at(-1)!
+    if (blocks.some(block => block.kind === "turn" && block.sourceIDs.includes(last))) blocks = splitAfter(blocks, last)
     const start = blocks.findIndex((b) => b.sourceIDs[0] === op.sourceIDs[0])
     const end = blocks.findIndex((b) => b.sourceIDs.at(-1) === op.sourceIDs.at(-1))
     if (start < 0 || end < start) throw new Error("Saved range no longer exists. Restore the original host history before continuing.")
@@ -321,8 +322,9 @@ export function splitAfter(blocks: Block[], id: string): Block[] {
     if (index < 0 || index === block.sourceIDs.length - 1) return [block]
     if (block.kind !== "turn") throw new Error("Cannot split a saved summary or deleted range")
     const cut = index + 1
+    const prefix = block.messages.slice(0, cut)
     return [
-      { ...block, sourceIDs: block.sourceIDs.slice(0, cut), messages: block.messages.slice(0, cut), closed: false },
+      { ...block, sourceIDs: block.sourceIDs.slice(0, cut), messages: prefix, closed: turns(prefix)[0].closed },
       { ...block, sourceIDs: block.sourceIDs.slice(cut), messages: block.messages.slice(cut) },
     ]
   })

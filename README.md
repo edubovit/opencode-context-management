@@ -41,7 +41,7 @@ Requires OpenCode **>=2.1.4 <3**, Node.js **22+**, and npm. Older OpenCode hosts
 
 **`compaction.auto: false` is required.** Native compaction runs before the plugin's context hook. The plugin does not rewrite your configuration and rejects native compaction while loaded; use its range actions instead of `/compact`. This setting does not disable the plugin's own automatic cleanup.
 
-OpenCode watches plugin/config changes. Coordinate updates with active work; dependency updates require a service restart and terminal reconnect. If you develop the plugin, keep the live installation in a separate frozen clone. See [Contributing](CONTRIBUTING.md).
+OpenCode watches plugin/config changes. Coordinate updates with active work; dependency updates require a service restart and terminal reconnect. If you develop the plugin, keep the live installation in a separate frozen clone. See [Contributing](docs/contributing/README.md).
 
 RPC supports remote connections, but installation and artifact delivery are not fully remote: source entrypoints must be available to the terminal, and exports/spills remain on the server. See [OpenCode plugin configuration](https://opencode.ai/v2/docs/plugins).
 
@@ -60,6 +60,8 @@ Close a range with **Space → move → Space**. Repeat to select disjoint range
 | Delete | Remove the selected range from effective context and keep a selectable **DELETED** row for restoration. |
 
 Reasoning pruning combines with one tool mode. Summary modes and Delete are standalone. Pruning, deletion and restoration make no model calls, do not change past tool execution, and do not disable future tools.
+
+Background subagents can finish after the primary agent becomes idle. Saved reductions keep their original range: later results and resumed work remain outside it. Restoring that range leaves the new results intact. A continuation may appear as a separate row with the same turn number.
 
 A range may start with completed direct shell input, shown as **SHELL** with its command/output. For a background shell, include its visible completion or subsequent user context; the omitted shell record alone is not a model-visible range. Running shells and native checkpoints remain protected. Expansion restores the original shell/completion placement without rerunning the command.
 
@@ -287,6 +289,6 @@ Open the inspector on intact history before reverting so source provenance is av
 - Native checkpoints are read-only. Historical running/streaming tools must settle before editing. Opaque provider state has additional guards; signed reasoning, encrypted checkpoints and stateful transports are not universally supported.
 - Original history and spills remain. Disabling the plugin exposes stored context again. Pruning/deletion is not secure erasure.
 - There is no automatic repair of damaged summaries, orphan-helper crash recovery, exact billing count, losslessness guarantee or transaction against arbitrary external metadata writers.
-- Do not downgrade to a plugin that cannot read the session's persisted formats. See [persistence rules](CONTRIBUTING.md#persistence) and [testing](CONTRIBUTING.md#testing).
+- Do not downgrade to a plugin that cannot read the session's persisted formats. See [persistence rules](docs/contributing/README.md#persistence) and [testing](docs/contributing/README.md#testing).
 
 Provider replay data is read from the current host's `native` fields. The established fingerprint representation remains unchanged so existing saved reductions can replay; content changes still fail validation. Host migrations that merge or discard previously distinct provider state cannot always preserve those fingerprints. Such histories remain refused rather than guessed or reset; keep a backup before upgrading OpenCode and do not clear the ledger to force continuation.

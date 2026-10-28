@@ -1,6 +1,6 @@
 # Contributing
 
-[README.md](README.md) covers installation, controls and options. This document describes the current architecture, development workflow and safety requirements. Keep documentation in the present tense: no release diaries, superseded behavior or accumulated validation matrices.
+[README.md](../../README.md) covers installation, controls and options. This document describes the current architecture, development workflow and safety requirements. Keep documentation in the present tense: no release diaries, superseded behavior or accumulated validation matrices. User documentation belongs in the root README, operational guides under `docs/`, and developer references under `docs/contributing/`.
 
 ## Development workflow
 
@@ -30,7 +30,7 @@ npm run check
 
 Use Node.js **22+** and retain optional dependencies. On Windows, `npm.cmd` avoids PowerShell shim restrictions. No build step is required: OpenCode loads the `src/` server and TUI entrypoints.
 
-The supported host range is **>=2.1.4 <3**, with OpenTUI **>=0.6.8 <0.7**. Older hosts are not supported or part of the acceptance matrix. Use [package.json](package.json) and [package-lock.json](package-lock.json) as the exact dependency inventory. Saved-data compatibility is separate: keep existing ledgers, fingerprints and pinned tokenizer rules readable. Server and TUI **plugin** versions must agree on their shared RPC contract.
+The supported host range is **>=2.1.4 <3**, with OpenTUI **>=0.6.8 <0.7**. Older hosts are not supported or part of the acceptance matrix. Use [package.json](../../package.json) and [package-lock.json](../../package-lock.json) as the exact dependency inventory. Saved-data compatibility is separate: keep existing ledgers, fingerprints and pinned tokenizer rules readable. Server and TUI **plugin** versions must agree on their shared RPC contract.
 
 Upgrade public OpenCode packages together. The host owns shared runtime dependencies; do not bypass runtime compatibility checks or use aliases to force mismatched packages to load. Preserve explicit dependency overrides unless a tested replacement removes their need. Do not use forced peer resolution or unrelated upgrades to silence warnings.
 
@@ -68,6 +68,7 @@ npm run test:usage -- /absolute/path/to/opencode
 npm run test:subagents -- /absolute/path/to/opencode
 npm run test:revert -- /absolute/path/to/opencode --tui
 node --import tsx script/fork-smoke.ts /absolute/path/to/opencode --tui
+node --import tsx script/continuation-smoke.ts /absolute/path/to/opencode
 ```
 
 | Suite | Coverage |
@@ -75,6 +76,7 @@ node --import tsx script/fork-smoke.ts /absolute/path/to/opencode --tui
 | `host-smoke.ts` | Production RPC/hooks, pruning/restoration, deletion, summaries/edits, helper completion, live progress, request guards, cancellation, movement, reload and restart. `--tui` adds the actual inspector. |
 | `usage-smoke.ts` | Deliberately mismatched provider/local usage, cached/reasoning normalization, model/route invalidation, held requests, manual/automatic helper limits, media and cache persistence. |
 | `subagent-smoke.ts` | Foreground/background/nested children, independent ledgers, automatic recovery, retained tails, queued/steered inputs, Stop and restart. |
+| `continuation-smoke.ts` | Two paused background children, pruning after primary idle, repeated automatic continuation, untouched new results, stale restoration refusal and restoration after restart. |
 | `revert-smoke.ts` | Stage/redo/commit, retained-prefix reconstruction, cold restart, file rollback and next-request context. `--tui` checks native prompt restoration and inspector behavior. |
 | `fork-smoke.ts` | Full/partial/nested forks, independent restoration, source deletion, isolation and large-context round trips. `--small` omits the large-context case; `--tui` exercises native fork and inspector controls. |
 
@@ -164,6 +166,8 @@ Normalization reads current `native` provider data and checkpoint `metadata.rece
 - Replay-only `previous` and `pruning` hold restoration state. Never put them into helper input, provider metadata or effective exported blocks.
 - A summary expands without restoring hidden pruning. An ordinary turn restores its latest effective pruning layer. A deleted range restores its prior effective blocks. Mixed disjoint restoration applies atomically.
 - Partial restoration of a wider prune leaves other turns unchanged. Split checkpoint tails restore only their own IDs and cannot resurrect the hidden prefix.
+- Replay separates an ordinary block at each saved operation's last source before matching its ordered IDs and fingerprint. Later synthetic input or resumed assistant work must not extend an earlier operation. Apply these boundaries in operation order, not all at once: earlier pruning/restoration targets retain their original grouping. Do not split summaries or deleted ranges, rewrite hashes, clear the ledger or infer boundaries from timestamps. Existing matching ledgers require no migration.
+- Successful idle is not a permanent turn boundary. Test a saved final-turn reduction followed by background completion, further tool steps, another completion, restart and restoration. New input stays visible and unpruned; main budget/protected-span guards remain authoritative. Missing, reordered, inserted or changed selected sources still fail.
 - Canonical restoration uses current incoming hook snapshots, not stored unredacted text. Restore wrappers, attachments, error content and whole tool pairs consistently.
 
 ### Child and fork ownership
