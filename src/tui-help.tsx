@@ -54,6 +54,8 @@ Last request is historical, not a recount. Live guard is a held request.
 Local text, provider usage and guard forecasts are different measures.
 Counts are estimates; media and opaque overhead are not fully known.
 f refreshes. o exports effective context. Exports can contain private data.
+s browses subagents in a read-only observer; /context-agents opens it from a session.
+The observer refreshes automatically. Esc leaves without stopping or resuming work.
 
 AUTOMATIC CLEANUP
 a saves a strategy without running it. g runs AUTO while paused.

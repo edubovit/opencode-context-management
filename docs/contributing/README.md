@@ -69,6 +69,7 @@ npm run test:subagents -- /absolute/path/to/opencode
 npm run test:revert -- /absolute/path/to/opencode --tui
 node --import tsx script/fork-smoke.ts /absolute/path/to/opencode --tui
 node --import tsx script/continuation-smoke.ts /absolute/path/to/opencode
+node --import tsx script/observation-smoke.ts /absolute/path/to/opencode
 ```
 
 | Suite | Coverage |
@@ -77,6 +78,7 @@ node --import tsx script/continuation-smoke.ts /absolute/path/to/opencode
 | `usage-smoke.ts` | Deliberately mismatched provider/local usage, cached/reasoning normalization, model/route invalidation, held requests, manual/automatic helper limits, media and cache persistence. |
 | `subagent-smoke.ts` | Foreground/background/nested children, independent ledgers, automatic recovery, retained tails, queued/steered inputs, Stop and restart. |
 | `continuation-smoke.ts` | Two paused background children, pruning after primary idle, repeated automatic continuation, untouched new results, stale restoration refusal and restoration after restart. |
+| `observation-smoke.ts` | Read-only child/nested-child discovery, paused AUTO observation, real terminal navigation, disabled mutation controls, automatic refresh through compaction/running/idle, unchanged metadata/history and no observer model requests. |
 | `revert-smoke.ts` | Stage/redo/commit, retained-prefix reconstruction, cold restart, file rollback and next-request context. `--tui` checks native prompt restoration and inspector behavior. |
 | `fork-smoke.ts` | Full/partial/nested forks, independent restoration, source deletion, isolation and large-context round trips. `--small` omits the large-context case; `--tui` exercises native fork and inspector controls. |
 
@@ -125,6 +127,7 @@ Synthetic providers prove protocol and workflow behavior, not summary quality, r
 | Server artifacts and effective export | `src/storage.ts`, `src/snapshot.ts` |
 | Terminal registration and suspension-event lifecycle | `src/tui.tsx` |
 | Inspector and public input guard | `src/inspector.tsx`, `src/ui.ts`, list/menu/reader/help TSX modules |
+| Read-only child browser and observation loader | `src/subagents.tsx`, observer RPCs in `src/server.ts` |
 | Overview and display-only accounting | `src/context-overview.tsx`, `src/inspector-view.ts` |
 
 ### Data flow
@@ -140,6 +143,14 @@ Synthetic providers prove protocol and workflow behavior, not summary quality, r
 Stored transcript, normalized effective view, canonical hook request, provider wire and export are distinct. Do not claim counters/exports are wire-accurate.
 
 Replay owns one detached copy of native-domain input and shares immutable retained layers. Restoration copies the block wrappers before editing them; never mutate a saved pre-image. Request projections and counted units may be reused only inside one hook invocation, keyed by the complete policy hash. A revision number alone cannot distinguish alternative candidates, and a cache must not cross changed hook inputs.
+
+### Passive observation
+
+`children` and `observe` use authenticated native RPC at the session's current location. They read public session data directly, not `nativeSession`, so observation cannot initialize a child/fork ledger, backfill provenance or reconcile native revert. `observe` checks owned policy decoding and rechecks location, policy and revert after reading context. Concurrent changes fail visibly rather than presenting mismatched source/policy snapshots. Missing or foreign saved state is never reset for display.
+
+`Autocompaction.observe` copies only a currently owned in-memory pause. It never calls gate validity checks, updates metadata, cancels a helper or releases a held request. Persisted pause notices do not become live display authority. Idle detection is an observation, not an editing lock; a timeout is shown as running/busy. Child pages verify `parentID` independently of native cursor filters and omit internal helpers; nested navigation loads one level at a time.
+
+The read-only remote adapter blocks mutations independently of UI shortcuts; controllers also reject maintenance when their host is read-only. Summary readers expose no edit/request actions. Disposal owns no child execution or automatic helper. Polling is coalesced and ignores late responses after disposal. Context polls preserve visible source anchors; readers freeze a snapshot. Do not navigate away, resume, abort, or revalidate an AUTO gate just because a displayed pause disappears. Test these properties with a held provider response and a live automatic helper, not only static mock history.
 
 ## Persistence
 

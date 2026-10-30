@@ -12,11 +12,15 @@ const job = z.object({ sessionID: id, jobID: id }).strict()
 const model = z.object({ providerID: z.string().min(1), modelID: z.string().min(1), variant: z.string().min(1).optional() }).strict()
 const errors = { rejected: z.null() }
 export type Inspection = { version: string; settings: Settings; session: Session; messages: Envelope[]; models: Model[]; runtime?: RuntimeCapture; auto: AutoState }
+export type Observation = Inspection & { idle: boolean }
+export type ChildPage = { version: string; title: string; items: { id: string; title: string; agent: string; model: string; status: string }[]; next?: string }
 
 export const ContextManager = Rpc.define({
   id: "context-manager",
   methods: {
     inspect: { input: session, output: z.custom<Inspection>(), errors },
+    observe: { input: session, output: z.custom<Observation>(), errors },
+    children: { input: session.extend({ cursor: z.string().min(1).optional() }).strict(), output: z.custom<ChildPage>(), errors },
     idle: { input: session, output: z.boolean(), errors },
     state: { input: session, output: z.custom<AutoState>(), errors },
     commit: { input: session.extend({ policy: policySchema, expected: z.object({ revision: z.number().int().nonnegative(), fingerprint: z.string().min(1) }).strict() }).strict(), output: z.null(), errors },

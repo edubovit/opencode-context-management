@@ -74,6 +74,28 @@ test("manual gate permits checked earlier-history edits, protects active turn an
   assert.equal(data.messages.filter((message) => message.info.role === "user").length, 3)
 })
 
+test("observing a live gate never validates, mutates or releases it", async t => {
+  const { data, auto } = await setup(t)
+  let valid = true, checks = 0, settled = false
+  const waiting = auto.beforeRequest(data.messages, { model: { providerID: data.model.providerID, modelID: data.model.id }, protectedIDs: [data.messages.at(-2)!.info.id], estimate: () => 50000, valid: async () => { checks++; return valid } })
+    .finally(() => { settled = true })
+  await until(() => !!auto.observe(data.session).pause)
+  valid = false
+  const before = JSON.stringify(data.session.metadata), calls = checks
+  const observed = auto.observe(data.session)
+  assert.ok(observed.pause)
+  observed.pause.phase = "resuming"
+  observed.pause.protectedIDs?.push("msg_foreign")
+  assert.equal(auto.observe(data.session).pause?.phase, "manual")
+  assert.equal(auto.observe(data.session).pause?.protectedIDs?.includes("msg_foreign"), false)
+  assert.equal(checks, calls)
+  assert.equal(JSON.stringify(data.session.metadata), before)
+  assert.equal(settled, false)
+  auto.cancel(data.session.id)
+  await assert.rejects(waiting, /stopped/)
+  assert.equal(auto.observe(data.session).pause, undefined)
+})
+
 test("deletion and expansion preserve manual pause ownership, protected turns and budget checks", async (t) => {
   const { data, auto, maintenance } = await setup(t)
   const waiting = auto.beforeRequest(data.messages)

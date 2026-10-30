@@ -1,11 +1,11 @@
 import type { OpenCodeClient } from "@opencode/client"
-import { ContextManager, errorMessage, type Inspection } from "./rpc.ts"
+import { ContextManager, errorMessage, type Inspection, type Observation } from "./rpc.ts"
 import type { Host } from "./host-contract.ts"
 import type { Artifacts } from "./storage.ts"
 import { KEY } from "./config.ts"
 import type { Policy } from "./context.ts"
 
-export function remoteHost(client: OpenCodeClient, sessionID: string) {
+export function remoteHost(client: OpenCodeClient, sessionID: string, readOnly = false) {
   const rpc = client.rpc(ContextManager)
   let pending: Promise<Inspection> | undefined
   let closed = false
@@ -18,29 +18,33 @@ export function remoteHost(client: OpenCodeClient, sessionID: string) {
     catch (error) { throw new Error(errorMessage(error)) }
   }
   const load = () => {
-    if (!pending) pending = call((options) => rpc.inspect({ sessionID }, options)).finally(() => { pending = undefined })
+    if (!pending) pending = call((options) => readOnly ? rpc.observe({ sessionID }, options) : rpc.inspect({ sessionID }, options)).finally(() => { pending = undefined })
     return pending
   }
+  const writable = () => { if (readOnly) throw new Error("This context observer is read-only") }
   const auto = {
-    state: async (_id: string) => call((options) => rpc.state({ sessionID }, options)),
-    command: async (_id: string, command: Parameters<NonNullable<Host["auto"]>["command"]>[1]) => call((options) => rpc.command({ sessionID, command }, options)),
+    state: async (_id: string) => readOnly ? (await load()).auto : call((options) => rpc.state({ sessionID }, options)),
+    command: async (_id: string, command: Parameters<NonNullable<Host["auto"]>["command"]>[1]) => { writable(); return call((options) => rpc.command({ sessionID, command }, options)) },
     commit: async (_id: string, metadata: Record<string, unknown>, expected: Parameters<NonNullable<Host["auto"]>["commit"]>[2]) => {
+      writable()
       await call((options) => rpc.commit({ sessionID, policy: metadata[KEY] as Policy, expected }, options))
     },
   }
   const host: Host = {
+    readOnly,
     auto,
     session: async () => (await load()).session,
-    messages: async (id) => id === sessionID ? (await load()).messages : call((options) => rpc.jobHistory({ sessionID, jobID: id }, options)),
-    progress: async (jobID) => call((options) => rpc.jobProgress({ sessionID, jobID }, options)),
+    messages: async (id) => { if (id === sessionID) return (await load()).messages; writable(); return call((options) => rpc.jobHistory({ sessionID, jobID: id }, options)) },
+    progress: async (jobID) => { writable(); return call((options) => rpc.jobProgress({ sessionID, jobID }, options)) },
     models: async () => (await load()).models,
-    idle: async () => call((options) => rpc.idle({ sessionID }, options)),
+    idle: async () => readOnly ? (await load() as Observation).idle : call((options) => rpc.idle({ sessionID }, options)),
     configured: async () => { await load(); return true },
     update: async (_id, metadata, expected) => {
       if (!expected) throw new Error("Missing maintenance source check")
       await auto.commit(sessionID, metadata, expected)
     },
     createJob: (purpose = "summary") => {
+      writable()
       if (closed) return Promise.reject(new Error("Inspector is closed"))
       const request = call((options) => rpc.createJob({ sessionID, purpose }, options)).then(async (id) => {
         jobs.add(id)
@@ -51,7 +55,7 @@ export function remoteHost(client: OpenCodeClient, sessionID: string) {
       void request.finally(() => creates.delete(request)).catch(() => {})
       return request
     },
-    generate: (jobID, model, text, purpose = "summary") => call((options) => rpc.generate({ sessionID, jobID, model, text, purpose }, options)),
+    generate: (jobID, model, text, purpose = "summary") => { writable(); return call((options) => rpc.generate({ sessionID, jobID, model, text, purpose }, options)) },
     abort: async (jobID) => { if (jobs.has(jobID) && !removals.has(jobID)) await call((options) => rpc.abortJob({ sessionID, jobID }, options)) },
     remove: async (jobID) => {
       const pending = removals.get(jobID)
@@ -64,9 +68,9 @@ export function remoteHost(client: OpenCodeClient, sessionID: string) {
   }
   const artifacts: Artifacts = {
     capture: async () => (await load()).runtime,
-    write: async () => call((options) => rpc.dump({ sessionID }, options)),
+    write: async () => { writable(); return call((options) => rpc.dump({ sessionID }, options)) },
   }
-  return { host, artifacts, load, close: async () => {
+  return { host, artifacts, load, children: (cursor?: string) => call(options => rpc.children({ sessionID, cursor }, options)), close: async () => {
     closed = true
     await Promise.allSettled([...creates])
     const results = await Promise.allSettled([...jobs].map((id) => host.remove(id)))

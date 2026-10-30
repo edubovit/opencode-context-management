@@ -11,6 +11,7 @@ import { Hotkeys, type HotkeyLine } from "./tui-help.tsx"
 export function SummaryReader(props: {
   api: InspectorUI; editor: SummaryEditor; choice: () => ModelChoice | undefined
   modalOpen: () => boolean; pick: (kind: "model" | "effort") => void; close: () => Promise<void>
+  readOnly?: boolean
 }) {
   const [mode, setMode] = createSignal<"read" | "edit" | "request">("read")
   const [busy, setBusy] = createSignal(false)
@@ -82,6 +83,7 @@ export function SummaryReader(props: {
       else scroll?.scrollBy(key.name === "up" || key.name === "left" ? -10 : 10)
       return
     }
+    if (props.readOnly) return
     if (key.ctrl && key.name === "s") { key.preventDefault(); void run(() => apply()) ; return }
     if (key.ctrl || key.meta) return
     const actions: Record<string, () => void> = {
@@ -91,7 +93,7 @@ export function SummaryReader(props: {
     }
     if (actions[key.name]) { key.preventDefault(); actions[key.name]() }
   })
-  const hints = (): HotkeyLine[] => props.modalOpen() ? [["MODEL PICKER", { key: "Up/Down", label: "select" }, { key: "Enter", label: "confirm" }, { key: "Esc", label: "cancel" }]]
+  const hints = (): HotkeyLine[] => props.readOnly ? [[{ key: "Arrows", label: "scroll" }, { key: "PgUp/PgDn", label: "page" }, { key: "Esc", label: "back" }]] : props.modalOpen() ? [["MODEL PICKER", { key: "Up/Down", label: "select" }, { key: "Enter", label: "confirm" }, { key: "Esc", label: "cancel" }]]
     : busy() ? [[{ key: "Esc", label: "cancels model requests; writes already in progress may finish" }]]
     : help() ? [[{ key: "Esc", label: "close help" }]]
     : mode() === "edit" ? [["MANUAL EDIT", { key: "Ctrl+S", label: "save summary" }, { key: "Esc", label: "cancel manual edits" }]]
@@ -103,7 +105,7 @@ export function SummaryReader(props: {
   return <box width="100%" height="100%" flexDirection="column" overflow="hidden" padding={1}>
     <text height={1} wrapMode="none" truncate fg={props.api.theme.text.base}>Summary reader · SUMMARY · {mode() === "read" ? "READ-ONLY" : mode().toUpperCase()}{busy() ? " · WORKING" : ""}</text>
     <text height={1} wrapMode="none" truncate>{`≈${tokenCount(text(), props.editor.view.tokenizer.encoding, props.editor.view.tokenizer.library)} tokens · ${props.editor.draft === undefined ? "Applied summary" : "Proposed edit (not applied)"} · ${props.choice()?.providerID}/${props.choice()?.modelID} · ${props.choice()?.variant ?? "default"}`}</text>
-    <text height={2} width="100%" overflow="hidden">{notice()}</text>
+    <text height={2} width="100%" overflow="hidden">{props.readOnly ? "Read-only snapshot. Editing and model requests are disabled." : notice()}</text>
     <box id="cm-summary-header-rule" width="100%" height={1} flexShrink={0} border={["top"]} borderStyle="single" borderColor={props.api.theme.border.base} />
     <Show when={help()} fallback={
       <Show when={mode() === "edit"} fallback={

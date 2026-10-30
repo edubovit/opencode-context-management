@@ -14,7 +14,7 @@ import type { AutoState, Expected } from "./auto-state.ts"
 import { summaryProgress } from "./summary-progress.ts"
 import type { HelperPurpose, HelperTrigger, Host } from "./host-contract.ts"
 
-export type Loaded = { session: Session; raw: Envelope[]; policy: Policy; blocks: Block[]; fingerprint: string; runtime?: RuntimeCapture; models: Model[]; tokenizer: TokenBasis; pruneRule: PruneRule; usage?: ReturnType<typeof lastReportedUsage>; auto?: AutoState }
+export type Loaded = { session: Session; raw: Envelope[]; policy: Policy; blocks: Block[]; fingerprint: string; runtime?: RuntimeCapture; models: Model[]; tokenizer: TokenBasis; pruneRule: PruneRule; usage?: ReturnType<typeof lastReportedUsage>; auto?: AutoState; idle?: boolean }
 export type Draft = Expected & { operation: Operation; attempts: number; model: ModelChoice; jobID: string }
 export type SummaryView = { id: string; text: string; block: Block; revision: number; fingerprint: string; tokenizer: TokenBasis }
 export type RestorePlan = Expected & { operations: Operation[] }
@@ -28,16 +28,17 @@ export class Controller {
   constructor(readonly host: Host, readonly sessionID: string, readonly config: Settings, readonly storage: Artifacts, private readonly purpose: HelperPurpose = "summary", private readonly trigger: HelperTrigger = "manual") {}
 
   async load(): Promise<Loaded> {
-    const [session, raw, runtime, models, auto] = await Promise.all([this.host.session(this.sessionID), this.host.messages(this.sessionID), this.storage.capture(this.sessionID), this.host.models(), this.host.auto?.state(this.sessionID)])
+    const [session, raw, runtime, models, auto, idle] = await Promise.all([this.host.session(this.sessionID), this.host.messages(this.sessionID), this.storage.capture(this.sessionID), this.host.models(), this.host.auto?.state(this.sessionID), this.host.readOnly ? this.host.idle(this.sessionID) : undefined])
     const policy = session.revert ? revertPolicy(raw, readPolicy(session), session.revert.messageID) : readPolicy(session)
     const active = sessionModel(session, raw)
     const model = models.find((m) => m.id === active?.modelID && m.providerID === active.providerID)
     const tokenizer = tokenBasis(active, model, this.config.tokenizer)
-    return { session, raw, policy, blocks: project(activeMessages(raw, session.revert), policy), fingerprint: historyHash(raw), runtime, models, tokenizer, pruneRule: bindPruneRule(this.config.prune, tokenizer), usage: lastReportedUsage(raw), auto }
+    return { session, raw, policy, blocks: project(activeMessages(raw, session.revert), policy), fingerprint: historyHash(raw), runtime, models, tokenizer, pruneRule: bindPruneRule(this.config.prune, tokenizer), usage: lastReportedUsage(raw), auto, idle }
   }
 
   async requireIdle() {
     this.requireOpen()
+    if (this.host.readOnly) throw new Error("This context observer is read-only")
     if (!await this.host.configured()) throw new Error("Server plugin is not active. Enable the plugin directory and reload OpenCode.")
     if (!await this.host.idle(this.sessionID)) throw new Error("Wait for the main session to become idle")
   }

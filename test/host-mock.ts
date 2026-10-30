@@ -15,6 +15,7 @@ export function mockContext() {
   const context = {
     app: { get version() { return state.version } }, location: { directory: "/fixture", project: { id: "project", directory: "/fixture", canonical: "/fixture" } }, options: {},
     session: {
+      list: async () => ({ data: [...sessions.values()], cursor: {} }),
       get: async ({ sessionID }: { sessionID: string }) => { const value = sessions.get(sessionID); if (!value) throw new Error("Session missing"); return structuredClone(value) },
       context: async ({ sessionID }: { sessionID: string }) => structuredClone(messages.get(sessionID) ?? []),
       wait: async () => {},

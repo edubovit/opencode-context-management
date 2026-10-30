@@ -6,6 +6,7 @@ export type HelperPurpose = "summary" | "edit"
 export type HelperTrigger = "manual" | "auto"
 
 export interface Host {
+  readonly readOnly?: boolean
   auto?: AutoControl
   session(id: string): Promise<Session>
   messages(id: string): Promise<Envelope[]>

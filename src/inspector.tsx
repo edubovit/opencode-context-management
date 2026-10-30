@@ -26,8 +26,14 @@ import { STRATEGIES, type AutoState } from "./auto-state.ts"
 
 const views = ["overview", "details", "content", "runtime"] as const
 
-export function Inspector(props: { api: InspectorUI; sessionID: string; controller: Controller }) {
+export function Inspector(props: { api: InspectorUI; sessionID: string; controller: Controller; back?: () => void; subagents?: () => void }) {
   const api = props.api
+  const readOnly = !!props.controller.host.readOnly
+  const back = () => props.back ? props.back() : api.ui.router.navigate({ type: "session", sessionID: props.sessionID })
+  const subagents = () => props.subagents ? props.subagents() : api.ui.router.navigate({ type: "plugin", name: "context-manager-agents", data: { sessionID: props.sessionID } })
+  let alive = true
+  let refreshing = false
+  const [updated, setUpdated] = createSignal<number>()
   const dimensions = useTerminalDimensions()
   const [loaded, setLoaded] = createSignal<Loaded>()
   const [cursor, setCursor] = createSignal(0)
@@ -65,7 +71,7 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
   const narrow = () => dimensions().width < 80
   const sidebarWidth = () => narrow() ? dimensions().width - 2 : Math.min(48, Math.max(30, Math.floor((dimensions().width - 3) * 0.4)))
   const popMode = api.keymap.mode.push("context-manager")
-  onCleanup(() => { popMode(); void Promise.all([summaries.dispose(), props.controller.dispose()]).catch((error) => api.ui.toast.show({ message: String(error), variant: "warning" })) })
+  onCleanup(() => { alive = false; popMode(); void Promise.all([summaries.dispose(), props.controller.dispose()]).catch((error) => api.ui.toast.show({ message: String(error), variant: "warning" })) })
   const blocks = () => loaded()?.blocks ?? []
   const sourceTurns = createMemo(() => turnIndex(activeMessages(loaded()?.raw ?? [], loaded()?.session.revert)))
   const ranges = () => visibleRanges(selection(), cursor())
@@ -76,16 +82,30 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
   const selectedIDs = () => rangeIDs(blocks(), selection())
   const touch = () => setEpoch((value) => value + 1)
   const refresh = async (anchor?: string[][], focus?: string[]) => {
-    const next = await props.controller.load()
-    setLoaded(next)
-    if (next.auto) setAuto(next.auto)
-    setModels(next.models)
-    if (!choice()) setChoice(props.controller.defaultModel(next))
-    const selected = anchor ? anchorRanges(next.blocks, anchor) : { ranges: [] }
-    setSelection(selected)
-    const focused = focus ? next.blocks.findIndex((block) => block.sourceIDs[0] === focus[0]) : -1
-    setCursor(focused >= 0 ? focused : selected.ranges[0]?.start ?? 0)
-    setNotice("Ready.")
+    if (refreshing) return
+    refreshing = true
+    try {
+      const next = await props.controller.load()
+      if (!alive) return
+      const open = readOnly && selection().anchor !== undefined ? blocks()[selection().anchor!]?.sourceIDs[0] : undefined
+      if (readOnly) {
+        anchor = selection().ranges.map(range => blocks().slice(range.start, range.end + 1).flatMap(block => block.sourceIDs))
+        focus = blocks()[cursor()]?.sourceIDs
+      }
+      setLoaded(next)
+      if (next.auto) setAuto(next.auto)
+      setModels(next.models)
+      if (!choice()) setChoice(props.controller.defaultModel(next))
+      const selected = anchor ? anchorRanges(next.blocks, anchor) : { ranges: [] }
+      const start = open ? next.blocks.findIndex(block => block.sourceIDs.includes(open)) : -1
+      setSelection(start < 0 ? selected : { ...selected, anchor: start })
+      const first = focus?.[0]
+      const focused = first ? next.blocks.findIndex((block) => block.sourceIDs.includes(first)) : -1
+      setCursor(focused >= 0 ? focused : selected.ranges[0]?.start ?? 0)
+      setUpdated(Date.now())
+      setNoticeError(false)
+      setNotice(readOnly ? "Read-only · refreshes every 2s. Readers hold a snapshot." : "Ready.")
+    } finally { refreshing = false }
   }
   const run = async (task: () => Promise<void>) => {
     if (busy()) return
@@ -97,6 +117,14 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
   }
   onMount(() => void run(refresh))
   onMount(() => {
+    if (!readOnly) return
+    const timer = setInterval(() => {
+      if (!alive || busy() || reader() || help()) return
+      void refresh().catch(error => { if (alive) { setNoticeError(true); setNotice(`Snapshot stale: ${String(error)}`) } })
+    }, 2000)
+    onCleanup(() => clearInterval(timer))
+  })
+  onMount(() => {
     let alive = true
     const timer = setInterval(() => {
       if (!runningBatch()) return
@@ -106,7 +134,7 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
     onCleanup(() => { alive = false; clearInterval(timer) })
   })
   onMount(() => {
-    if (!props.controller.host.auto) return
+    if (readOnly || !props.controller.host.auto) return
     let alive = true
     let checking = false
     const timer = setInterval(async () => {
@@ -283,6 +311,7 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
     }
     if (key.name === "escape") {
       key.preventDefault()
+      if (readOnly) { back(); return }
       if (busy()) { void summaries.cancel().catch((e) => setNotice(String(e))); return }
       if (runningBatch()) {
         void run(async () => { await summaries.discard(); setRunningBatch(false); touch(); setNotice("Batch discarded; context unchanged.") })
@@ -300,10 +329,11 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
       if (key.name === "t") { key.preventDefault(); openPicker("effort") }
       return
     }
-    if (busy() || automatic()) return
-    if (key.ctrl && key.name === "e") { key.preventDefault(); void run(restore); return }
+    if (busy() || (!readOnly && automatic())) return
+    if (key.ctrl && key.name === "e") { key.preventDefault(); if (!readOnly) void run(restore); return }
     if (key.ctrl || key.meta) return
     if (key.name === "tab") { key.preventDefault(); setPane(pane() === "list" ? "content" : "list"); return }
+    if (readOnly && ["a", "g", "c", "o", "m", "t"].includes(key.name)) { key.preventDefault(); setNotice("Read-only observer; context and execution controls are disabled."); return }
     const actions: Record<string, () => void | Promise<void>> = {
       return: () => run(openReader),
       a: openStrategy,
@@ -315,6 +345,7 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
       o: () => run(async () => { setNotice(`Snapshot saved: ${await props.controller.dump(api.app.version)}`) }),
       v: () => { setView(views[(views.indexOf(view()) + 1) % views.length]); if (!narrow() || pane() === "content") detailsScroll?.scrollTo(0); if (narrow()) setPane("content") },
       n: () => { setUnit(unit() === "tokens" ? "characters" : "tokens") },
+      s: subagents,
       m: () => openPicker("model"),
       t: () => openPicker("effort"),
     }
@@ -363,6 +394,7 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
     const budget = auto().pause ? auto().pause!.accounting : loaded()?.runtime?.budget
     return [
       `Session: ${props.sessionID} · revision ${loaded()?.policy.revision ?? "?"}`,
+      ...(readOnly ? [`Observed: ${updated() ? new Date(updated()!).toISOString() : "unavailable"}`, `Request capture: ${loaded()?.runtime ? new Date(loaded()!.runtime!.time).toISOString() : "unavailable"}`, "Snapshot of effective context, not live streamed output or exact provider wire."] : []),
       `Context tokenizer: ${tokenLabel(basis())}`,
       `Auto: ${auto().strategy} · headroom ${props.controller.config.autocompaction.headroom.toLocaleString()} tokens`,
       `Limits: >${rule().threshold} tokens; retain up to ${rule().head} head + ${rule().tail} tail (notice/link extra).`,
@@ -374,10 +406,13 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
         ...(requestBudget().note ? [requestBudget().note!] : []),
         ...(budget.reported ? ["Provider baseline:", `Input+cache: ${budget.reported.input.toLocaleString()}`, `Output+reasoning: ${budget.reported.output.toLocaleString()}`, "Removed local text is not exact provider savings."]
           : [`No matching usage; local fallback ×${budget.multiplier}.`, "This is not a provider token count."])] : []),
-      "Historical usage is not a recount. Large = eligible under current rules; file previews are separate. Ctrl+E restores one layer.",
+      `Historical usage is not a recount. Large = eligible under current rules; file previews are separate.${readOnly ? "" : " Ctrl+E restores one layer."}`,
     ].join("\n")
   })
-  const hints = (): HotkeyLine[] => exitDialog() ? [[{ key: "s/Esc", label: "stay" }, { key: "r", label: "resume if below threshold" }, { key: "a", label: "abort run and exit" }]]
+  const hints = (): HotkeyLine[] => readOnly ? [
+    [{ key: "Enter", label: "read" }, { key: "Space", label: "select" }, { key: "v", label: "views" }, { key: "Tab", label: "pane" }],
+    [{ key: "f", label: "refresh" }, { key: "n", label: "units" }, { key: "s", label: "subagents" }, { key: "Esc", label: "back" }],
+  ] : exitDialog() ? [[{ key: "s/Esc", label: "stay" }, { key: "r", label: "resume if below threshold" }, { key: "a", label: "abort run and exit" }]]
     : strategyPicker() ? [[{ key: "Up/Down", label: "strategy" }, { key: "Enter", label: "save only" }, { key: "Esc", label: "cancel" }]]
     : automatic() ? [["Automatic compaction in progress"], [{ key: "Esc", label: "exit choices / abort run" }]]
     : picker() ? [[{ key: "Up/Down", label: "select" }, { key: "Enter", label: "confirm" }, { key: "Esc", label: "cancel" }, "type to filter"]]
@@ -388,10 +423,10 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
     : narrow() ? [
       [{ key: "Space", label: "select" }, { key: "c", label: "reduce" }, { key: "Enter", label: "read" }],
       [{ key: "Ctrl+E", label: "restore" }, { key: "v", label: "details" }, { key: "Tab", label: "pane" }],
-      [{ key: "a", label: "auto" }, { key: "m/t", label: "model" }, { key: "?", label: "help" }, { key: "Esc", label: "back" }],
+      [{ key: "a", label: "auto" }, { key: "s", label: "subagents" }, { key: "?", label: "help" }, { key: "Esc", label: "back" }],
     ] : [
       [{ key: "Space", label: "select" }, { key: "c", label: "reduce" }, { key: "Enter", label: "read" }, { key: "Ctrl+E", label: "restore" }],
-      [{ key: "v", label: "details" }, { key: "Tab", label: "pane" }, { key: "a", label: "auto" }, { key: "m/t", label: "model" }, { key: "?", label: "help" }, { key: "Esc", label: "back" }],
+      [{ key: "v", label: "details" }, { key: "Tab", label: "pane" }, { key: "a", label: "auto" }, { key: "s", label: "subagents" }, { key: "?", label: "help" }, { key: "Esc", label: "back" }],
     ]
   const batchStatus = () => {
     epoch()
@@ -412,14 +447,14 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
     <Show when={reader()} keyed fallback={
       <box width="100%" height="100%" flexDirection="column" padding={1} overflow="hidden">
         <box height={1} flexShrink={0} flexDirection="row" justifyContent="space-between">
-          <text fg={api.theme.text.base}><b>Context manager</b>{busy() ? " · working" : ""}</text>
+          <text fg={api.theme.text.base}><b>Context manager</b>{readOnly ? " · READ-ONLY" : busy() ? " · working" : ""}</text>
           <text fg={api.theme.text.muted}>{auto().strategy === "MANUAL" ? "Manual" : auto().strategy === "AUTO_PER_TURN" ? "Auto / turn" : "Auto / session"}</text>
         </box>
         <box height={narrow() ? 2 : 1} flexShrink={0} flexDirection={narrow() ? "column" : "row"} gap={narrow() ? 0 : 2}>
           <text id="cm-context-total" height={1} flexGrow={1} minWidth={0} wrapMode="none" truncate fg={api.theme.text.base}>{`Local text  ${loaded() ? `${shortSize(localCounts().total)} ${unit() === "tokens" ? "tokens" : "chars"}` : "unavailable"}`}</text>
           <text id="cm-selected-total" height={1} flexShrink={0} wrapMode="none" truncate fg={ranges().length ? api.theme.text.formfield.selected : api.theme.text.muted}>{ranges().length ? `Selected (${selection().ranges.length}${selection().anchor !== undefined ? " + open" : ""})  ${shortSize(selectedCounts().total)} ${unit() === "tokens" ? "tokens" : "chars"}` : "No selection"}</text>
         </box>
-        <text height={1} flexShrink={0} wrapMode="none" truncate fg={api.theme.text.muted}>{`Summary  ${choice() ? `${choice()!.providerID}/${choice()!.modelID}` : "choose a model with m"} · Effort: ${choice()?.variant ?? "default"}`}</text>
+        <text height={1} flexShrink={0} wrapMode="none" truncate fg={api.theme.text.muted}>{readOnly ? `${loaded()?.idle === undefined ? "Loading" : loaded()!.idle ? "Idle" : "Running / busy"} · ${loaded()?.session.title ?? props.sessionID}` : `Summary  ${choice() ? `${choice()!.providerID}/${choice()!.modelID}` : "choose a model with m"} · Effort: ${choice()?.variant ?? "default"}`}</text>
         <Show when={auto().pause}>{(pause) => <text height={2} flexShrink={0} overflow="hidden" fg={api.theme.text.feedback.warning.base}>{`PAUSED (${pause().phase}) ≈${pause().tokens.toLocaleString()} / ${pause().threshold.toLocaleString()} tokens · input limit ${pause().derived ? "derived" : "advertised"}\n${pause().message}`}</text>}</Show>
         <Show when={help()} fallback={
           <box flexDirection="row" flexGrow={1} minHeight={0} gap={1} overflow="hidden">
@@ -428,7 +463,7 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
               border borderStyle="rounded" borderColor={pane() === "list" ? api.theme.text.formfield.focused : api.theme.border.base}
               title={runningBatch() ? "Summaries" : `Conversation · ${unit() === "tokens" ? "tokens" : "chars"}`} paddingLeft={1} paddingRight={1}>
                 <Show when={runningBatch()} fallback={
-                  <Show when={configuring()} fallback={<RangeList api={api} rows={rows()} maxLines={props.controller.config.ui.maxLinesPerTurn} selectedIndex={cursor()} onChange={setCursor} focused={!busy() && !automatic() && !exitDialog() && !strategyPicker() && !picker() && pane() === "list"} />}>
+                  <Show when={configuring()} fallback={<RangeList api={api} rows={rows()} maxLines={props.controller.config.ui.maxLinesPerTurn} selectedIndex={cursor()} onChange={setCursor} focused={!busy() && (readOnly || !automatic()) && !exitDialog() && !strategyPicker() && !picker() && pane() === "list"} />}>
                     <CompactionMenu api={api} value={compaction()} index={compactionIndex()} toggle={(index) => { if (!picker() && !inputBlocked(api)) setCompaction(toggleMode(compaction(), index)) }} />
                   </Show>
                 }>
@@ -452,13 +487,13 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
             </Show>
           </box>
         }>
-          <scrollbox flexGrow={1} minHeight={0} focused={!picker()}><text>{helpText}</text></scrollbox>
+          <scrollbox flexGrow={1} minHeight={0} focused={!picker()}><text>{readOnly ? "READ-ONLY CONTEXT\n\nEnter reads a snapshot. Space selects ranges for counts. v cycles Overview, Details, Content and Runtime; Content includes reasoning and tools. n switches tokens/characters. Tab switches panes. f refreshes. s browses children. Esc returns without stopping the agent.\n\nThe list refreshes every two seconds. Readers remain frozen until closed. Provider usage and request captures are historical, not live streamed token counts. No editing, helper generation or execution controls are available here." : helpText}</text></scrollbox>
         </Show>
         <text id="cm-notice" height={notice() === "Ready." ? 1 : 2} flexShrink={0} overflow="hidden" fg={noticeError() ? api.theme.text.feedback.error.base : api.theme.text.muted}>{notice()}</text>
         <Hotkeys api={api} lines={hints()} />
       </box>
     }>{(value) => value.kind === "summary"
-      ? <SummaryReader api={api} editor={value.editor} choice={choice} modalOpen={() => !!picker()} pick={openPicker} close={closeSummary} />
+      ? <SummaryReader api={api} editor={value.editor} choice={choice} modalOpen={() => !!picker()} pick={openPicker} close={closeSummary} readOnly={readOnly} />
       : <TurnReader api={api} block={value.block} label={value.label} close={() => setReader(undefined)} />}</Show>
     <Show when={picker()}>
       <box position="absolute" top={2} left={0} width={reader() ? "85%" : "45%"} height="65%" border padding={1} backgroundColor={api.theme.background.base} overflow="hidden">

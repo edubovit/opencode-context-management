@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto"
 import { Controller, type Loaded } from "./controller.ts"
 import type { Host } from "./host-contract.ts"
-import type { ModelChoice } from "./model.ts"
+import type { ModelChoice, Session } from "./model.ts"
 import { AUTO_KEY, STRATEGIES, inputBudget, strategy, type AutoCommand, type AutoControl, type AutoState, type Expected, type Pause } from "./auto-state.ts"
 import { AGENT, EDIT_AGENT, KEY, type Settings } from "./config.ts"
 import { append, blockMessages, hash, historyHash, activeMessages, operation, project, readPolicy, type Envelope, type Policy } from "./context.ts"
@@ -24,6 +24,11 @@ export class Autocompaction implements AutoControl {
   private gates = new Map<string, Gate>()
   private queues = new Map<string, Promise<unknown>>()
   constructor(private host: Host, private config: Settings, private storage: Storage) {}
+
+  observe(session: Session): AutoState {
+    const gate = this.gates.get(session.id)
+    return { strategy: strategy(session), ...(gate?.active ? { pause: structuredClone(gate.pause) } : {}) }
+  }
 
   private locked<T>(id: string, run: () => Promise<T>): Promise<T> {
     const next = (this.queues.get(id) ?? Promise.resolve()).catch(() => {}).then(run)

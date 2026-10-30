@@ -50,7 +50,37 @@ export async function setupServer(ctx: PluginContext, store = new Storage(ctx.lo
     try { return JSON.parse(JSON.stringify(await run())) as T }
     catch (error) { throw reject(errorMessage(error)) }
   }
+  const observeSession = async (sessionID: string) => {
+    if (closed) throw new Error("Context manager was unloaded; reopen the observer")
+    const session = await ctx.session.get({ sessionID })
+    if (session.location.directory !== ctx.location.directory) throw new Error("Session location changed; reopen the observer")
+    return session
+  }
   const rpc = await ctx.rpc.register(ContextManager, {
+    observe: ({ sessionID }, call) => attempt((message) => call.error("rejected", message, null), async () => {
+      const current = await observeSession(sessionID)
+      if (current.metadata?.context_manager_job) throw new Error("Internal compaction helpers are not subagents")
+      readPolicy(sessionView(current))
+      const [native, models, runtime, idle] = await Promise.all([ctx.session.context({ sessionID }), host.models(), store.capture(sessionID), host.idle(sessionID)])
+      const latest = await observeSession(sessionID)
+      if (hash([current.metadata?.[KEY], current.revert]) !== hash([latest.metadata?.[KEY], latest.revert]))
+        throw new Error("Context changed during observation; refresh for the latest snapshot")
+      call.signal.throwIfAborted()
+      return { version: VERSION, settings: config, session: sessionView(latest), messages: transcriptView(latest, native), models, runtime, idle, auto: auto.observe(sessionView(latest)) }
+    }),
+    children: ({ sessionID, cursor }, call) => attempt((message) => call.error("rejected", message, null), async () => {
+      const parent = await observeSession(sessionID)
+      const page = await ctx.session.list({ parentID: sessionID, limit: 50, order: "desc", ...(cursor ? { cursor } : {}) })
+      const items = await Promise.all(page.data.filter(child => child.parentID === sessionID && !child.metadata?.context_manager_job).map(async child => {
+        const pause = auto.observe(sessionView(child)).pause
+        const idle = await host.idle(child.id)
+        return { id: child.id, title: child.title ?? child.id, agent: child.agent ?? "unknown", model: child.model ? `${child.model.providerID}/${child.model.id}` : "unselected",
+          status: pause ? pause.phase === "auto" ? "Compacting" : "Paused" : idle ? child.outcome === "failed" ? "Failed" : child.outcome === "interrupted" ? "Interrupted" : "Idle" : "Running / busy" }
+      }))
+      await observeSession(sessionID)
+      call.signal.throwIfAborted()
+      return { version: VERSION, title: parent.title ?? parent.id, items, ...(page.data.length === 50 && page.cursor.next ? { next: page.cursor.next } : {}) }
+    }),
     inspect: ({ sessionID }, call) => attempt((message) => call.error("rejected", message, null), async () => {
       const current = await requireSession(sessionID)
       const [native, models, runtime, state] = await Promise.all([ctx.session.context({ sessionID }), host.models(), store.capture(sessionID), auto.state(sessionID)])

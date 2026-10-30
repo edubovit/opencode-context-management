@@ -4,6 +4,7 @@ import { createSignal, onCleanup, onMount, Show } from "solid-js"
 import { useKeyboard } from "@opentui/solid"
 import { inputBlocked, type InspectorUI } from "./ui.ts"
 import { Inspector } from "./inspector.tsx"
+import { Subagents } from "./subagents.tsx"
 import { Controller } from "./controller.ts"
 import { remoteHost } from "./control.ts"
 import { settings, VERSION } from "./config.ts"
@@ -13,6 +14,11 @@ export default Plugin.define({
   id: "context-manager",
   setup(api) {
     const remotes = new Set<ReturnType<typeof remoteHost>>()
+    const unregisterAgents = api.ui.router.register({
+      name: "context-manager-agents",
+      render: ({ data }) => typeof data?.sessionID === "string"
+        ? <Subagents api={api} client={api.client} sessionID={data.sessionID} /> : <text>Open a session first</text>,
+    })
     const unregister = api.ui.router.register({
       name: "context-manager",
       render: ({ data: params }) => {
@@ -54,9 +60,17 @@ export default Plugin.define({
         api.ui.dialog.clear()
         api.ui.router.navigate({ type: "plugin", name: "context-manager", data: { sessionID: current.sessionID } })
       },
+    }, {
+      id: "context-manager.agents", title: "Subagent contexts", group: "Session", palette: true, slash: { name: "context-agents" },
+      run: () => {
+        const current = api.ui.router.current()
+        if (current.type !== "session") { api.ui.toast.show({ message: "Open a session first", variant: "warning" }); return }
+        api.ui.dialog.clear()
+        api.ui.router.navigate({ type: "plugin", name: "context-manager-agents", data: { sessionID: current.sessionID } })
+      },
     }] }))
     const unsubscribe = watchSuspensions(api, async (id) => remoteHost(api.client, id).host.auto)
-    return async () => { unregister(); unsubscribe(); await Promise.allSettled([...remotes].map((remote) => remote.close())); remotes.clear() }
+    return async () => { unregister(); unregisterAgents(); unsubscribe(); await Promise.allSettled([...remotes].map((remote) => remote.close())); remotes.clear() }
   },
 })
 

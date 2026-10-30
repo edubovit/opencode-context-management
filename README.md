@@ -113,6 +113,7 @@ Each range uses its own boundary against the frozen snapshot. Sibling summaries 
 | g | Retry failed batch ranges, or explicitly run AUTO while paused. |
 | v | Cycle Overview → Details → Content → Runtime. |
 | n | Switch local token/character counts; request guards stay in tokens. |
+| s | Browse subagent contexts. |
 | Tab | Switch panes. Below 80 columns, panes use the full width. |
 | f / o / ? | Reload / export / help. |
 | Esc | Cancel the current selection, editor or running agents; otherwise go back. A paused exit offers Stay, Resume or Abort. |
@@ -127,6 +128,19 @@ Restoration is local to the selection:
 Restoration makes no model call and can increase context size. The normal Resume guard still applies. It cannot recover content removed by OpenCode or replace a stored spill preview with the full external output file.
 
 Model-assisted summary editing starts a separate dialogue containing only the saved summary and edit request. Proposals require explicit application; they do not receive the original range or full session background.
+
+## Observe subagents
+
+Run **`/context-agents`** from the parent session, choose **Subagent contexts** in the command palette, or press **s** in Context Manager.
+
+- **Enter** opens the selected child's effective context: turns, applied summaries/pruning, local counts, request budget and automatic-compaction state.
+- **s** browses that child's children; **Esc** goes back. **n/p** pages through long child lists.
+- The list refreshes every five seconds; an open context refreshes every two seconds. **f** refreshes immediately. Cursor and closed range selections are retained where their sources remain visible.
+- **v** cycles Overview, Details, Content and Runtime. Content includes effective reasoning and tool records. Enter opens a reader snapshot; close it to return to refreshing context.
+
+This observation screen stays **read-only**, including after the child finishes. Pruning, restoration, summary editing, model requests, export, strategy changes, Resume and Abort are disabled. Closing it never stops or resumes the child. Internal summary/edit helpers are excluded from the child list.
+
+These are effective-context snapshots, not a live output stream or exact provider request. Request captures and usage are historical; Details shows their capture time. A failed refresh leaves the last snapshot visible with a stale warning. A child whose saved state needs initialization or repair may be unavailable until its normal execution handles that state; observation does not repair or rewrite it.
 
 ## Automatic cleanup and request budgets
 

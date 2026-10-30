@@ -25,6 +25,8 @@ import { nativeFixture } from "./native-fixtures.ts"
 import { sessionView, transcriptView } from "../src/normalize.ts"
 import { validateNativePolicy } from "../src/projection.ts"
 import { deferred } from "./async.ts"
+import { ChildList } from "../src/subagents.tsx"
+import { VERSION } from "../src/config.ts"
 
 async function setup(t: { after(fn: () => Promise<void>): void }, width = 140, height = 40, prepare?: (fixture: ReturnType<typeof fixtureHost>) => void, options: unknown = {}, runtime?: RuntimeCapture) {
   const dir = await mkdtemp(path.join(tmpdir(), "cm-tui-"))
@@ -65,6 +67,114 @@ async function setup(t: { after(fn: () => Promise<void>): void }, width = 140, h
   }
   return { ...fixture, controller, screen, frame, until, navigations, compact, setInputMode: (mode: string) => { inputMode = mode }, type: screen.mockInput.typeText, key, esc: screen.mockInput.pressEscape }
 }
+
+for (const width of [80, 60]) test(`subagent observer refreshes during AUTO and never exposes writes at ${width} columns`, async t => {
+  let phase = true, writes = 0
+  const view = await setup(t, width, 30, ({ data, host }) => {
+    Object.assign(host, { readOnly: true })
+    data.idle = false
+    data.session.title = "Observed worker"
+    const blocks = turns(data.messages)
+    data.session.metadata![KEY] = append(emptyPolicy(data.session.id), { ...operation("brief", blocks.slice(0, 1)), summary: "SAVED CHILD SUMMARY" })
+    host.update = async () => { writes++; throw new Error("Observer must not write") }
+    host.auto = { state: async () => ({ strategy: "AUTO_PER_TURN", ...(phase ? { pause: { id: "held", phase: "auto", userID: blocks.at(-1)!.sourceIDs[0], tokens: 10000, threshold: 9000, inputLimit: 29000, derived: false, message: "Compacting earlier turn" } } : {}) }), command: async () => { throw new Error("Observer must not command") }, commit: async () => { throw new Error("Observer must not commit") } }
+  })
+  await view.until(() => view.frame().includes("Read-only · refreshes"))
+  assert.match(view.frame(), /READ-ONLY/)
+  assert.match(view.frame(), /Running \/ busy/)
+  const original = JSON.stringify(view.data.session.metadata)
+  await view.type(" ")
+  await view.type(" ")
+  for (const key of ["c", "a", "g", "m", "t", "o"]) await view.type(key)
+  view.key("e", { ctrl: true })
+  assert.doesNotMatch(view.frame(), /Choose compaction|Compaction mode|Resume and exit/)
+  view.key("return")
+  await view.until(() => view.frame().includes("SAVED CHILD SUMMARY"))
+  await view.type("er")
+  view.key("s", { ctrl: true })
+  assert.doesNotMatch(view.frame(), /MANUAL EDIT|Requested summary changes/)
+  view.esc()
+  await view.until(() => view.frame().includes("Read-only · refreshes"))
+  phase = false
+  view.data.idle = true
+  view.data.messages.at(-1)!.parts.push({ type: "text", id: "new", sessionID: view.data.session.id, messageID: view.data.messages.at(-1)!.info.id, text: "NEW CHILD RESULT" })
+  await new Promise(resolve => setTimeout(resolve, 2100))
+  await view.until(() => view.frame().includes("Idle · Observed worker") && !view.frame().includes("PAUSED"))
+  assert.equal(view.navigations.length, 0)
+  assert.match(view.frame(), /Selected \(1\)/)
+  assert.equal(writes, 0)
+  assert.equal(JSON.stringify(view.data.session.metadata), original)
+  assert.equal(view.data.jobs, 0)
+  view.esc()
+  await view.until(() => view.navigations.length === 1)
+  assert.equal(writes, 0)
+})
+
+test("subagent browser pages, refreshes selection, drills down and respects native dialogs", async t => {
+  let inputMode = "context-manager", page = 0, opened = "", descended = "", backed = false
+  const api = { theme: themeFixture(), keymap: { mode: { current: () => inputMode, push: () => () => {} } } } as unknown as InspectorUI
+  const item = (id: string) => ({ id, title: id, agent: "worker", model: "fixture/model", status: "Running / busy" })
+  const screen = await testRender(() => <ChildList api={api} load={async cursor => { page++; return { version: VERSION, title: "Parent task", items: cursor ? [item("second-page")] : [item("first-child"), item("nested-child")], ...(!cursor ? { next: "next" } : {}) } }} open={id => { opened = id }} descend={id => { descended = id }} back={() => { backed = true }} />, { width: 60, height: 24 })
+  t.after(() => screen.renderer.destroy())
+  const settle = async () => { await new Promise(resolve => setTimeout(resolve, 40)); await screen.renderOnce() }
+  await settle()
+  screen.mockInput.pressKey(KeyCodes.ARROW_DOWN)
+  await settle()
+  inputMode = "dialog"
+  screen.mockInput.pressKey(KeyCodes.RETURN)
+  await settle()
+  assert.equal(opened, "")
+  inputMode = "context-manager"
+  await screen.mockInput.typeText("f")
+  await settle()
+  screen.mockInput.pressKey(KeyCodes.RETURN)
+  await settle()
+  assert.equal(opened, "nested-child")
+  await screen.mockInput.typeText("s")
+  assert.equal(descended, "nested-child")
+  await screen.mockInput.typeText("n")
+  await settle()
+  assert.match(screen.captureCharFrame(), /second-page/)
+  await screen.mockInput.typeText("p")
+  await settle()
+  assert.match(screen.captureCharFrame(), /first-child/)
+  screen.mockInput.pressEscape()
+  await settle()
+  assert.equal(backed, true)
+  assert.equal(page, 4)
+})
+
+test("observer preserves open ranges and marks stale snapshots without changing the child", async t => {
+  const view = await setup(t, 80, 30, ({ host }) => { Object.assign(host, { readOnly: true }) })
+  await view.until(() => view.frame().includes("Read-only · refreshes"))
+  await view.type(" ")
+  await view.type("f")
+  await view.until(() => view.frame().includes("+ open"))
+  const load = view.controller.load.bind(view.controller)
+  view.controller.load = async () => { throw new Error("Session removed") }
+  await new Promise(resolve => setTimeout(resolve, 2100))
+  await view.until(() => view.frame().includes("Snapshot stale: Error: Session removed"))
+  assert.match(view.frame(), /Turn 1/)
+  assert.equal(view.data.jobs, 0)
+  assert.equal(readPolicy(view.data.session).revision, 0)
+  view.controller.load = load
+  await view.type("f")
+  await view.until(() => view.frame().includes("Read-only · refreshes"))
+})
+
+test("disposed child browser ignores a pending page and releases its input mode", async () => {
+  const gate = deferred<import("../src/rpc.ts").ChildPage>()
+  let loads = 0, released = 0, opened = false
+  const api = { theme: themeFixture(), keymap: { mode: { current: () => "context-manager", push: () => () => { released++ } } } } as unknown as InspectorUI
+  const screen = await testRender(() => <ChildList api={api} load={() => { loads++; return gate.promise }} open={() => { opened = true }} descend={() => { opened = true }} back={() => { opened = true }} />, { width: 60, height: 24 })
+  await screen.renderOnce()
+  screen.renderer.destroy()
+  gate.resolve({ version: VERSION, title: "Late result", items: [] })
+  await new Promise(resolve => setTimeout(resolve, 20))
+  assert.equal(loads, 1)
+  assert.equal(released, 1)
+  assert.equal(opened, false)
+})
 
 for (const width of [80, 60]) test(`saved pruning opens and restores after a background result at ${width} columns`, async (t) => {
   const view = await setup(t, width, 30, ({ data }) => {
