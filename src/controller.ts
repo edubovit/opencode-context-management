@@ -2,7 +2,7 @@ import type { Model, ModelChoice, Session } from "./model.ts"
 import { KEY, type Settings } from "./config.ts"
 import { append, hash, historyHash, activeMessages, operation, project, readPolicy, summaryStart, type Block, type Envelope, type Operation, type Policy } from "./context.ts"
 import { validatePruning, type Isolation, type Pruning } from "./compaction.ts"
-import { generateSummary, inputEstimate, summaryEditPrompt, SUMMARIZER_SYSTEM } from "./summarize.ts"
+import { generateSummary, inputEstimate, summaryEditPrompt, SUMMARIZER_SYSTEM, type SummaryReview } from "./summarize.ts"
 import type { Artifacts, RuntimeCapture } from "./storage.ts"
 import { snapshot } from "./snapshot.ts"
 import { bindPruneRule, type PruneRule } from "./text.ts"
@@ -149,7 +149,7 @@ export class Controller {
     }
   }
 
-  async summarize(mode: "compact" | "brief", ids: string[], override?: ModelChoice, frozen?: Loaded, isolation: Isolation = "off"): Promise<Draft> {
+  async summarize(mode: "compact" | "brief", ids: string[], override?: ModelChoice, frozen?: Loaded, isolation: Isolation = "off", onReview?: (reason: SummaryReview) => void): Promise<Draft> {
     if (this.job) throw new Error("Apply or discard the current draft before starting another compaction")
     this.beginWork()
     try {
@@ -164,7 +164,7 @@ export class Controller {
       if (!chosen) throw new Error("Choose a compaction model first")
       const choice = { ...chosen }
       const model = await this.resolveModel(choice)
-      const result = await generateSummary(op, loaded.blocks, selected, (text) => this.request(choice, model, text), isolation === "off" && loaded.runtime ? JSON.stringify(loaded.runtime) : undefined, isolation)
+      const result = await generateSummary(op, loaded.blocks, selected, (text) => this.request(choice, model, text), isolation === "off" && loaded.runtime ? JSON.stringify(loaded.runtime) : undefined, isolation, onReview)
       return { ...result, revision: loaded.policy.revision, fingerprint: loaded.fingerprint, model: choice, jobID: this.job! }
     } catch (error) {
       await this.releaseJob()

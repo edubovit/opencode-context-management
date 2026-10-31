@@ -25,7 +25,12 @@ test("compact band includes exactly 2x and 20x and retries only outside it", asy
     [after * 20, 1, ""], [after * 20 + 1, 2, "too short"],
   ] as const) {
     const calls: string[] = []
-    const result = await generateSummary({ ...base, beforeTokens: before }, all, selected, async (prompt) => { calls.push(prompt); return text })
+    const reviews: string[] = []
+    const result = await generateSummary({ ...base, beforeTokens: before }, all, selected, async (prompt) => {
+      if (calls.length) assert.equal(reviews.length, 1, "Review reason must be available before the second prompt")
+      calls.push(prompt); return text
+    }, undefined, "off", reason => reviews.push(reason))
+    assert.deepEqual(reviews, attempts === 1 ? [] : [direction === "too long" ? "too large" : "too small"])
     assert.equal(result.attempts, attempts)
     assert.equal(calls.length, attempts)
     if (attempts === 1) continue
@@ -55,7 +60,7 @@ test("brief never expands an overshort result and compact still rejects an empty
   const all = turns(messages())
   const selected = [all[0]]
   let calls = 0
-  const result = await generateSummary(operation("brief", selected), all, selected, async () => { calls++; return "Nothing useful." })
+  const result = await generateSummary(operation("brief", selected), all, selected, async () => { calls++; return "Nothing useful." }, undefined, "off", () => assert.fail("Brief summaries must not enter size review"))
   assert.equal(calls, 1)
   assert.equal(result.attempts, 1)
   calls = 0

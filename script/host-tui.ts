@@ -4,6 +4,7 @@ import { terminal } from "./terminal.ts"
 import type { fixture } from "./host-fixture.ts"
 import type { Controller } from "../src/controller.ts"
 import { tokenCount } from "../src/tokens.ts"
+import { operation, replacementTokens } from "../src/context.ts"
 
 export async function verifyInspector(test: Awaited<ReturnType<typeof fixture>>, controller: Controller, executable: string) {
   const output = path.join(test.root, "inspector-tui.log")
@@ -12,6 +13,7 @@ export async function verifyInspector(test: Awaited<ReturnType<typeof fixture>>,
   const keys = async (keys: string) => { child.keys(keys); await sleep() }
   const seen = (text: string) => test.until(async () => (await child.text()).includes(text), `inspector UI: ${text}`)
   let releaseProgress: (() => void) | undefined
+  let releaseReview: (() => void) | undefined
   let completed = false
   try {
     await seen("Context manager production sm")
@@ -53,8 +55,16 @@ export async function verifyInspector(test: Awaited<ReturnType<typeof fixture>>,
     for (let n = 0; n < 4; n++) await keys("\x1b[B")
     await keys(" ")
     const pause = new Promise<void>((resolve) => { releaseProgress = resolve })
+    const reviewPause = new Promise<void>((resolve) => { releaseReview = resolve })
     const text = "LIVE_SUMMARY_OUTPUT"
-    test.respond((wire) => JSON.stringify(wire.messages).includes("<selected_range_") ? { text, finish: "stop", pause } : undefined)
+    const selected = (await controller.load()).blocks.slice(0, 1)
+    const draft = operation("compact", selected)
+    assert.ok(replacementTokens({ ...draft, summary: text }, selected) < draft.beforeTokens / 20, "Live summary must trigger a too-small review")
+    test.respond((wire) => {
+      if (!JSON.stringify(wire.messages).includes("<selected_range_")) return
+      const review = JSON.stringify(wire.messages.findLast(message => message.role === "user")).includes("Initial selected range size:")
+      return { text, finish: "stop", pause: review ? reviewPause : pause }
+    })
     await keys("\r")
     await seen("0/1 ready")
     await seen(`≈${tokenCount(text, "o200k_base").toLocaleString()} output · ≈0 reasoning tokens`)
@@ -62,9 +72,13 @@ export async function verifyInspector(test: Awaited<ReturnType<typeof fixture>>,
     assert.ok(!(await child.text()).includes("automatic acceptance"))
     assert.equal((await controller.load()).policy.revision, revision)
     releaseProgress!()
+    await seen("running · revising: too small")
+    assert.equal((await controller.load()).policy.revision, revision)
+    releaseReview!()
     await test.until(async () => (await controller.load()).policy.operations.at(-1)?.mode === "compact", "UI summary application")
     test.respond(() => undefined)
     await seen("Summaries applied automatically")
+    assert.ok(!(await child.text()).includes("revising:"))
     await keys("\r")
     await seen("Summary reader")
     await keys("r")
@@ -102,6 +116,7 @@ export async function verifyInspector(test: Awaited<ReturnType<typeof fixture>>,
     completed = true
   } finally {
     releaseProgress?.()
+    releaseReview?.()
     const code = await child.close()
     if (completed) assert.equal(code, 0, "Owned TUI must stop cleanly")
   }

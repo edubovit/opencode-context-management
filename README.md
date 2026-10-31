@@ -77,6 +77,7 @@ The batch screen shows:
 
 - Ready ranges out of the total.
 - Each agent's status and elapsed time.
+- **Revising: too large / too small** when a detailed summary receives its one size-review prompt. This refers to the first draft and the soft review guide, not a provider limit or an error.
 - Estimated output and reasoning token counts while running.
 - The accepted draft's estimated token count when ready.
 

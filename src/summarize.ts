@@ -50,7 +50,9 @@ Every existing COMPACT summary inside the target is high-priority preservation m
   ].join("\n\n")
 }
 
-export async function generateSummary(op: Operation, all: Block[], selected: Block[], generate: (prompt: string) => Promise<string>, runtime?: string, isolation: Isolation = "off") {
+export type SummaryReview = "too large" | "too small"
+
+export async function generateSummary(op: Operation, all: Block[], selected: Block[], generate: (prompt: string) => Promise<string>, runtime?: string, isolation: Isolation = "off", onReview?: (reason: SummaryReview) => void) {
   const prompt = summaryPrompt(op, all, runtime, isolation)
   const first = (await generate(prompt)).trim()
   if (!first) throw new Error("Summarizer returned an empty result")
@@ -64,6 +66,7 @@ export async function generateSummary(op: Operation, all: Block[], selected: Blo
   const direction = after > before / 2
     ? "The previous summary was too long by the soft review guide (less than 2x reduction). Try rewriting it with tighter wording and less repetition while preserving useful details."
     : "The previous summary was too short by the soft review guide (more than 20x reduction). Try rewriting it with more useful details from the selected range: concrete facts, constraints, decisions and reasons, relevant findings, exact references, unresolved issues and next steps where present."
+  onReview?.(after > before / 2 ? "too large" : "too small")
   const second = (await generate(`Initial selected range size: ${before} tokens.
 Your complete replacement size: ${after} tokens (including the introduction and summary wrapper).
 Reduction: x${(before / Math.max(1, after)).toFixed(2)} (rounded; local ${basis.encoding} counts).

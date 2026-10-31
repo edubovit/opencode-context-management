@@ -2,6 +2,7 @@ import { Controller, type Draft, type Loaded } from "./controller.ts"
 import type { ModelChoice } from "./model.ts"
 import { resolveRanges } from "./ranges.ts"
 import type { Isolation } from "./compaction.ts"
+import type { SummaryReview } from "./summarize.ts"
 
 export type BatchEntry = {
   ids: string[]; worker: Controller; choice: ModelChoice; status: "pending" | "running" | "ready" | "error"
@@ -9,6 +10,7 @@ export type BatchEntry = {
   attempt: number; started?: number; finished?: number
   progress?: Awaited<ReturnType<Controller["summaryProgress"]>>
   progressUnavailable?: boolean
+  review?: SummaryReview
 }
 
 export class SummaryBatch {
@@ -89,11 +91,17 @@ export class SummaryBatch {
         entry.finished = undefined
         entry.progress = undefined
         entry.progressUnavailable = false
+        entry.review = undefined
+        const attempt = entry.attempt
         onChange()
         try {
           await entry.worker.discard()
           if (this.closed || this.cancelled) throw new Error("Summary cancelled")
-          entry.draft = await entry.worker.summarize(this.mode, entry.ids, entry.choice, this.frozen, this.isolation)
+          entry.draft = await entry.worker.summarize(this.mode, entry.ids, entry.choice, this.frozen, this.isolation, reason => {
+            if (this.closed || this.cancelled || entry.attempt !== attempt || entry.status !== "running") return
+            entry.review = reason
+            onChange()
+          })
           entry.status = "ready"
         } catch (error) {
           entry.status = "error"

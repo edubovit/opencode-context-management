@@ -115,6 +115,37 @@ test("live batch progress counts helper output only and cannot settle or fail ge
   assert.ok(batch.entries[0].finished! >= batch.entries[0].started!)
 })
 
+for (const [first, reason] of [["Short.", "too small"], ["detail ".repeat(20000), "too large"]] as const) test(`batch exposes ${reason} only for the current size review and resets on retry`, async t => {
+  const { host, data, batch, ranges } = await setup(t, 1)
+  const revision = deferred(), retry = deferred()
+  let calls = 0, notified = false
+  host.generate = async () => {
+    if (++calls === 1) return first
+    if (calls === 2) { await revision.promise; throw new Error("Review failed") }
+    await retry.promise
+    return "Complete replacement."
+  }
+  await batch.start("compact", ranges)
+  const pending = batch.generate(() => { if (batch.entries[0]?.review === reason) notified = true })
+  await until(() => calls === 2)
+  assert.equal(batch.entries[0].review, reason)
+  assert.equal(batch.entries[0].status, "running")
+  assert.equal(notified, true)
+  assert.equal(readPolicy(data.session).revision, 0)
+  revision.resolve()
+  await pending
+  assert.equal(batch.entries[0].status, "error")
+  const next = batch.generate()
+  await until(() => calls === 3)
+  assert.equal(batch.entries[0].review, undefined)
+  await batch.cancel()
+  retry.resolve()
+  await next
+  assert.equal(batch.entries[0].review, undefined)
+  assert.equal(batch.ready, false)
+  assert.equal(readPolicy(data.session).revision, 0)
+})
+
 test("progress polling coalesces reads and ignores results after cancellation", async (t) => {
   const { host, data, batch, ranges } = await setup(t, 1)
   let release!: () => void, readRelease!: () => void

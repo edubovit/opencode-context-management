@@ -445,7 +445,8 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
           : progress && (progress.output || progress.reasoning) ? `≈${progress.output.toLocaleString()} output · ≈${progress.reasoning.toLocaleString()} reasoning tokens${progress.requests > 1 ? ` · ${progress.requests} prompts` : ""}`
           : "Waiting for output"
       }
-      return `${rangeLabel(entry.ids, sourceTurns())} · ${entry.status}${elapsed}${detail ? `\n${detail}` : ""}${entry.error ? `\n${entry.error}` : ""}`
+      const review = entry.status === "running" && entry.review ? ` · revising: ${entry.review}` : ""
+      return `${rangeLabel(entry.ids, sourceTurns())} · ${entry.status}${review}${elapsed}${detail ? `\n${detail}` : ""}${entry.error ? `\n${entry.error}` : ""}`
     }).join("\n\n")
   }
   const batchHeading = () => { epoch(); return `Compacting · ${summaries.entries.filter((entry) => entry.status === "ready").length}/${summaries.entries.length} ready` }

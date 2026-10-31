@@ -16,7 +16,7 @@ import { Controller } from "../src/controller.ts"
 import { Storage } from "../src/storage.ts"
 import type { RuntimeCapture } from "../src/storage.ts"
 import { KEY, settings } from "../src/config.ts"
-import { append, emptyPolicy, operation, readPolicy, select, turns } from "../src/context.ts"
+import { append, emptyPolicy, operation, readPolicy, replacementTokens, select, turns } from "../src/context.ts"
 import { fixtureHost, messages, pruneRule } from "./fixtures.ts"
 import { distribution } from "../src/metrics.ts"
 import { compactCount } from "../src/inspector-view.ts"
@@ -803,6 +803,39 @@ for (const width of [80, 60]) test(`batch shows live token estimates even in cha
     assert.equal(readPolicy(view.data.session).revision, 0)
   } finally { release() }
   await view.until(() => view.frame().includes("Summaries applied automatically"))
+})
+
+for (const width of [80, 60]) for (const review of ["too large", "too small"] as const) test(`detailed summary shows ${review} review before applying at ${width} columns`, async (t) => {
+  const gate = deferred<void>()
+  const first = review === "too large" ? "Retained selected detail. ".repeat(2000) : "Selected fact."
+  let requests = 0, writes = 0
+  const view = await setup(t, width, 24, ({ data, host }) => {
+    data.responses = [first, "Revised selected facts."]
+    const generate = host.generate, update = host.update
+    host.generate = async (...args) => {
+      if (++requests === 2) await gate.promise
+      return generate(...args)
+    }
+    host.update = async (...args) => { writes++; await update(...args) }
+  })
+  try {
+    await view.until(() => view.frame().includes("Ready."))
+    const selected = (await view.controller.load()).blocks.slice(0, 1)
+    const op = operation("compact", selected)
+    const after = replacementTokens({ ...op, summary: first }, selected)
+    assert.ok(review === "too large" ? after > op.beforeTokens / 2 : after < op.beforeTokens / 20)
+    await view.type("  ")
+    await view.compact(4)
+    await view.until(() => requests === 2 && view.frame().includes(`running · revising: ${review}`))
+    assert.match(view.frame(), /0\/1 ready/)
+    assert.equal(writes, 0)
+    assert.equal(readPolicy(view.data.session).revision, 0)
+  } finally { gate.resolve() }
+  await view.until(() => view.frame().includes("Summaries applied automatically"))
+  assert.doesNotMatch(view.frame(), /revising:/)
+  assert.equal(requests, 2)
+  assert.equal(writes, 1)
+  assert.equal(readPolicy(view.data.session).operations[0].summary, "Revised selected facts.")
 })
 
 for (const width of [80, 60]) for (const mapping of ["override", "model"] as const) test(`ready drafts use helper ${mapping} token estimates and failed batches apply only after retry at ${width} columns`, async (t) => {
