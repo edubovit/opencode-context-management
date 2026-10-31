@@ -28,6 +28,7 @@ import { validateNativePolicy } from "../src/projection.ts"
 import { deferred } from "./async.ts"
 import { ChildList } from "../src/subagents.tsx"
 import { VERSION } from "../src/config.ts"
+import { tokenBasis, tokenCount } from "../src/tokens.ts"
 
 async function setup(t: { after(fn: () => Promise<void>): void }, width = 140, height = 40, prepare?: (fixture: ReturnType<typeof fixtureHost>) => void, options: unknown = {}, runtime?: RuntimeCapture) {
   const dir = await mkdtemp(path.join(tmpdir(), "cm-tui-"))
@@ -769,33 +770,47 @@ test("reader separators frame scrolling content and keep footer reserved at narr
   assert.equal(readPolicy(data.session).operations.length, 1)
 })
 
-for (const width of [80, 60]) test(`batch shows live helper counts without acceptance boilerplate at ${width} columns`, async (t) => {
+for (const width of [80, 60]) test(`batch shows live token estimates even in character view at ${width} columns`, async (t) => {
   let release!: () => void
   const gate = new Promise<void>((resolve) => { release = resolve })
-  let output = 12
+  let progress = { output: 0, reasoning: 0, requests: 1 }
+  let unavailable = false
   const view = await setup(t, width, 24, ({ host }) => {
     const generate = host.generate
     host.generate = async (...args) => { await gate; return generate(...args) }
-    host.progress = async () => ({ output, reasoning: 34, requests: 1 })
+    host.progress = async () => { if (unavailable) throw new Error("Fixture progress unavailable"); return progress }
   })
   try {
     await view.until(() => view.frame().includes("Ready."))
-    await view.type("  ")
+    await view.type("n  ")
+    await view.until(() => view.frame().includes("Conversation · chars"))
     await view.compact(5)
-    await view.until(() => view.frame().includes("12 output"))
+    await view.until(() => view.frame().includes("Waiting for output"))
+    progress = { output: 12, reasoning: 34, requests: 1 }
+    await view.until(() => view.frame().includes("≈12 output · ≈34 reasoning tokens"))
+    const status = () => (view.screen.renderer.root.findDescendantById("cm-batch-status") as TextRenderable).plainText
     assert.match(view.frame(), /0\/1 ready/)
-    assert.match(view.frame(), /34 reasoning chars/)
     assert.match(view.frame(), /cancel agents/)
+    assert.doesNotMatch(status(), /chars/)
     assert.doesNotMatch(view.frame(), /automatic acceptance|Batch progress|writes already/)
-    output = 123
-    await view.until(() => view.frame().includes("123 output"))
+    progress = { output: 123, reasoning: 56, requests: 2 }
+    await view.until(() => view.frame().includes("≈123 output · ≈56 reasoning tokens · 2 prompts"))
+    assert.doesNotMatch(status(), /chars/)
+    unavailable = true
+    await view.until(() => view.frame().includes("Progress unavailable"))
+    assert.doesNotMatch(status(), /output|reasoning|chars/)
+    assert.match(view.frame(), /cancel agents/)
     assert.equal(readPolicy(view.data.session).revision, 0)
   } finally { release() }
   await view.until(() => view.frame().includes("Summaries applied automatically"))
 })
 
-test("multi-range statistics stay visible and failed batches autoapply only after retry", async (t) => {
-  const { data, controller, frame, until, type, key, compact } = await setup(t, 160, 44, ({ host }) => {
+for (const width of [80, 60]) for (const mapping of ["override", "model"] as const) test(`ready drafts use helper ${mapping} token estimates and failed batches apply only after retry at ${width} columns`, async (t) => {
+  const summary = "こんにちは世界。 Привет мир. Summary preserved."
+  const choice = { providerID: "azure", modelID: "summary" }
+  const { data, host, controller, screen, frame, until, type, key, compact } = await setup(t, width, 30, ({ data, host }) => {
+    data.responses = [summary]
+    host.models = async () => [data.model, { ...data.model, providerID: choice.providerID, id: choice.modelID, modelID: mapping === "override" ? "gpt-4o" : "gpt-4", name: "Summary" }]
     const generate = host.generate
     let failed = false
     host.generate = async (...args) => {
@@ -803,7 +818,7 @@ test("multi-range statistics stay visible and failed batches autoapply only afte
       if (!failed && target?.includes("Question 2")) { failed = true; throw new Error("Fixture range failed") }
       return generate(...args)
     }
-  })
+  }, { summarizer: choice, tokenizer: { overrides: mapping === "override" ? { "azure/summary": "cl100k_base" } : {} } })
   await until(() => frame().includes("Ready."))
   await type("  ")
   key(KeyCodes.ARROW_DOWN)
@@ -815,15 +830,33 @@ test("multi-range statistics stay visible and failed batches autoapply only afte
   await until(() => frame().includes("Selected (2)"))
   assert.ok(frame().includes(`≈${compactCount(distribution(blocks).total)} tokens`))
   assert.ok(frame().includes(`≈${compactCount(distribution([blocks[0], blocks[2]]).total)} tokens`))
+  const loaded = await controller.load()
+  const helper = (await host.models()).find(model => model.providerID === choice.providerID && model.id === choice.modelID)
+  const basis = tokenBasis(choice, helper, controller.config.tokenizer)
+  const expected = tokenCount(summary, basis.encoding, basis.library)
+  const parent = tokenCount(summary, loaded.tokenizer.encoding, loaded.tokenizer.library)
+  assert.equal(basis.source, mapping === "override" ? "configured override" : "model-name mapping")
+  assert.notEqual(expected, parent)
+  await type("n")
+  await until(() => frame().includes("Conversation · chars"))
   await compact(5)
   await until(() => frame().includes("Fixture range failed") && frame().includes("Batch incomplete"))
+  assert.match(frame(), /1\/2 ready/)
+  assert.ok(frame().includes(`≈${expected.toLocaleString()} tokens`))
+  const status = () => (screen.renderer.root.findDescendantById("cm-batch-status") as TextRenderable).plainText
+  assert.ok(status().includes(`\n≈${expected.toLocaleString()} tokens`))
+  assert.ok(!status().includes(`≈${parent.toLocaleString()} tokens`))
+  assert.doesNotMatch(status(), /chars/)
+  assert.match(frame(), /retry failed/)
   assert.equal(readPolicy(data.session).operations.length, 0)
-  assert.ok(!frame().includes("APPLIED_ONLY"))
+  assert.ok(!frame().includes(summary))
   await type("g")
   await until(() => frame().includes("Summaries applied automatically"))
   assert.equal(readPolicy(data.session).operations.length, 2)
   assert.equal(data.jobs, 3)
   assert.equal(data.removed.length, 3)
+  assert.deepEqual(data.calls[0].choice, { ...choice, variant: undefined })
+  assert.deepEqual(readPolicy(data.session).operations[0].tokenizer, loaded.tokenizer)
   assert.deepEqual((await controller.load()).blocks[1].messages, data.messages.slice(2, 4))
 })
 

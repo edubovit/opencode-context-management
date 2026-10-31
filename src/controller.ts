@@ -21,6 +21,7 @@ export type RestorePlan = Expected & { operations: Operation[] }
 
 export class Controller {
   private job?: string
+  private jobTokenizer?: TokenBasis
   private cleanup?: Promise<void>
   private cancelled = false
   private working = false
@@ -182,8 +183,8 @@ export class Controller {
 
   async summaryProgress() {
     const job = this.job
-    if (!job) return undefined
-    const progress = this.host.progress ? await this.host.progress(job) : summaryProgress(await this.host.messages(job))
+    if (!job || !this.jobTokenizer) return undefined
+    const progress = this.host.progress ? await this.host.progress(job) : summaryProgress(await this.host.messages(job), this.jobTokenizer)
     if (this.job !== job) return undefined
     return progress
   }
@@ -242,6 +243,7 @@ export class Controller {
         throw new Error(`Automatic summary conversation may not fit summarizer: estimated ${estimate} input tokens, input limit ${limit || "unknown"}.`)
     }
     if (this.cancelled) throw new Error("Summary cancelled")
+    this.jobTokenizer = tokenBasis(choice, model, this.config.tokenizer)
     this.job ??= await this.host.createJob(this.purpose, this.sessionID, this.trigger)
     if (this.cancelled) throw new Error("Summary cancelled")
     const summary = (await this.host.generate(this.job, choice, text, this.purpose)).trim()

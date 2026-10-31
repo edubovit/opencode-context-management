@@ -16,12 +16,14 @@ import { Message } from "@opencode/ai"
 import { AUTO_KEY } from "../src/auto-state.ts"
 import { pruneRule } from "./fixtures.ts"
 import { Autocompaction } from "../src/autocompaction.ts"
+import { tokenCount } from "../src/tokens.ts"
 
 const call = { signal: new AbortController().signal, error: (...args: unknown[]) => { throw new Error(String(args[1])) } }
 
-async function setup(t: { after(run: () => Promise<void>): void }) {
+async function setup(t: { after(run: () => Promise<void>): void }, configure?: (mock: ReturnType<typeof mockContext>) => void) {
   const dir = await mkdtemp(path.join(tmpdir(), "cm-native-server-"))
   const mock = mockContext()
+  configure?.(mock)
   const store = new Storage("/fixture", dir)
   const close = await setupServer(mock.context, store)
   t.after(async () => { await close(); await rm(dir, { recursive: true, force: true }) })
@@ -271,8 +273,52 @@ test("manual RPC generation leaves oversized input to the provider for summaries
     assert.equal(await mock.rpc.generate({ sessionID: "ses_native", jobID: id, model: { providerID: "fixture", modelID: "model" }, text, purpose }, call), "Answer only")
     assert.equal(mock.state.prompts.at(-1), text)
     const progress = await mock.rpc.jobProgress({ sessionID: "ses_native", jobID: id }, call)
-    assert.deepEqual(progress, { output: 11, reasoning: 14, requests: 1 })
+    assert.deepEqual(progress, { output: tokenCount("Answer only"), reasoning: tokenCount("not the answer"), requests: 1 })
   }
+})
+
+test("progress RPC counts streamed parts with the helper override and reconciles persisted output", async t => {
+  type Event = ReturnType<ReturnType<typeof mockContext>["context"]["event"]["subscribe"]> extends AsyncIterable<infer E> ? E : never
+  const queue: { event: Event; done(): void }[] = []
+  let wake = () => {}
+  const emit = (event: Event) => new Promise<void>(done => { queue.push({ event, done }); wake() })
+  const mock = await setup(t, mock => {
+    Object.assign(mock.context, { options: { tokenizer: { overrides: { "fixture/helper": "cl100k_base" } } } })
+    const list = mock.context.model.list
+    mock.context.model.list = async () => { const result = await list(); return { ...result, data: [...result.data, { ...result.data[0], id: "helper" }] } }
+    const subscribe = async function* (options: Parameters<typeof mock.context.event.subscribe>[0]) {
+      const signal = options?.signal
+      if (!signal) throw new Error("Missing fixture subscription signal")
+      const abort = () => wake()
+      signal.addEventListener("abort", abort, { once: true })
+      try {
+        while (!signal.aborted) {
+          if (!queue.length) await new Promise<void>(resolve => { wake = resolve })
+          while (queue.length) { const item = queue.shift()!; yield item.event; item.done() }
+        }
+      } finally { signal.removeEventListener("abort", abort) }
+    }
+    Object.assign(mock.context.event, { subscribe })
+  })
+  const id = await mock.rpc.createJob({ sessionID: "ses_native", purpose: "summary" }, call)
+  if (typeof id !== "string") throw new Error("Missing helper")
+  const input = { sessionID: "ses_native", jobID: id }
+  mock.context.session.wait = async ({ sessionID }) => {
+    if (sessionID !== id) return
+    const history = mock.messages.get(id)!
+    const reply = history.pop()!
+    const event = (type: "session.text.delta" | "session.text.ended", text: string) => ({ type, data: { sessionID: id, assistantMessageID: reply.id, ordinal: 0, ...(type === "session.text.delta" ? { delta: text } : { text }) } }) as Event
+    await emit(event("session.text.delta", "hel"))
+    await emit(event("session.text.delta", "lo 世界😀"))
+    assert.deepEqual(await mock.rpc.jobProgress(input, call), { output: tokenCount("hello 世界😀", "cl100k_base"), reasoning: 0, requests: 1 })
+    await emit(event("session.text.ended", "short"))
+    assert.deepEqual(await mock.rpc.jobProgress(input, call), { output: 1, reasoning: 0, requests: 1 })
+    history.push(reply)
+  }
+  assert.equal(await mock.rpc.generate({ ...input, model: { providerID: "fixture", modelID: "helper" }, text: "Input is excluded", purpose: "summary" }, call), "Answer only")
+  assert.deepEqual(await mock.rpc.jobProgress(input, call), { output: tokenCount("Answer only", "cl100k_base"), reasoning: tokenCount("not the answer", "cl100k_base"), requests: 1 })
+  await mock.rpc.removeJob(input, call)
+  await assert.rejects(mock.rpc.jobProgress(input, call), /does not belong/)
 })
 
 test("only live owned manual helpers bypass the hook budget, regardless of parent strategy", async (t) => {

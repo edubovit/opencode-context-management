@@ -3,7 +3,7 @@ import { AGENT, EDIT_AGENT, KEY, VERSION, settings } from "./config.ts"
 import { blockMessages, hash, historyHash, activeMessages, project, readPolicy } from "./context.ts"
 import { Controller } from "./controller.ts"
 import { Storage, type RuntimeCapture } from "./storage.ts"
-import { chars, spills, spillPreview } from "./text.ts"
+import { spills, spillPreview } from "./text.ts"
 import { SUMMARIZER_SYSTEM, SUMMARY_EDIT_SYSTEM } from "./summarize.ts"
 import { Autocompaction } from "./autocompaction.ts"
 import { ContextManager, errorMessage } from "./rpc.ts"
@@ -11,10 +11,10 @@ import { pluginHost, type PluginContext } from "./host.ts"
 import { modelView, sessionView, transcriptView } from "./normalize.ts"
 import { protectedMessages } from "./history.ts"
 import { projectRequest } from "./projection.ts"
-import { tokenBasis } from "./tokens.ts"
+import { FALLBACK_BASIS, tokenBasis, type TokenBasis } from "./tokens.ts"
 import { budgetScope, budgetUnits, estimateBudget, prepareBudget, recordRequest } from "./budget.ts"
 import { inputBudget } from "./auto-state.ts"
-import { summaryProgress } from "./summary-progress.ts"
+import { summaryProgress, updateProgress, type ProgressParts } from "./summary-progress.ts"
 
 export async function setupServer(ctx: PluginContext, store = new Storage(ctx.location.directory)) {
   const config = settings(ctx.options)
@@ -23,7 +23,7 @@ export async function setupServer(ctx: PluginContext, store = new Storage(ctx.lo
   const auto = new Autocompaction(host, config, store)
   let closed = false
   const budgetWrites = new Set<Promise<unknown>>()
-  const progress = new Map<string, { output: number; reasoning: number }>()
+  const progress = new Map<string, { owner: string; tokenizer: TokenBasis; parts: ProgressParts }>()
   const saveBudget = async (id: string, state: Parameters<Storage["saveBudget"]>[1]) => {
     if (closed) throw new Error("Context manager unloaded before budget accounting completed")
     const write = store.saveBudget(id, state)
@@ -107,15 +107,17 @@ export async function setupServer(ctx: PluginContext, store = new Storage(ctx.lo
       call.signal.throwIfAborted()
       const id = await host.createJob(purpose, sessionID, "manual")
       if (call.signal.aborted || closed) { await host.remove(id); throw new Error("Helper creation cancelled") }
-      progress.set(id, { output: 0, reasoning: 0 })
+      progress.set(id, { owner: sessionID, tokenizer: FALLBACK_BASIS, parts: new Map() })
       return id
     }),
     jobHistory: ({ sessionID, jobID }, call) => attempt((message) => call.error("rejected", message, null), async () => { await ownJob(sessionID, jobID); return host.messages(jobID) }),
     jobProgress: ({ sessionID, jobID }, call) => attempt((message) => call.error("rejected", message, null), async () => {
       await ownJob(sessionID, jobID)
-      const saved = summaryProgress(await host.messages(jobID))
-      const live = progress.get(jobID)
-      return { ...saved, output: Math.max(saved.output, live?.output ?? 0), reasoning: Math.max(saved.reasoning, live?.reasoning ?? 0) }
+      const [messages, models] = await Promise.all([host.messages(jobID), host.models()])
+      return summaryProgress(messages, message => {
+        const choice = message.info.role === "assistant" ? { providerID: message.info.providerID, modelID: message.info.modelID } : message.info.model
+        return tokenBasis(choice, models.find(model => model.id === choice.modelID && model.providerID === choice.providerID), config.tokenizer)
+      }, progress.get(jobID)?.parts)
     }),
     generate: ({ sessionID, jobID, model, text, purpose }, call) => attempt((message) => call.error("rejected", message, null), async () => {
       await ownJob(sessionID, jobID)
@@ -123,6 +125,8 @@ export async function setupServer(ctx: PluginContext, store = new Storage(ctx.lo
       const selected = (await host.models()).find((entry) => entry.providerID === model.providerID && entry.id === model.modelID)
       if (!selected) throw new Error("Summary model is unavailable")
       call.signal.throwIfAborted()
+      const live = progress.get(jobID)
+      if (live) live.tokenizer = tokenBasis(model, selected, config.tokenizer)
       const abort = () => { void host.abort(jobID).catch(() => {}) }
       call.signal.addEventListener("abort", abort, { once: true })
       try { return await host.generate(jobID, model, text, purpose) }
@@ -242,9 +246,10 @@ export async function setupServer(ctx: PluginContext, store = new Storage(ctx.lo
   await store.cleanupOutputs()
   const listening = (async () => {
     for await (const event of ctx.event.subscribe({ signal: stop.signal })) {
-      if (event.type === "session.text.delta" || event.type === "session.reasoning.delta") {
+      if (event.type === "session.text.delta" || event.type === "session.reasoning.delta" || event.type === "session.text.ended" || event.type === "session.reasoning.ended") {
         const live = progress.get(event.data.sessionID)
-        if (live) live[event.type === "session.text.delta" ? "output" : "reasoning"] += chars(event.data.delta)
+        if (live) updateProgress(live.parts, event.data.assistantMessageID, event.type.startsWith("session.text.") ? "text" : "reasoning",
+          event.data.ordinal, "delta" in event.data ? event.data.delta : event.data.text, live.tokenizer, "text" in event.data)
       }
       if (event.type === "session.forked" && event.location?.directory === ctx.location.directory)
         void adapter.nativeSession(event.data.sessionID).catch((error: unknown) => { if (!closed) console.error("Context manager fork initialization:", errorMessage(error)) })
@@ -252,7 +257,11 @@ export async function setupServer(ctx: PluginContext, store = new Storage(ctx.lo
         void adapter.nativeSession(event.data.sessionID).catch((error: unknown) => { if (!closed) console.error("Context manager revert reconciliation:", errorMessage(error)) })
       if (event.type === "session.execution.interrupted" || event.type === "session.execution.failed" || event.type === "session.execution.succeeded") auto.cancel(event.data.sessionID)
       if (event.type === "session.moved") { auto.cancel(event.data.sessionID); await adapter.moved(event.data.sessionID).catch((error: unknown) => console.error("Context manager moved-session helper cleanup:", errorMessage(error))) }
-      if (event.type === "session.deleted") { auto.cancel(event.data.sessionID); adapter.deleted(event.data.sessionID); progress.delete(event.data.sessionID) }
+      if (event.type === "session.deleted") {
+        auto.cancel(event.data.sessionID)
+        adapter.deleted(event.data.sessionID)
+        for (const [id, live] of progress) if (id === event.data.sessionID || live.owner === event.data.sessionID) progress.delete(id)
+      }
     }
   })().catch((error: unknown) => { if (!stop.signal.aborted) { closed = true; auto.close(); console.error("Context manager event stream stopped; reload required:", errorMessage(error)) } })
   return async () => {

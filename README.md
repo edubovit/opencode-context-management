@@ -77,10 +77,10 @@ The batch screen shows:
 
 - Ready ranges out of the total.
 - Each agent's status and elapsed time.
-- Observed output and reasoning character counts while running.
-- The accepted draft's character count when ready.
+- Estimated output and reasoning token counts while running.
+- The accepted draft's estimated token count when ready.
 
-Live counts cover the helper conversation, including size-review prompts, but exclude input text. They are not tokens, billing, completion percentages or ETAs. Providers can buffer output or omit reasoning. Missing updates do not prove an agent is stuck; a progress-read failure does not stop generation or authorize applying a draft.
+Counts marked **≈** use the helper model's local tokenizer mapping or configured fallback, not provider billing totals. Live counts cover generated output across the helper conversation, including size reviews, but exclude input text. Ready counts measure only the accepted draft. Stream fragments are joined before counting; estimates can adjust as text arrives. These counters stay in tokens even when local context totals are switched to characters. They are not completion percentages or ETAs. Providers can buffer output or omit reasoning. Missing updates do not prove an agent is stuck; a progress-read failure does not stop generation or authorize applying a draft.
 
 Helpers have no tools. Empty, failed, cancelled or incomplete output is rejected. If any assistant response to a helper prompt hits its output limit, a later successful continuation does not make it acceptable: the plugin neither assembles truncated chunks nor accepts only the continuation tail. An additional user or synthetic input before result extraction also rejects the result, including follow-ups admitted by an idle hook.
 

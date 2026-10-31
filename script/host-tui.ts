@@ -3,6 +3,7 @@ import path from "node:path"
 import { terminal } from "./terminal.ts"
 import type { fixture } from "./host-fixture.ts"
 import type { Controller } from "../src/controller.ts"
+import { tokenCount } from "../src/tokens.ts"
 
 export async function verifyInspector(test: Awaited<ReturnType<typeof fixture>>, controller: Controller, executable: string) {
   const output = path.join(test.root, "inspector-tui.log")
@@ -52,10 +53,12 @@ export async function verifyInspector(test: Awaited<ReturnType<typeof fixture>>,
     for (let n = 0; n < 4; n++) await keys("\x1b[B")
     await keys(" ")
     const pause = new Promise<void>((resolve) => { releaseProgress = resolve })
-    test.respond((wire) => JSON.stringify(wire.messages).includes("<selected_range_") ? { text: "LIVE_SUMMARY_OUTPUT", finish: "stop", pause } : undefined)
+    const text = "LIVE_SUMMARY_OUTPUT"
+    test.respond((wire) => JSON.stringify(wire.messages).includes("<selected_range_") ? { text, finish: "stop", pause } : undefined)
     await keys("\r")
     await seen("0/1 ready")
-    await seen("19 output")
+    await seen(`≈${tokenCount(text, "o200k_base").toLocaleString()} output · ≈0 reasoning tokens`)
+    assert.ok(!(await child.text()).includes("reasoning chars"))
     assert.ok(!(await child.text()).includes("automatic acceptance"))
     assert.equal((await controller.load()).policy.revision, revision)
     releaseProgress!()

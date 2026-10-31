@@ -5,6 +5,7 @@ import { readPolicy, turns } from "../src/context.ts"
 import { messages } from "./fixtures.ts"
 import { setupController } from "./controller-fixture.ts"
 import { deferred } from "./async.ts"
+import { tokenCount } from "../src/tokens.ts"
 
 async function setup(t: { after(fn: () => Promise<void>): void }, count = 5) {
   const { host, data, storage, controller } = await setupController(t, count)
@@ -76,12 +77,16 @@ test("five disjoint ranges generate concurrently from the same full frozen conte
 })
 
 test("live batch progress counts helper output only and cannot settle or fail generation", async (t) => {
-  const { host, data, batch, ranges } = await setup(t, 1)
+  const { host, data, controller, batch, ranges } = await setup(t, 1)
+  const helper = { ...data.model, id: "helper" }
+  host.models = async () => [data.model, helper]
+  controller.config.tokenizer.overrides["test/helper"] = "cl100k_base"
   let release!: () => void
   const gate = new Promise<void>((resolve) => { release = resolve })
   const generate = host.generate
   host.generate = async (...args) => { await gate; return generate(...args) }
-  await batch.start("brief", ranges)
+  await batch.start("brief", ranges, { providerID: "test", modelID: "helper" })
+  assert.equal(batch.snapshot!.tokenizer.encoding, "o200k_base")
   const pending = batch.generate()
   await until(() => data.jobs === 1)
   try {
@@ -93,7 +98,7 @@ test("live batch progress counts helper output only and cannot settle or fail ge
     ]
     data.conversations.set("job_1", history)
     await batch.pollProgress()
-    assert.deepEqual(batch.entries[0].progress, { output: 2, reasoning: 5, requests: 1 })
+    assert.deepEqual(batch.entries[0].progress, { output: tokenCount("a😀", "cl100k_base"), reasoning: tokenCount("think", "cl100k_base"), requests: 1 })
     assert.equal(batch.entries[0].status, "running")
     assert.equal(batch.ready, false)
     const read = host.messages

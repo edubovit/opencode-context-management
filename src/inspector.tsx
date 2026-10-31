@@ -18,10 +18,10 @@ import { COMPACTION_MODES, selectedModes, toggleMode, type Compaction, type Isol
 import { rangePreview, rangeToolStats } from "./range-rows.ts"
 import { helpText, Hotkeys, type HotkeyLine } from "./tui-help.tsx"
 import { anchorRanges, pressSpace, rangeIDs, rangeTag, selectedBlocks, visibleRanges, type Selection } from "./ranges.ts"
-import { bindPruneRule, chars } from "./text.ts"
+import { bindPruneRule } from "./text.ts"
 import { distribution } from "./metrics.ts"
 import { rangeLabel, toolStatus, turnIndex } from "./status.ts"
-import { FALLBACK_BASIS, tokenLabel } from "./tokens.ts"
+import { FALLBACK_BASIS, tokenBasis, tokenCount, tokenLabel } from "./tokens.ts"
 import { STRATEGIES, type AutoState } from "./auto-state.ts"
 
 const views = ["overview", "details", "content", "runtime"] as const
@@ -434,11 +434,17 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
       const seconds = entry.started === undefined ? undefined : Math.floor(((entry.finished ?? Date.now()) - entry.started) / 1000)
       const elapsed = seconds === undefined ? "" : ` · ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`
       const progress = entry.progress
-      const detail = entry.status === "ready" ? `${chars(entry.draft!.operation.summary!).toLocaleString()} chars`
-        : entry.status !== "running" ? ""
-        : entry.progressUnavailable ? "Progress unavailable"
-        : progress && (progress.output || progress.reasoning) ? `${progress.output.toLocaleString()} output · ${progress.reasoning.toLocaleString()} reasoning chars${progress.requests > 1 ? ` · ${progress.requests} prompts` : ""}`
-        : "Waiting for output"
+      let detail = ""
+      if (entry.status === "ready") {
+        const draft = entry.draft!
+        const model = summaries.snapshot!.models.find(model => model.providerID === draft.model.providerID && model.id === draft.model.modelID)
+        const basis = tokenBasis(draft.model, model, props.controller.config.tokenizer)
+        detail = `≈${tokenCount(draft.operation.summary!, basis.encoding, basis.library).toLocaleString()} tokens`
+      } else if (entry.status === "running") {
+        detail = entry.progressUnavailable ? "Progress unavailable"
+          : progress && (progress.output || progress.reasoning) ? `≈${progress.output.toLocaleString()} output · ≈${progress.reasoning.toLocaleString()} reasoning tokens${progress.requests > 1 ? ` · ${progress.requests} prompts` : ""}`
+          : "Waiting for output"
+      }
       return `${rangeLabel(entry.ids, sourceTurns())} · ${entry.status}${elapsed}${detail ? `\n${detail}` : ""}${entry.error ? `\n${entry.error}` : ""}`
     }).join("\n\n")
   }
@@ -468,7 +474,7 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
                   </Show>
                 }>
                    <text height={1} fg={api.theme.text.base}>{batchHeading()}</text>
-                  <scrollbox flexGrow={1} minHeight={0} focused={!busy() && !picker()}><text>{batchStatus()}</text></scrollbox>
+                  <scrollbox flexGrow={1} minHeight={0} focused={!busy() && !picker()}><text id="cm-batch-status">{batchStatus()}</text></scrollbox>
                 </Show>
             </box>
             </Show>

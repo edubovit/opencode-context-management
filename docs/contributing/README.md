@@ -235,9 +235,11 @@ Reconstruction changes the ledger `epoch`, invalidates incompatible usage and ex
 
 ### Live progress
 
-Use public `session.text.delta` and `session.reasoning.delta` events for owned helper counters: `session.context` is not a reliable source of in-flight text. Return numeric counters through ownership-checked RPC, not full prompts or reasoning text. History supplies a fallback; take the maximum of saved/live totals rather than adding overlapping counts.
+Use public text/reasoning delta and end events for owned helper progress: `session.context` is not a reliable source of in-flight text. Buffer by assistant message, content type and type-relative ordinal; text ordinal zero and reasoning ordinal zero are different parts. Append deltas, replace with authoritative end text, and reconcile each part with persisted history before tokenizing. Persisted populated parts or completed empty parts take precedence; empty in-progress placeholders do not erase streamed output. Do not add overlapping saved/live totals, sum per-delta tokens or retain a token-count high-water mark: BPE joins can lower the count.
 
-The inspector polls once per second while showing a batch, coalesces slow reads, ignores cancelled/late results and clears its timer on disposal. Server counters are removed with helpers/unload. These are observed character counts, not billing, ETA, acceptance or Resume authority. Missing ephemeral events and buffered provider output are uncertainty, not failure.
+Return numeric local token estimates through ownership-checked RPC, never full streamed output/reasoning. Use the helper model's tokenizer mapping/override/fallback, not the parent's saved-operation basis. Live parts retain their generating tokenizer; persisted parts resolve their own model. Ready rows count the accepted draft only. Buffers remain in memory and are deleted with their owned helper or plugin generation. These display counters do not change fingerprints, request budgets or summary acceptance.
+
+The inspector polls once per second while showing a batch, coalesces slow reads, ignores cancelled/late results and clears its timer on disposal. Counts are approximate tokenizer estimates, not billing, ETA, acceptance or Resume authority. Missing ephemeral events and buffered provider output are uncertainty, not failure. End events and persisted history supply complete text when available.
 
 Unsubscribing suspension events also revokes pending asynchronous navigation. A late state read must not reopen a disposed inspector or issue a toast after plugin unload.
 
