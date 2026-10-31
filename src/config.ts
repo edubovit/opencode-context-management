@@ -1,7 +1,7 @@
 import { z } from "zod"
 import { ENCODINGS } from "./tokens.ts"
 
-export const VERSION = "4.6.3"
+export const VERSION = "4.7.0"
 export const KEY = "opencode_context_manager"
 export const AGENT = "context-manager-summarizer"
 export const EDIT_AGENT = "context-manager-editor"
@@ -13,6 +13,7 @@ const schema = z.strictObject({
     headroom: integer(0).default(20000),
     estimateMultiplier: z.number().min(1).default(1.3),
     lastResortKeepTokens: integer(0).default(20000),
+    minRangeTokens: integer(0).default(10000),
   }).prefault({}),
   ui: z.strictObject({ maxLinesPerTurn: integer(3).default(4) }).prefault({}),
   spill: z.strictObject({

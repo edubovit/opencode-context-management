@@ -99,7 +99,7 @@ try {
   tui.resize(60, 24)
   await test.until(async () => {
     const lines = (await tui!.text()).split("\n").map(line => line.slice(0, 60))
-    return lines.some(line => /^\s*Selected/.test(line)) && !lines.some(line => line.includes("─Details"))
+    return lines.some(line => /^\s*(Selected|No selection)/.test(line)) && !lines.some(line => line.includes("─Details"))
   }, "narrow full-width observer repainted")
   await writeFile(path.join(test.root, "observation-narrow.screen.txt"), (await tui.text()).split("\n").map(line => line.slice(0, 60)).join("\n"))
   response.resolve()

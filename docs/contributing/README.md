@@ -66,6 +66,7 @@ Pass the actual OpenCode executable; on Windows use `opencode.exe`, not an npm `
 npm run test:host -- /absolute/path/to/opencode --tui
 npm run test:usage -- /absolute/path/to/opencode
 npm run test:subagents -- /absolute/path/to/opencode
+node --import tsx script/auto-range-smoke.ts /absolute/path/to/opencode
 npm run test:revert -- /absolute/path/to/opencode --tui
 node --import tsx script/fork-smoke.ts /absolute/path/to/opencode --tui
 node --import tsx script/continuation-smoke.ts /absolute/path/to/opencode
@@ -78,6 +79,7 @@ node --import tsx script/helper-idle-smoke.ts /absolute/path/to/opencode
 | `host-smoke.ts` | Production RPC/hooks, pruning/restoration, deletion, summaries/edits, helper completion, live progress, request guards, cancellation, movement, reload and restart. `--tui` adds the actual inspector. |
 | `usage-smoke.ts` | Deliberately mismatched provider/local usage, cached/reasoning normalization, model/route invalidation, held requests, manual/automatic helper limits, media and cache persistence. |
 | `subagent-smoke.ts` | Foreground/background/nested children, independent ledgers, automatic recovery, retained tails, queued/steered inputs, Stop and restart. |
+| `auto-range-smoke.ts` | Provider-anchored AUTO_PER_TURN grouping with exact source-token sizes, strict boundary, undersized prefix fallback, zero setting, protected held-request resume and next-wire source preservation. |
 | `continuation-smoke.ts` | Two paused background children, pruning after primary idle, repeated automatic continuation, untouched new results, stale restoration refusal and restoration after restart. |
 | `observation-smoke.ts` | Read-only child/nested-child discovery, paused AUTO observation, real terminal navigation, disabled mutation controls, automatic refresh through compaction/running/idle, unchanged metadata/history and no observer model requests. |
 | `helper-idle-smoke.ts` | An actual idle hook admits unrelated synthetic input into owned summary/edit helpers; extraction rejects that combined execution, a fresh prompt succeeds, and parent state stays unchanged. |
@@ -256,7 +258,8 @@ Test with a synthetic SSE response paused after a content delta but before finis
 - Unpaired reconstruction is explicitly uncertain; local fallback is visibly labeled. Fork/revert histories must measure their own requests. Do not copy parent caches or use rebuilt operation order as historical wire evidence.
 - Count typed tool media separately from text; do not count binary base64/URLs as prose. Preserve full payload identity. Text/JSON/error serialization remains counted as text. Use valid media fixtures and compare wire media with native content.
 - Protect the full active execution span, including queued/steered input. Only the live AUTO owner may create a last-resort checkpoint within it, after verifying the unchanged exempt tail.
-- AUTO_PER_TURN tries earlier USER turns, then the prefix; AUTO_SESSION tries the prefix. Children map MANUAL to AUTO_PER_TURN. Top-level MANUAL requires explicit cleanup/resume.
+- AUTO_PER_TURN scans before the earliest protected block for the oldest contiguous unattempted ordinary range whose effective `contentTokens` strictly exceed `autocompaction.minRangeTokens` (default10000). Use the consuming request's pinned basis, not helper encoding, raw/pre-pruning sizes, runtime context, provider reports or media allowances. Start only where `summaryStart` permits; continuation blocks may extend a valid range but cannot start one. Summaries/deletions/attempted blocks are barriers, not entries to filter out and stitch around. Mark every chosen member attempted, including after a nonreducing candidate; never mark an unsubmitted undersized run attempted.
+- If no qualifying ordinary range remains, AUTO_PER_TURN retains one earlier-prefix fallback, including an undersized prefix; then bounded last resort if needed. AUTO_SESSION still tries the prefix directly. The minimum is not a fit target, guaranteed saving or hysteresis: resume immediately once the existing forecast fits. Children map MANUAL to AUTO_PER_TURN. Top-level MANUAL requires explicit cleanup/resume.
 - Last resort retains whole messages/tool pairs/summaries around the configured tail and uses prefix-only chunk/merge helpers bounded to four rounds/64 requests. Apply only a complete fitting candidate; otherwise end AUTO without manual fallback or oversized dispatch.
 - Refuse oversized synthetic-only context with no USER turn. Deliver queued inputs exactly once.
 - Idle observations are evidence, not an admission lock. Recheck before acquiring a pause. Only the in-memory owner can resume; saved notices cannot revive waits.

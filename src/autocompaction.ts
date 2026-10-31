@@ -4,8 +4,8 @@ import type { Host } from "./host-contract.ts"
 import type { ModelChoice, Session } from "./model.ts"
 import { AUTO_KEY, STRATEGIES, inputBudget, strategy, type AutoCommand, type AutoControl, type AutoState, type Expected, type Pause } from "./auto-state.ts"
 import { AGENT, EDIT_AGENT, KEY, type Settings } from "./config.ts"
-import { append, blockMessages, hash, historyHash, activeMessages, operation, project, readPolicy, type Envelope, type Policy } from "./context.ts"
-import { distribution } from "./metrics.ts"
+import { append, blockMessages, hash, historyHash, activeMessages, operation, project, readPolicy, summaryStart, type Block, type Envelope, type Policy } from "./context.ts"
+import { contentTokens, distribution } from "./metrics.ts"
 import { tokenBasis, type TokenBasis } from "./tokens.ts"
 import { bindPruneRule } from "./text.ts"
 import { Storage } from "./storage.ts"
@@ -165,12 +165,12 @@ export class Autocompaction implements AutoControl {
       const stop = loaded.blocks.findIndex((block) => block.sourceIDs.includes(gate.pause.userID))
       if (stop < 0) throw new Error("Protected active turn is no longer present; abort this run")
       const earlier = loaded.blocks.slice(0, stop)
-      const next = mode === "AUTO_PER_TURN" ? earlier.find((block) => block.kind === "turn" && !attempted.has(block.sourceIDs[0])) : undefined
-      if (next) attempted.add(next.sourceIDs[0])
+      const next = mode === "AUTO_PER_TURN" ? perTurnRange(earlier, attempted, this.config.autocompaction.minRangeTokens, gate.basis) : undefined
+      if (next) for (const block of next) attempted.add(block.sourceIDs[0])
       else if (wholeAttempted || !earlier.length) break
       else wholeAttempted = true
-      const selected = next ? [next] : earlier
-      gate.pause.message = next ? `Compacting earlier USER turn (${attempted.size} attempted).` : "Compacting the whole earlier prefix (one fallback pass)."
+      const selected = next ?? earlier
+      gate.pause.message = next ? `Compacting ${next.length} earlier USER turn${next.length === 1 ? "" : "s"} (${attempted.size} attempted).` : "Compacting the whole earlier prefix (one fallback pass)."
       await this.publish(gate)
       const worker = this.controller(gate)
       gate.worker = worker
@@ -305,6 +305,22 @@ export class Autocompaction implements AutoControl {
     gate.reject(new Error("Suspended session stopped"))
   }
   close() { for (const id of this.gates.keys()) this.cancel(id) }
+}
+
+export function perTurnRange(earlier: Block[], attempted: ReadonlySet<string>, minimum: number, basis: TokenBasis): Block[] | undefined {
+  let selected: Block[] = []
+  let tokens = 0
+  for (const block of earlier) {
+    if (block.kind !== "turn" || attempted.has(block.sourceIDs[0])) {
+      selected = []
+      tokens = 0
+      continue
+    }
+    if (!selected.length && !summaryStart(block.messages)) continue
+    selected.push(block)
+    tokens += contentTokens(block.messages, basis)
+    if (tokens > minimum) return selected
+  }
 }
 
 function protectedBlocks(loaded: Pick<Loaded, "blocks">, pause: Pause) {

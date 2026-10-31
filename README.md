@@ -149,9 +149,11 @@ The plugin checks every main model request, including tool continuations. When t
 
 | Strategy | Behavior |
 | --- | --- |
-| AUTO_PER_TURN — default | Summarize earlier USER turns oldest first, then try the earlier prefix once. |
+| AUTO_PER_TURN — default | Group earlier eligible turns oldest first until a contiguous range exceeds `minRangeTokens`, then try the earlier prefix once if necessary. |
 | AUTO_SESSION | Try the earlier prefix once. |
 | MANUAL | Pause for cleanup; explicitly resume only when the estimate fits. Top-level sessions only. |
+
+AUTO_PER_TURN uses current effective source-content tokens, measured with the main model's tokenizer. With the default **10,000**, turns of 4,000, 5,000, 2,000, 6,000 and 7,000 tokens select **turns 1–3** for one summary. Equality is not enough: a 10,000-token range includes the next eligible turn if available. Existing summaries, deleted ranges and already-attempted turns separate ordinary ranges. If no contiguous eligible range exceeds the minimum, the existing earlier-prefix fallback still runs once, even when that prefix is smaller. The setting is not a required saving, a new request threshold or a lower post-cleanup target. AUTO rechecks the request budget after each applied summary and resumes as soon as it fits.
 
 Normal cleanup protects the whole active execution turn, including steered inputs. If ordinary AUTO attempts cannot make the request fit, **last resort** summarizes the largest safe prefix before the retained tail, even within an unfinished turn. It preserves whole messages/tool pairs, existing summaries, live system instructions and tool definitions.
 
@@ -199,7 +201,8 @@ This includes every configurable parameter. Numeric values and fallback encoding
         "autocompaction": {
           "headroom": 20000,
           "estimateMultiplier": 1.3,
-          "lastResortKeepTokens": 20000
+          "lastResortKeepTokens": 20000,
+          "minRangeTokens": 10000
         },
         "spill": { "maxLines": 2000, "maxBytes": 51200, "headShare": 0.5 },
         "prune": { "threshold": 3000, "head": 1000, "tail": 500 },
@@ -226,6 +229,7 @@ This includes every configurable parameter. Numeric values and fallback encoding
 | `autocompaction.headroom` | `20000` | Integer ≥ 0, in estimated input tokens; must be smaller than input capacity. Larger values start cleanup earlier. |
 | `autocompaction.estimateMultiplier` | `1.3` | Finite number ≥ 1. Conservative fallback/growth multiplier for main guards and automatic helpers, not a manual-summary veto. |
 | `autocompaction.lastResortKeepTokens` | `20000` | Integer ≥ 0. Newest local tokens retained during emergency cleanup. Whole-message/tool-pair boundaries can make the tail larger. |
+| `autocompaction.minRangeTokens` | `10000` | Integer ≥ 0. AUTO_PER_TURN groups contiguous eligible turns until their effective source-content tokens strictly exceed this value. `0` selects the first positive-content range. Does not constrain AUTO_SESSION, prefix fallback, last resort or manual selections. |
 
 An observed provider/local ratio can exceed the configured multiplier. Setting it to `1` does not disable the guard. A retained tail of `0` requests no exempt tail; source, checkpoint and unsettled-tool safeguards still apply.
 

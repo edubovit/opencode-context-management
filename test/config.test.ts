@@ -56,7 +56,7 @@ test("numeric settings reject coercion and explicit null instead of silently usi
     ["spill", "headShare"], ["spill", "maxLines"], ["spill", "maxBytes"],
     ["prune", "threshold"], ["prune", "head"], ["prune", "tail"],
     ["autocompaction", "estimateMultiplier"], ["autocompaction", "headroom"],
-    ["autocompaction", "lastResortKeepTokens"], ["ui", "maxLinesPerTurn"],
+    ["autocompaction", "lastResortKeepTokens"], ["autocompaction", "minRangeTokens"], ["ui", "maxLinesPerTurn"],
   ]) for (const value of ["1", true, null, [], NaN, Infinity])
     assert.throws(() => settings({ [group]: { [key]: value } }), new RegExp(`${group}.*${key}`))
   for (const group of ["spill", "prune", "autocompaction", "ui", "tokenizer", "summarizer"])
@@ -64,10 +64,11 @@ test("numeric settings reject coercion and explicit null instead of silently usi
 })
 
 test("automatic defaults, numeric bounds and paired model settings are validated in one place", () => {
-  assert.deepEqual(settings().autocompaction, { headroom: 20000, estimateMultiplier: 1.3, lastResortKeepTokens: 20000 })
+  assert.deepEqual(settings().autocompaction, { headroom: 20000, estimateMultiplier: 1.3, lastResortKeepTokens: 20000, minRangeTokens: 10000 })
+  for (const minRangeTokens of [0, 5000, 20000]) assert.equal(settings({ autocompaction: { minRangeTokens } }).autocompaction.minRangeTokens, minRangeTokens)
   assert.equal(settings({ autocompaction: { lastResortKeepTokens: 0, estimateMultiplier: 1.6 } }).autocompaction.estimateMultiplier, 1.6)
   assert.equal(settings({ autocompaction: { lastResortKeepTokens: 0 } }).autocompaction.lastResortKeepTokens, 0)
-  for (const key of ["headroom", "lastResortKeepTokens"]) for (const value of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1])
+  for (const key of ["headroom", "lastResortKeepTokens", "minRangeTokens"]) for (const value of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1])
     assert.throws(() => settings({ autocompaction: { [key]: value } }), new RegExp(key))
   for (const estimateMultiplier of [0, -1]) assert.throws(() => settings({ autocompaction: { estimateMultiplier } }), /estimateMultiplier/)
   for (const headShare of [-1, 2]) assert.throws(() => settings({ spill: { headShare } }), /headShare/)
