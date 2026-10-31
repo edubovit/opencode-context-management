@@ -2,7 +2,7 @@ import { Message, type ContentPart } from "@opencode/ai"
 import type { SessionMessageInfo } from "@opencode/client"
 import { hash, activeMessages, project, replacement, type Block, type Envelope, type Operation, type Policy } from "./context.ts"
 import { pruneResult } from "./tool-result.ts"
-import { retainsReasoning } from "./normalize.ts"
+import { omitsReasoning, retainsReasoning } from "./normalize.ts"
 
 type Assistant = Extract<SessionMessageInfo, { type: "assistant" }>
 type Tool = Extract<Assistant["content"][number], { type: "tool" }>
@@ -83,7 +83,10 @@ export function projectRequest(native: readonly SessionMessageInfo[], raw: Envel
       for (const message of block.messages) {
         const source = originals.get(message.info.id)
         const omittedShell = source?.type === "shell" && source.metadata?.background === true
-        if (!observed.has(message.info.id) && !omittedShell && message.parts.some((part) => (part.type === "text" || part.type === "reasoning") ? !!part.text : part.type === "tool" || part.type === "file" || part.type === "context"))
+        const omittedReasoning = source?.type === "assistant" && omitsReasoning(source) &&
+          source.content.some(part => part.type === "reasoning") && source.content.every(part => part.type === "reasoning" || (part.type === "text" && part.text === ""))
+        if (!observed.has(message.info.id) && !omittedShell && !omittedReasoning && message.parts.some((part) =>
+          part.type === "reasoning" ? !!part.text || part.metadata !== undefined : part.type === "text" ? !!part.text : part.type === "tool" || part.type === "file" || part.type === "context"))
           throw new Error(`Saved source is absent from this model's context; refusing to resurrect or discard history (${message.info.id}, ${source?.type ?? "unknown"}, ${op.mode})`)
         for (const [id, tool] of tools.get(message.info.id) ?? []) {
           const key = `${message.info.id}:${id}`

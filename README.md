@@ -6,7 +6,7 @@ This is a source-based OpenCode V2 plugin, not a published npm package. Summariz
 
 ## Install
 
-Requires OpenCode **>=2.1.4 <3**, Node.js **22+**, and npm. Older OpenCode hosts are unsupported; existing saved plugin data remains supported.
+Requires OpenCode **>=2.2.5 <3**, Node.js **22+**, and npm. Older OpenCode hosts are unsupported; existing saved plugin data remains supported.
 
 1. In the repository, install dependencies:
 
@@ -51,7 +51,7 @@ Close a range with **Space → move → Space**. Repeat to select disjoint range
 
 | Action | Effect |
 | --- | --- |
-| Prune reasoning | Remove safe reasoning parts. Retain failed/interrupted attempts and visible assistant text. |
+| Prune reasoning | Remove safe reasoning parts. Preserve visible assistant text and the host's treatment of failed/interrupted attempts. |
 | Prune tools (large) | Keep a token-budgeted beginning and end with an omission notice. Preserve inputs and attachments. |
 | Prune tools (all) | Replace completed/error results, including attachments, with `[Tool output pruned]`. Keep calls and inputs. |
 | Prune tools (delete) | Remove entire tool calls and results. Requires reasoning pruning. |
@@ -65,7 +65,7 @@ Background subagents can finish after the primary agent becomes idle. Saved redu
 
 A range may start with completed direct shell input, shown as **SHELL** with its command/output. For a background shell, include its visible completion or subsequent user context; the omitted shell record alone is not a model-visible range. Running shells and native checkpoints remain protected. Expansion restores the original shell/completion placement without rerunning the command.
 
-Failed or interrupted assistant attempts can contain reasoning that OpenCode treats as ordinary text. The plugin retains that ambiguous content while removing safe reasoning in the same turn. These turns use the normal **reasoning pruned** status; retained content still counts and remains available to summaries and exports.
+OpenCode omits reasoning from failed or interrupted assistant attempts. The plugin does not reintroduce it into summaries, local counts or effective exports. Stored history and the fingerprint representation used by saved reductions remain intact. Current incoming text is never removed by guessing that it originated as reasoning. These turns use the normal **reasoning pruned** status.
 
 Deleted ranges contribute no messages, placeholder text or local content tokens. They remain indivisible until restored. A wider deletion can contain prior summaries, pruning or deletions; an already-deleted-only selection is rejected without a write.
 
@@ -82,7 +82,7 @@ The batch screen shows:
 
 Live counts cover the helper conversation, including size-review prompts, but exclude input text. They are not tokens, billing, completion percentages or ETAs. Providers can buffer output or omit reasoning. Missing updates do not prove an agent is stuck; a progress-read failure does not stop generation or authorize applying a draft.
 
-Helpers have no tools. Empty, failed, cancelled or incomplete output is rejected. If any assistant response to a helper prompt hits its output limit, a later successful continuation does not make it acceptable: the plugin neither assembles truncated chunks nor accepts only the continuation tail.
+Helpers have no tools. Empty, failed, cancelled or incomplete output is rejected. If any assistant response to a helper prompt hits its output limit, a later successful continuation does not make it acceptable: the plugin neither assembles truncated chunks nor accepts only the continuation tail. An additional user or synthetic input before result extraction also rejects the result, including follow-ups admitted by an idle hook.
 
 ### Choose the helper's context
 
@@ -164,7 +164,7 @@ Resume releases the **original held request**, without a fabricated continuation
 
 The overview separates local text totals from the **Last request guard** or **Live guard** during a pause. The meter compares the forecast with the cleanup threshold, not the model's full context window. Missing samples or a changed model do not get an invented percentage. Details contains full accounting/model/tokenizer information.
 
-Input capacity is a positive explicit input limit, or otherwise **context limit − output limit**. The cleanup threshold is **input capacity − headroom**; equality fits. The plugin preserves the host/provider output cap.
+Input capacity is a positive explicit input limit, or otherwise **context limit − output limit**, capped by a known positive context limit. The cleanup threshold is **input capacity − headroom**; equality fits. The plugin preserves the host/provider output cap.
 
 The guard uses compatible provider-reported usage plus estimated changes since that request. Added content receives a conservative multiplier; removed content receives only its unscaled local estimate as credit. Unexplained provider overhead is retained. The same estimate governs cleanup candidates and Resume.
 

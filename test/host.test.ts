@@ -114,6 +114,25 @@ test("V2 cancellation during model selection cannot admit a late helper prompt",
   await adapter.close()
 })
 
+for (const purpose of ["summary", "edit"] as const) test(`${purpose} refuses synthetic input injected before idle and isolates the next prompt`, async () => {
+  const mock = mockContext()
+  const adapter = pluginHost(mock.context)
+  const id = await adapter.host.createJob(purpose, "ses_native")
+  const wait = mock.context.session.wait
+  mock.context.session.wait = async () => {
+    const history = mock.messages.get(id)!
+    const reply = history.at(-1)!
+    assert.equal(reply.type, "assistant")
+    if (reply.type !== "assistant") throw new Error("Missing test reply")
+    history.push({ id: "msg_injected", type: "synthetic", text: "Unrelated follow-up", time: { created: 100 } },
+      { ...structuredClone(reply), id: "msg_unrelated", content: [{ type: "text", text: "Not the requested replacement" }] })
+  }
+  await assert.rejects(adapter.host.generate(id, { providerID: "fixture", modelID: "model" }, "Summarize only this input", purpose), /another input/)
+  mock.context.session.wait = wait
+  assert.equal(await adapter.host.generate(id, { providerID: "fixture", modelID: "model" }, "Fresh input", purpose), "Answer only")
+  await adapter.close()
+})
+
 test("V2 host rejects moved sessions and exposes normalized model variants", async () => {
   const mock = mockContext()
   const adapter = pluginHost(mock.context)

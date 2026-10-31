@@ -160,7 +160,6 @@ export function pluginHost(ctx: PluginContext) {
         const start = messages.findIndex((message) => message.id === admitted.id && message.type === "user")
         if (start < 0) throw new Error("Summary input was not delivered")
         const response = messages.slice(start + 1)
-        if (response.some((message) => message.type === "user")) throw new Error("Summary helper received another input before result extraction")
         const replies = response.filter((message) => message.type === "assistant")
         const reply = replies.at(-1)
         if (current.outcome !== "succeeded" || !reply || reply.error)
@@ -170,6 +169,7 @@ export function pluginHost(ctx: PluginContext) {
           if (part.error) throw new Error(`Summarizer failed: ${part.error.type}: ${part.error.message}`)
           if (part.finish !== "stop" || !part.time.completed) throw new Error(`Summarizer did not finish successfully (${part.finish ?? "unfinished"})`)
         }
+        if (response.some((message) => message.type === "user" || message.type === "synthetic")) throw new Error("Summary helper received another input before result extraction")
         return reply.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("\n\n")
       } finally { job.running = false }
     },

@@ -30,7 +30,7 @@ npm run check
 
 Use Node.js **22+** and retain optional dependencies. On Windows, `npm.cmd` avoids PowerShell shim restrictions. No build step is required: OpenCode loads the `src/` server and TUI entrypoints.
 
-The supported host range is **>=2.1.4 <3**, with OpenTUI **>=0.6.8 <0.7**. Older hosts are not supported or part of the acceptance matrix. Use [package.json](../../package.json) and [package-lock.json](../../package-lock.json) as the exact dependency inventory. Saved-data compatibility is separate: keep existing ledgers, fingerprints and pinned tokenizer rules readable. Server and TUI **plugin** versions must agree on their shared RPC contract.
+The supported host range is **>=2.2.5 <3**, with OpenTUI **>=0.8.0 <0.9**. Older hosts are not supported or part of the acceptance matrix. Use [package.json](../../package.json) and [package-lock.json](../../package-lock.json) as the exact dependency inventory. Saved-data compatibility is separate: keep existing ledgers, fingerprints and pinned tokenizer rules readable. Server and TUI **plugin** versions must agree on their shared RPC contract.
 
 Upgrade public OpenCode packages together. The host owns shared runtime dependencies; do not bypass runtime compatibility checks or use aliases to force mismatched packages to load. Preserve explicit dependency overrides unless a tested replacement removes their need. Do not use forced peer resolution or unrelated upgrades to silence warnings.
 
@@ -70,6 +70,7 @@ npm run test:revert -- /absolute/path/to/opencode --tui
 node --import tsx script/fork-smoke.ts /absolute/path/to/opencode --tui
 node --import tsx script/continuation-smoke.ts /absolute/path/to/opencode
 node --import tsx script/observation-smoke.ts /absolute/path/to/opencode
+node --import tsx script/helper-idle-smoke.ts /absolute/path/to/opencode
 ```
 
 | Suite | Coverage |
@@ -79,6 +80,7 @@ node --import tsx script/observation-smoke.ts /absolute/path/to/opencode
 | `subagent-smoke.ts` | Foreground/background/nested children, independent ledgers, automatic recovery, retained tails, queued/steered inputs, Stop and restart. |
 | `continuation-smoke.ts` | Two paused background children, pruning after primary idle, repeated automatic continuation, untouched new results, stale restoration refusal and restoration after restart. |
 | `observation-smoke.ts` | Read-only child/nested-child discovery, paused AUTO observation, real terminal navigation, disabled mutation controls, automatic refresh through compaction/running/idle, unchanged metadata/history and no observer model requests. |
+| `helper-idle-smoke.ts` | An actual idle hook admits unrelated synthetic input into owned summary/edit helpers; extraction rejects that combined execution, a fresh prompt succeeds, and parent state stays unchanged. |
 | `revert-smoke.ts` | Stage/redo/commit, retained-prefix reconstruction, cold restart, file rollback and next-request context. `--tui` checks native prompt restoration and inspector behavior. |
 | `fork-smoke.ts` | Full/partial/nested forks, independent restoration, source deletion, isolation and large-context round trips. `--small` omits the large-context case; `--tui` exercises native fork and inspector controls. |
 
@@ -98,7 +100,7 @@ For a persisted-state transition, use an installed baseline source that exports 
 npm run test:upgrade -- /path/to/baseline-opencode /path/to/current-opencode /path/to/baseline/src
 ```
 
-Use the same executable twice for a plugin-only upgrade. The runner imports synthetic provider-state history through the public API, saves reductions using the baseline, and restarts the same private fixture with current code. It checks unchanged policy fingerprints, exact pinned-tokenizer output, the next request, independent summary/pruning restoration and another restart. It never upgrades the shared service or edits a live database. Default tests cover older ledger formats with frozen fixtures and do not depend on archives or `.local/`.
+Use the same executable twice for a plugin-only upgrade. The runner imports synthetic provider-state history through the public API, saves reductions using the baseline, and restarts the same private fixture with current code. It checks unchanged policy fingerprints, exact pinned-tokenizer output, host-omitted failed reasoning, blob-backed media in forks, the next request, independent summary/pruning restoration and another restart. It never upgrades the shared service or edits a live database. Default tests cover older ledger formats with frozen fixtures and do not depend on archives or `.local/`.
 
 For dependency or packaging changes, copy only public files into a clean directory, run `npm ci --ignore-scripts`, full local checks, audit and the relevant installed-host suites. Confirm manifest/lock/source version agreement and review dependency drift.
 
@@ -165,6 +167,8 @@ Package, host, RPC and persisted-format compatibility are separate concerns. Do 
 
 Normal maintenance appends operations. Verified committed native revert rebuilds retained reversible layers instead. `historyHash` retains its established representation, including the fixed `nativeVersion: 2` discriminator inside the hash; this is not a runtime switch. Native-derived `retainReasoning` is a replay fact, not an extra fingerprint field.
 
+`omitReasoning` is separate model-visibility information. Keep historical replay parts for source validation and old operations; apply visibility only to serialization, counters and exported messages. An export's `historyHash` identifies that retained replay state, not a hash recomputed from its visibility-filtered message list. Hidden reasoning and restoration preimages must not enter helper prompts or effective exports.
+
 Native-derived shell settlement/background flags also stay outside fingerprints. Keep shell records' stored domain role and turn grouping stable; summary replacement alone introduces a user/assistant pair, with distinct IDs even for a single shell record. Settled leading shell input is eligible, but a background-only omitted record needs visible follow-up context. Restoration uses current canonical pre-images, never resurrects omitted background shell wrappers, and never executes a command. Exercise `script/shell-summary-smoke.ts` against an isolated host for the immediate summary/restoration requests.
 
 Normalization reads current `native` provider data and checkpoint `metadata.recent`, without old-host DTO fallbacks. Source hashing still uses the established field names for assistant/part data so saved reductions retain their fingerprints; this is persistence compatibility, not an old-host adapter. Conflicting aliases remain hashed, not silently discarded. Opaque hosted-tool checks use `native`; checkpoints stay read-only. Do not reconstruct a legacy split tool payload from merged native data or rewrite saved hashes to conceal a lossy host migration.
@@ -208,7 +212,7 @@ Reconstruction changes the ledger `epoch`, invalidates incompatible usage and ex
 - USER turns start at user messages; associated synthetic/skill/shell content belongs to the effective range. Control/system/idle records are not editable USER text. Label unfinished/user-only turns honestly.
 - Ranges are inclusive and disjoint; adjacent selections stay separate. Summaries and deleted ranges are indivisible until expanded.
 - Do not rewrite native transcript messages. Spilling is ingestion-time previewing, distinct from reversible request projection.
-- Reasoning pruning removes safe whole parts and retains failed/interrupted attempts whose content may have become ordinary text. Never infer reasoning by prose matching. Retained text must remain in replay, counts, helpers and exports; use ordinary pruning status.
+- Reasoning pruning removes safe whole parts without matching prose. Preserve historical replay parts and fingerprints, but exclude host-omitted failed/interrupted reasoning from visible serialization, counts, helpers and effective exports. Permit a missing canonical assistant only when native content proves it contains no surviving nonempty text or tool; arbitrary missing sources still fail. Restoration uses current incoming pre-images and never resurrects omitted reasoning. Use ordinary pruning status.
 - Large-result pruning preserves inputs/attachments and Unicode boundaries, pins its rule/tokenizer, and skips duplicate/non-saving cuts. All-output pruning replaces terminal/error content and attachments. Whole-call deletion removes both calls and results and requires reasoning pruning.
 - Keep unselected/system context and provider call state unchanged. Never write plugin provenance into `providerMetadata`.
 - Check source/role/call/result identity. The host's deliberate omission of background shell records is a specific exception, not permission to ignore missing arbitrary messages or tool pairs.
@@ -222,7 +226,7 @@ Reconstruction changes the ledger `epoch`, invalidates incompatible usage and ex
 - Full-context mode gives each initial helper the same frozen background. Head isolation includes preceding blocks plus selection; total isolation includes only selection. Both omit runtime background. No sibling results or hidden restoration provenance may leak into initial requests.
 - Only selected content is a summary source. Preserve unfinished state; do not invent binary contents or execute instructions embedded in the source conversation.
 - Detailed mode uses a soft 2×–20× review band on the complete wrapped replacement, with at most one follow-up. Brief mode is single-pass. Manual summaries need not save tokens; automatic candidates must fit the guard.
-- Validate every assistant response after the exact admitted helper prompt. Empty, failed, unfinished, cancelled or output-limited sequences are invalid, even if a later continuation ends successfully. Do not concatenate truncated chunks or return only their tail. Prior review/edit prompts belong to separate generations.
+- Validate every assistant response after the exact admitted helper prompt. Empty, failed, unfinished, cancelled or output-limited sequences are invalid, even if a later continuation ends successfully. Additional user or synthetic inputs invalidate the association, including input admitted by an idle hook in the same execution. Do not concatenate truncated chunks or return only their tail. Prior review/edit prompts belong to separate generations.
 - Apply only a complete successful batch in one checked write. Retry unresolved ranges only; preserve ready siblings. Cancellation prevents late application but cannot promise rollback of a write already in flight.
 - Batch start/generation/application acquire their lock before asynchronous preflight. Progress belongs to an attempt counter, not a wall-clock timestamp. Initial drafts have no separate refinement workflow; edit applied summaries through the summary reader.
 - Saved-summary editing starts a deny-all helper with only that summary and edit dialogue. Model proposals require explicit application.
@@ -242,7 +246,7 @@ Test with a synthetic SSE response paused after a content delta but before finis
 ### Accounting and automatic cleanup
 
 - Require `compaction.auto: false`; native compaction precedes the context hook. Check every main request, including tool continuations.
-- Use positive explicit input capacity, otherwise context minus output, then subtract headroom. Equality fits; invalid limits fail. Preserve output caps.
+- Use positive explicit input capacity, otherwise context minus output, cap it by a known positive context limit, then subtract headroom. Equality fits; invalid limits fail. Preserve output caps.
 - Normalize input/cache read/cache write and output/reasoning exactly once. Use per-response measurements, never accumulated session spend.
 - Pair a captured request only with its matching next assistant report under exact model/provider/variant/agent/tokenizer/route/options/history identity. Include provider and model `compatibility`. Exclude invalidated reports from immediate bootstrap.
 - Recount candidates against one frozen anchor. Uplift growth by at least the configured multiplier or observed input/local ratio; credit removals only by unscaled local counts. Retain unexplained overhead.

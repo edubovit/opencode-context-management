@@ -182,8 +182,10 @@ try {
       tui.keys("\x1b[B\r")
       await test.until(async () => (await info(value.sessionID)).revert?.messageID === user8.id, "UI revert turn 8")
       await seen(/4 messages reverted/)
-      const screen = await tui.text()
-      assert.ok(screen.split("\n").slice(-8).join("\n").includes("TURN_08_RAW"))
+      const screen = await test.until(async () => {
+        const current = await tui.text()
+        return current.split("\n").slice(-8).join("\n").includes("TURN_08_RAW") ? current : undefined
+      }, "reverted prompt restored in composer")
       await writeFile(path.join(test.root, "revert-staged.screen.txt"), screen)
       assert.deepEqual((await value.load()).blocks.map((block) => block.kind), Array(7).fill("turn"))
       const before = requests(value.sessionID).length

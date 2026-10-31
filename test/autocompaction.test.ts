@@ -35,6 +35,9 @@ async function until(check: () => boolean | Promise<boolean>) {
 test("headroom uses explicit input once, otherwise context minus output, with invalid budgets rejected", () => {
   assert.deepEqual(inputBudget({ limit: { context: 400000, input: 272000, output: 128000 } }, 20000), { inputLimit: 272000, threshold: 252000, derived: false })
   assert.deepEqual(inputBudget({ limit: { context: 400000, output: 128000 } }, 20000), { inputLimit: 272000, threshold: 252000, derived: true })
+  assert.deepEqual(inputBudget({ limit: { context: 100000, input: 200000, output: 10000 } }, 20000), { inputLimit: 100000, threshold: 80000, derived: false })
+  assert.throws(() => inputBudget({ limit: { context: 10000, input: 200000, output: 1000 } }, 20000), /smaller/)
+  assert.throws(() => inputBudget({ limit: { context: 100000, input: Infinity, output: 10000 } }, 20000), /valid model input/)
   assert.throws(() => inputBudget({ limit: { context: 20000, output: 5000 } }, 20000), /smaller/)
   assert.throws(() => inputBudget({ limit: { context: 0, output: 5000 } }, 20000), /valid model input/)
 })

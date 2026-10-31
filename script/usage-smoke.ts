@@ -335,8 +335,11 @@ try {
     if (tool.state.status !== "completed") throw new Error("Missing screenshot result")
     const image = tool.state.content.find((part) => part.type === "file")
     assert.ok(image?.type === "file")
-    assert.equal(image.mime, "image/png")
-    assert.ok(image.uri.length > 2_000_000)
+    assert.ok(image.mime === "image/png" || image.mime === "image/jpeg")
+    assert.ok(image.uri.startsWith(`data:${image.mime};base64,`))
+    const result = { type: "content" as const, value: tool.state.content }
+    const legacyCount = tokenCount(JSON.stringify(result))
+    assert.ok(legacyCount > test.config.providers.fixture.models.fixture.limit.input, "Counting image bytes as text must exceed the fixture input limit")
     assert.ok(JSON.stringify(calls[1].wire.messages).includes(image.uri), "Stored image bytes must reach the provider unchanged")
     const measured = await accounting(media)
     assert.equal(measured?.source, reported ? "provider-matched" : "local-fallback")
@@ -347,11 +350,10 @@ try {
 
     if (reported) {
       const state = (await storage.budget(media.sessionID))!
-      const result = { type: "content" as const, value: tool.state.content }
       const imageUnit = budgetUnits([Message.tool({ id: tool.id, name: tool.name, result })], [], {}, FALLBACK_BASIS).at(-1)!
       assert.ok(state.pending?.units.some((unit) => unit.key === imageUnit.key))
       const oldUnits = state.pending!.units.map((unit) => unit.key === imageUnit.key ? { ...unit, tokens: tokenCount(JSON.stringify(result)) } : unit)
-      assert.ok(oldUnits.some((unit) => unit.tokens > 1_000_000))
+      assert.ok(oldUnits.some((unit) => unit.tokens === legacyCount))
       await storage.write(`budget-${hash(media.sessionID)}.json`, { ...state, version: 1, pending: { ...state.pending, units: oldUnits } })
       test.respond(() => undefined)
       await test.restart()

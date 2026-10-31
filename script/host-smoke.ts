@@ -96,6 +96,8 @@ try {
   assert.ok(retryView.raw.some((message) => message.info.role === "assistant" && message.info.retainReasoning))
   assert.equal(retryView.raw.flatMap((message) => message.parts).filter((part) => part.type === "reasoning" && part.text.includes("REASONING_FIXTURE")).length, 2)
   const retrySource = await test.client.session.context({ sessionID: interrupted.sessionID })
+  const beforeReasoning = (JSON.stringify(test.requests.at(-1)!.messages).match(/REASONING_FIXTURE/g) ?? []).length
+  assert.equal(beforeReasoning, 1, "Only the successful attempt's reasoning reaches the provider before pruning")
   const retryIDs = retryView.blocks.flatMap((block) => block.sourceIDs)
   const beforePruning = test.requests.length
   await interrupted.prune(retryIDs, { reasoning: true, tools: "all" })
@@ -103,15 +105,14 @@ try {
   assert.ok((await interrupted.load()).blocks.every((block) => block.reasonPruned))
   await send(interrupted, "Check retained failed reasoning and pruned successful reasoning")
   const retainedWire = test.requests.at(-1)!.messages
-  assert.equal((JSON.stringify(retainedWire).match(/REASONING_FIXTURE/g) ?? []).length, 1)
-  assert.ok(retainedWire.some((message) => JSON.stringify(message.content).includes("REASONING_FIXTURE")))
+  assert.equal((JSON.stringify(retainedWire).match(/REASONING_FIXTURE/g) ?? []).length, 0)
   assert.doesNotMatch(JSON.stringify(retainedWire), /HEAD_FIXTURE/)
   assert.deepEqual((await test.client.session.context({ sessionID: interrupted.sessionID })).filter((message) => retrySource.some((original) => original.id === message.id)), retrySource)
   await interrupted.restoreRanges([retryIDs])
   await send(interrupted, "Check restored successful reasoning")
-  assert.equal((JSON.stringify(test.requests.at(-1)!.messages).match(/REASONING_FIXTURE/g) ?? []).length, 2)
+  assert.equal((JSON.stringify(test.requests.at(-1)!.messages).match(/REASONING_FIXTURE/g) ?? []).length, beforeReasoning)
   await interrupted.dispose()
-  checks.push("failed-attempt reasoning retained while safe reasoning/tool outputs prune; next same-model request and restoration preserve native history")
+  checks.push("safe reasoning/tool outputs prune without changing host-visible failed-attempt content; next same-model request and restoration preserve native history")
   let deleting = await make()
   await send(deleting, "DELETE_SOURCE_FACT EXERCISE_TOOL")
   await send(deleting, "DELETE_SUMMARY_SOURCE")

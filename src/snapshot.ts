@@ -3,6 +3,7 @@ import { blockMessages, historyHash, serialize, type Block, type Policy } from "
 import { distribution, type lastReportedUsage } from "./metrics.ts"
 import { FALLBACK_BASIS, type TokenBasis } from "./tokens.ts"
 import type { RuntimeCapture } from "./storage.ts"
+import { effectiveMessages } from "./model.ts"
 
 export function snapshot(sessionID: string, hostVersion: string, blocks: Block[], policy: Policy, runtime?: RuntimeCapture,
   tokenizer: TokenBasis = FALLBACK_BASIS, usage?: ReturnType<typeof lastReportedUsage>) {
@@ -23,6 +24,6 @@ export function snapshot(sessionID: string, hostVersion: string, blocks: Block[]
     ],
     distribution: distribution(blocks, runtime, tokenizer),
     characterDistribution: distribution(blocks, runtime, tokenizer, "characters"),
-    blocks: blocks.map(({ previous: _previous, pruning: _pruning, ...visible }) => visible), text: serialize(messages),
+    blocks: blocks.map(({ previous: _previous, pruning: _pruning, ...visible }) => ({ ...visible, messages: effectiveMessages(visible.messages) })), text: serialize(messages),
   }
 }

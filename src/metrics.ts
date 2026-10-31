@@ -1,4 +1,5 @@
 import type { Block, Envelope } from "./context.ts"
+import { visibleParts } from "./model.ts"
 import type { RuntimeCapture } from "./storage.ts"
 import { chars, toolText } from "./text.ts"
 import { FALLBACK_BASIS, tokenCount, type TokenBasis } from "./tokens.ts"
@@ -10,7 +11,7 @@ export function distribution(blocks: Block[], runtime?: RuntimeCapture, basis: T
     systemPrompts: 0, advertisedSkills: 0, capturedToolDefinitions: 0,
   }
   let attachments = 0
-  for (const block of blocks) for (const message of block.messages) for (const part of message.parts) {
+  for (const block of blocks) for (const message of block.messages) for (const part of visibleParts(message)) {
     if (part.type === "text") counts[block.kind === "turn" ? message.info.role : "summaries"] += measure(part.text)
     if (part.type === "reasoning") counts.reasoning += measure(part.text)
     if (part.type === "file") attachments++

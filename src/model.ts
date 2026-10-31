@@ -11,7 +11,7 @@ type MessageBase = {
 export type UserMessage = MessageBase & { role: "user"; model: ModelChoice }
 export type AssistantMessage = MessageBase & {
   role: "assistant"; providerID: string; modelID: string
-  finish?: string; error?: unknown; retainReasoning?: true; shell?: { settled: boolean; background: boolean }; tokens: Usage; cost: number
+  finish?: string; error?: unknown; retainReasoning?: true; omitReasoning?: true; shell?: { settled: boolean; background: boolean }; tokens: Usage; cost: number
 }
 export type Message = UserMessage | AssistantMessage
 export type Envelope = { info: Message; parts: Part[] }
@@ -28,3 +28,12 @@ export type Part = ToolPart | FilePart
   | (PartBase & { type: "text"; text: string; synthetic?: boolean })
   | (PartBase & { type: "reasoning"; text: string })
   | (PartBase & { type: "context"; text: string; category: "system" | "skill" | "synthetic" | "shell" | "control" })
+
+export function visibleParts(message: Envelope) {
+  return message.info.role === "assistant" && message.info.omitReasoning
+    ? message.parts.filter(part => part.type !== "reasoning") : message.parts
+}
+
+export function effectiveMessages(messages: Envelope[]): Envelope[] {
+  return messages.map(message => ({ ...message, parts: visibleParts(message) }))
+}

@@ -27,9 +27,10 @@ export function strategy(session: Pick<Session, "metadata" | "parentID">): Strat
 
 export function inputBudget(model: Pick<Model, "limit">, headroom: number) {
   const derived = !(model.limit.input && model.limit.input > 0)
-  const inputLimit = derived ? model.limit.context - model.limit.output : model.limit.input!
-  if (!Number.isFinite(inputLimit) || inputLimit <= 0 || (derived && (!model.limit.context || !model.limit.output)))
+  const configured = derived ? model.limit.context - model.limit.output : model.limit.input!
+  if (!Number.isFinite(configured) || configured <= 0 || (derived && (!model.limit.context || !model.limit.output)))
     throw new Error("Autocompaction needs a valid model input limit, or context and output limits. Configure the model limits before starting this run.")
+  const inputLimit = Number.isFinite(model.limit.context) && model.limit.context > 0 ? Math.min(configured, model.limit.context) : configured
   const threshold = inputLimit - headroom
   if (threshold <= 0) throw new Error(`Autocompaction headroom ${headroom} must be smaller than the model input budget ${inputLimit}`)
   return { inputLimit, threshold, derived }

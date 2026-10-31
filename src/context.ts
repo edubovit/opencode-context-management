@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import type { Envelope, Part, Session, ToolPart } from "./model.ts"
+import { visibleParts, type Envelope, type Part, type Session, type ToolPart } from "./model.ts"
 import { hash, historyHash, sameIDs } from "./fingerprint.ts"
 export { hash, historyHash } from "./fingerprint.ts"
 export type { Envelope } from "./model.ts"
@@ -63,7 +63,7 @@ export function turns(messages: Envelope[]): Block[] {
 export function serialize(messages: Envelope[]) {
   return messages.map((message) => [
     `[${message.info.role} ${message.info.id}]`,
-    ...message.parts.flatMap((part) => {
+    ...visibleParts(message).flatMap((part) => {
       if (part.type === "text") return [part.text]
       if (part.type === "reasoning") return [`[Visible reasoning]\n${part.text}`]
       if (part.type === "file") return [`[Attachment ${part.mime}: ${part.filename ?? part.id}]`]

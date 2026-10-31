@@ -19,6 +19,10 @@ export function retainsReasoning(message: Extract<SessionMessageInfo, { type: "a
   return message.content.some((part) => part.type === "reasoning" && (message.error || (part.time && part.time.completed === undefined)))
 }
 
+export function omitsReasoning(message: Extract<SessionMessageInfo, { type: "assistant" }>) {
+  return message.error !== undefined || message.content.some(part => part.type === "reasoning" && part.time !== undefined && part.time.completed === undefined)
+}
+
 export function sessionView(value: SessionInfo): Session {
   return {
     id: value.id, location: value.location, title: value.title ?? undefined,
@@ -65,6 +69,7 @@ export function transcriptView(session: SessionInfo, messages: readonly SessionM
         time: { created: message.time.created, completed: message.time.completed ?? undefined }, finish: message.finish ?? undefined,
         error: message.error ?? undefined, tokens: message.tokens ?? zero(), cost: message.cost ?? 0,
         ...(retainsReasoning(message) ? { retainReasoning: true as const } : {}),
+        ...(omitsReasoning(message) ? { omitReasoning: true as const } : {}),
       },
       parts: message.content.map((content, index): Part => {
         if (content.type !== "tool") {

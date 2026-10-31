@@ -7,7 +7,7 @@ import type { ContextManager } from "../src/rpc.ts"
 export function mockContext() {
   const sessions = new Map<string, SessionInfo>([["ses_native", nativeSession()]])
   const messages = new Map<string, SessionMessageInfo[]>([["ses_native", []]])
-  const state = { finish: "stop", failure: false, prompts: [] as string[], created: [] as Record<string, unknown>[], removed: [] as string[], interrupted: [] as string[], switchWait: Promise.resolve(), version: "2.1.4" }
+  const state = { finish: "stop", failure: false, prompts: [] as string[], created: [] as Record<string, unknown>[], removed: [] as string[], interrupted: [] as string[], switchWait: Promise.resolve(), version: "2.2.5" }
   const hooks = new Map<string, (event: unknown) => Promise<void>>()
   const agents = new Map<string, Record<string, unknown>>()
   const rpc = {} as RpcHandlers<typeof ContextManager>

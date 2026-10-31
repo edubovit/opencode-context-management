@@ -5,8 +5,9 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { testRender } from "@opentui/solid"
+import { createSignal } from "solid-js"
 import { KeyCodes } from "@opentui/core/testing"
-import { RGBA, type ScrollBoxRenderable, type SelectRenderable, type TextRenderable } from "@opentui/core"
+import { RGBA, type BoxRenderable, type ScrollBoxRenderable, type SelectRenderable, type TextRenderable } from "@opentui/core"
 import type { InspectorUI } from "../src/ui.ts"
 import { themeFixture } from "./theme-fixture.ts"
 import { Inspector } from "../src/inspector.tsx"
@@ -38,9 +39,10 @@ async function setup(t: { after(fn: () => Promise<void>): void }, width = 140, h
   const controller = new Controller(host, data.session.id, settings(options), storage)
   const navigations: string[] = []
   let inputMode = "context-manager"
+  const [theme, setTheme] = createSignal(themeFixture())
   const api = {
-    app: { version: "2.1.4" }, keymap: { mode: { current: () => inputMode, push: () => () => {} } },
-    theme: themeFixture(),
+    app: { version: "2.2.5" }, keymap: { mode: { current: () => inputMode, push: () => () => {} } },
+    get theme() { return theme() },
     ui: { toast: { show: () => {} }, router: { navigate: (route: { type: string }) => { navigations.push(route.type) } } },
   } as unknown as InspectorUI
   const screen = await testRender(() => <Inspector api={api} controller={controller} sessionID={data.session.id} />, { width, height })
@@ -65,7 +67,7 @@ async function setup(t: { after(fn: () => Promise<void>): void }, width = 140, h
     if (!modes.options[index].name.startsWith("[+]")) await screen.mockInput.typeText(" ")
     key("return")
   }
-  return { ...fixture, controller, screen, frame, until, navigations, compact, setInputMode: (mode: string) => { inputMode = mode }, type: screen.mockInput.typeText, key, esc: screen.mockInput.pressEscape }
+  return { ...fixture, controller, screen, frame, until, navigations, compact, setTheme, setInputMode: (mode: string) => { inputMode = mode }, type: screen.mockInput.typeText, key, esc: screen.mockInput.pressEscape }
 }
 
 for (const width of [80, 60]) test(`subagent observer refreshes during AUTO and never exposes writes at ${width} columns`, async t => {
@@ -120,7 +122,7 @@ test("subagent browser pages, refreshes selection, drills down and respects nati
   await settle()
   screen.mockInput.pressKey(KeyCodes.ARROW_DOWN)
   await settle()
-  inputMode = "dialog"
+  inputMode = "modal"
   screen.mockInput.pressKey(KeyCodes.RETURN)
   await settle()
   assert.equal(opened, "")
@@ -307,11 +309,15 @@ for (const width of [80, 60]) test(`staged revert shows retained raw turns and r
 })
 
 test("native modal input ownership blocks inspector actions and resumes cleanly", async (t) => {
-  const view = await setup(t, 80, 24)
+  const { state, calls, control } = pausedControl()
+  state.pause = undefined
+  const view = await setup(t, 80, 24, ({ host }) => { host.auto = control })
   await view.until(() => view.frame().includes("Ready."))
   await view.type(" ")
   await view.type(" ")
-  view.setInputMode("native-dialog")
+  view.setInputMode("modal")
+  view.key(KeyCodes.END)
+  view.key("return")
   await view.type("c")
   await view.type("a")
   view.esc()
@@ -319,9 +325,16 @@ test("native modal input ownership blocks inspector actions and resumes cleanly"
   await view.screen.renderOnce()
   assert.equal(view.screen.renderer.root.findDescendantById("cm-compaction-config"), undefined)
   assert.equal(view.screen.renderer.root.findDescendantById("cm-strategy-picker"), undefined)
+  assert.doesNotMatch(view.frame(), /Turn reader/)
   assert.deepEqual(view.navigations, [])
+  assert.deepEqual(calls, [])
+  assert.equal(view.data.jobs, 0)
   assert.equal(readPolicy(view.data.session).revision, 0)
   view.setInputMode("context-manager")
+  view.key("return")
+  await view.until(() => view.frame().includes("Turn reader · Turn 1"))
+  view.esc()
+  await view.until(() => view.frame().includes("Selected (1)"))
   await view.type("c")
   await view.until(() => !!view.screen.renderer.root.findDescendantById("cm-compaction-config"))
 })
@@ -360,34 +373,52 @@ test("overview stays quiet, keeps totals visible, and exposes complete diagnosti
   assert.equal(readPolicy(view.data.session).revision, 0)
 })
 
-test("narrow terminals switch panes without losing ranges or cursor and keep the footer visible", async (t) => {
-  const view = await setup(t, 60, 18, ({ data }) => { data.messages = messages(data.session.id, 20) })
+test("narrow terminals reveal the wrapped end row across resize and pane remounts without losing ranges", async (t) => {
+  const view = await setup(t, 60, 18, ({ data }) => {
+    data.messages = messages(data.session.id, 20)
+    const part = data.messages.at(-2)!.parts[0]
+    if (part.type === "text") part.text = "LAST_WRAPPED_PREVIEW ".repeat(100)
+  })
+  const cursorVisible = () => {
+    const list = view.screen.renderer.root.findDescendantById("cm-ranges") as ScrollBoxRenderable | undefined
+    const row = view.screen.renderer.root.findDescendantById("cm-range-19")
+    return !!list && !!row && row.height > 0 && list.scrollTop > 0 && list.scrollLeft === 0
+      && row.y >= list.viewport.y && row.y + row.height <= list.viewport.y + list.viewport.height
+      && row.x >= list.viewport.x && row.x + row.width <= list.viewport.x + list.viewport.width
+  }
   await view.until(() => view.frame().includes("Ready."))
   await view.type(" ")
   view.key(KeyCodes.ARROW_DOWN)
   await view.type(" ")
   await view.until(() => view.frame().includes("Selected (1)"))
   view.key(KeyCodes.END)
-  await view.until(() => view.frame().includes("Turn 20"))
+  await view.until(() => cursorVisible() && view.frame().includes("Turn 20"))
+  const preview = view.screen.renderer.root.findDescendantById("cm-range-preview-text-19") as TextRenderable
+  assert.ok(preview.virtualLineCount > 3)
+  const originalList = view.screen.renderer.root.findDescendantById("cm-ranges")!
   view.key(KeyCodes.TAB)
   await view.until(() => view.frame().includes("Overview") && !view.screen.renderer.root.findDescendantById("cm-ranges"))
+  assert.equal(originalList.isDestroyed, true)
   assert.ok(view.frame().includes("Local text") && view.frame().includes("Selected (1)"))
   view.key(KeyCodes.TAB)
-  await view.until(() => view.frame().includes("Turn 20") && !!view.screen.renderer.root.findDescendantById("cm-ranges"))
+  await view.until(cursorVisible)
+  assert.notEqual(view.screen.renderer.root.findDescendantById("cm-ranges"), originalList)
   await view.type("v")
   await view.until(() => view.frame().includes("Details") && !view.screen.renderer.root.findDescendantById("cm-ranges"))
   view.key(KeyCodes.TAB)
-  await view.until(() => view.frame().includes("Turn 20"))
+  await view.until(cursorVisible)
   view.screen.renderer.resize(80, 24)
-  await view.until(() => !!view.screen.renderer.root.findDescendantById("cm-context-panel"))
+  await view.until(() => !!view.screen.renderer.root.findDescendantById("cm-context-panel") && cursorVisible())
   for (const [width, height] of [[80, 18], [120, 32], [60, 18]]) {
     view.screen.renderer.resize(width, height)
     await view.until(() => {
       const footer = view.screen.renderer.root.findDescendantById("cm-hotkeys")!
-      return footer.y + footer.height <= height
+      return cursorVisible() && footer.y + footer.height <= height
     })
     assert.ok(view.frame().includes("Local text") && view.frame().includes("Selected (1)"))
   }
+  view.key("return")
+  await view.until(() => view.frame().includes("Turn reader · Turn 20"))
   assert.equal(view.data.jobs, 0)
 })
 
@@ -823,6 +854,29 @@ test("failed projection reports source mismatch without advertising removed reco
   assert.ok(!frame().includes("Undo latest action"))
   await type("ur")
   assert.equal(readPolicy(data.session).operations.length, 1)
+})
+
+test("getter-backed theme switches update mounted text and dialog surfaces without resetting selection", async (t) => {
+  const { state, control } = pausedControl()
+  state.pause = undefined
+  const view = await setup(t, 80, 24, ({ host }) => { host.auto = control })
+  await view.until(() => view.frame().includes("Ready."))
+  await view.type("  a")
+  await view.until(() => !!view.screen.renderer.root.findDescendantById("cm-strategy-picker"))
+  const total = view.screen.renderer.root.findDescendantById("cm-context-total") as TextRenderable
+  const picker = view.screen.renderer.root.findDescendantById("cm-strategy-picker") as BoxRenderable
+  for (const mode of ["dark", "light", "dark"] as const) {
+    const theme = themeFixture(mode)
+    view.setTheme(theme)
+    await view.until(() => total.fg.equals(theme.text.base) && picker.backgroundColor.equals(theme.background.base))
+    assert.equal(view.screen.renderer.root.findDescendantById("cm-context-total"), total)
+    assert.equal(view.screen.renderer.root.findDescendantById("cm-strategy-picker"), picker)
+  }
+  view.esc()
+  await view.until(() => !view.screen.renderer.root.findDescendantById("cm-strategy-picker"))
+  assert.match(view.frame(), /Selected \(1\)/)
+  assert.equal(view.data.jobs, 0)
+  assert.equal(readPolicy(view.data.session).revision, 0)
 })
 
 for (const mode of ["dark", "light"] as const) test(`${mode} hotkeys use semantic action colors while labels, separators and notes stay muted`, async () => {
