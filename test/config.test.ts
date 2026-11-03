@@ -64,7 +64,10 @@ test("numeric settings reject coercion and explicit null instead of silently usi
 })
 
 test("automatic defaults, numeric bounds and paired model settings are validated in one place", () => {
-  assert.deepEqual(settings().autocompaction, { headroom: 20000, estimateMultiplier: 1.3, lastResortKeepTokens: 20000, minRangeTokens: 10000 })
+  for (const input of [undefined, {}, { autocompaction: {} }])
+    assert.deepEqual(settings(input).autocompaction, { headroom: 30000, estimateMultiplier: 1.3, lastResortKeepTokens: 20000, minRangeTokens: 10000 })
+  assert.equal(settings({ autocompaction: { minRangeTokens: 5000 } }).autocompaction.headroom, 30000)
+  for (const headroom of [0, 20000, 40000]) assert.equal(settings({ autocompaction: { headroom } }).autocompaction.headroom, headroom)
   for (const minRangeTokens of [0, 5000, 20000]) assert.equal(settings({ autocompaction: { minRangeTokens } }).autocompaction.minRangeTokens, minRangeTokens)
   assert.equal(settings({ autocompaction: { lastResortKeepTokens: 0, estimateMultiplier: 1.6 } }).autocompaction.estimateMultiplier, 1.6)
   assert.equal(settings({ autocompaction: { lastResortKeepTokens: 0 } }).autocompaction.lastResortKeepTokens, 0)

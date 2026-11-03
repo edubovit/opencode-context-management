@@ -199,7 +199,7 @@ This includes every configurable parameter. Numeric values and fallback encoding
       "options": {
         "ui": { "maxLinesPerTurn": 4 },
         "autocompaction": {
-          "headroom": 20000,
+          "headroom": 30000,
           "estimateMultiplier": 1.3,
           "lastResortKeepTokens": 20000,
           "minRangeTokens": 10000
@@ -226,7 +226,7 @@ This includes every configurable parameter. Numeric values and fallback encoding
 | Parameter | Default | Meaning and constraint |
 | --- | --- | --- |
 | `ui.maxLinesPerTurn` | `4` | Integer ≥ 3. Maximum row height, including heading, status and preview. Does not truncate context. |
-| `autocompaction.headroom` | `20000` | Integer ≥ 0, in estimated input tokens; must be smaller than input capacity. Larger values start cleanup earlier. |
+| `autocompaction.headroom` | `30000` | Integer ≥ 0, in estimated input tokens; must be smaller than input capacity. Larger values start cleanup earlier. |
 | `autocompaction.estimateMultiplier` | `1.3` | Finite number ≥ 1. Conservative fallback/growth multiplier for main guards and automatic helpers, not a manual-summary veto. |
 | `autocompaction.lastResortKeepTokens` | `20000` | Integer ≥ 0. Newest local tokens retained during emergency cleanup. Whole-message/tool-pair boundaries can make the tail larger. |
 | `autocompaction.minRangeTokens` | `10000` | Integer ≥ 0. AUTO_PER_TURN groups contiguous eligible turns until their effective source-content tokens strictly exceed this value. `0` selects the first positive-content range. Does not constrain AUTO_SESSION, prefix fallback, last resort or manual selections. |

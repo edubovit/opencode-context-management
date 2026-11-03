@@ -348,7 +348,7 @@ test("overview stays quiet, keeps totals visible, and exposes complete diagnosti
   const view = await setup(t, 120, 30, undefined, {}, runtime)
   await view.until(() => view.frame().includes("Ready."))
   const find = (id: string) => view.screen.renderer.root.findDescendantById(id)
-  assert.ok(view.frame().includes("Overview") && view.frame().includes("68%"))
+  assert.ok(view.frame().includes("Overview") && view.frame().includes("72%"))
   assert.ok(view.frame().includes("Text breakdown") && view.frame().includes("Provider-based estimate"))
   for (const text of ["ses_test", "revision", "Context tokenizer", "Runtime inventory", "Last reported usage", "provider-matched"])
     assert.ok(!view.frame().includes(text), text)

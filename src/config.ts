@@ -10,7 +10,7 @@ const integer = (minimum: number) => z.number().int({ error: "must be a safe int
 const name = z.string().refine(value => value.trim().length > 0, "must be a nonempty string")
 const schema = z.strictObject({
   autocompaction: z.strictObject({
-    headroom: integer(0).default(20000),
+    headroom: integer(0).default(30000),
     estimateMultiplier: z.number().min(1).default(1.3),
     lastResortKeepTokens: integer(0).default(20000),
     minRangeTokens: integer(0).default(10000),
