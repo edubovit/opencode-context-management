@@ -8,6 +8,7 @@ import { chars, pruneText, toolText, type PruneRule } from "./text.ts"
 import { contentTokens } from "./metrics.ts"
 import { FALLBACK_BASIS, type TokenBasis } from "./tokens.ts"
 import type { Operation, Policy } from "./ledger.ts"
+import { planSubturns } from "./subturn-plan.ts"
 export { append, emptyPolicy, readPolicy, POLICY_VERSION, type Mode, type Operation, type Policy } from "./ledger.ts"
 export { toolText } from "./text.ts"
 
@@ -24,6 +25,8 @@ export type Block = {
   deletionID?: string
   previous?: Block[]
   pruning?: PruningLayer[]
+  subturn?: { originID: string }
+  segments?: Block[]
 }
 
 type PruningLayer = {
@@ -91,6 +94,52 @@ export function summaryStart(messages: Envelope[]) {
     (!first.shell.background || messages.some(m => m.info.kind === "synthetic" || m.info.role === "user"))
 }
 
+export function summaryRangeStart(blocks: Block[]) {
+  const first = blocks.find(block => block.messages.length)
+  return summaryStart(blockMessages(blocks)) || !!(first?.kind === "turn" && first.subturn)
+}
+
+export function splitOperation(block: Block, requested: number, basis: TokenBasis, limits: { minTokens: number; minSplitTokens: number }): { operation: Operation; parts: number } {
+  if (block.kind !== "turn" || (!block.subturn && (block.messages[0]?.info.role !== "user" || block.messages[0].info.kind !== "user")))
+    throw new Error("Select one ordinary original USER turn or subturn to split")
+  const plan = planSubturns(block.messages, requested, basis, limits.minTokens, limits.minSplitTokens)
+  return { operation: { ...operation("partition", [block], undefined, basis), cuts: plan.ends }, parts: plan.sizes.length }
+}
+
+export function validatePartition(op: Operation, blocks: Block[], basis: TokenBasis, limits: { minTokens: number; minSplitTokens: number }): void {
+  if (op.mode !== "partition" || !op.cuts) throw new Error("Expected a structural partition operation")
+  if (op.summary || op.rule || op.summaryIDs || op.targetID || op.pruneReason || op.checkpoint || op.pruneTargets || op.deletedIDs)
+    throw new Error("Structural partitions cannot change content or restoration layers")
+  const start = blocks.findIndex(block => block.sourceIDs[0] === op.sourceIDs[0])
+  const end = blocks.findIndex(block => block.sourceIDs.at(-1) === op.sourceIDs.at(-1))
+  if (start < 0 || end < start) throw new Error("Partition selection changed; refresh and select again")
+  const selected = blocks.slice(start, end + 1)
+  const messages = blockMessages(selected)
+  if (!sameIDs(selected.flatMap(block => block.sourceIDs), op.sourceIDs) || historyHash(messages) !== op.beforeHash)
+    throw new Error("Partition source content changed")
+  if (hash(op.tokenizer) !== hash(basis) || op.beforeTokens !== contentTokens(messages, basis) || op.beforeChars !== chars(serialize(messages)))
+    throw new Error("Partition must use the current main-session token basis and source size")
+  if (!op.cuts.length) {
+    const originID = selected[0]?.subturn?.originID
+    if (selected.length < 2 || !originID || selected.some(block => block.kind !== "turn" || block.subturn?.originID !== originID))
+      throw new Error("Select at least two ordinary sibling subturns to merge")
+    return
+  }
+  const block = selected[0]
+  if (selected.length !== 1 || block.kind !== "turn" || (!block.subturn && (messages[0]?.info.kind !== "user" || messages[0].info.role !== "user")))
+    throw new Error("Select exactly one ordinary original USER turn or subturn to split")
+  planSubturns(messages, op.cuts.length + 1, basis, limits.minTokens, limits.minSplitTokens)
+  let from = 0
+  for (const cut of op.cuts) {
+    const index = messages.findIndex(message => message.info.id === cut)
+    if (index < from || index >= messages.length - 1 || !terminalToolBatch(messages[index]))
+      throw new Error("Subturn cuts require ordered completed native assistant tool batches")
+    if (contentTokens(messages.slice(from, index + 1), basis) < limits.minTokens) throw new Error(`Each new subturn requires at least ${limits.minTokens} content tokens`)
+    from = index + 1
+  }
+  if (contentTokens(messages.slice(from), basis) < limits.minTokens) throw new Error(`Each new subturn requires at least ${limits.minTokens} content tokens`)
+}
+
 export function select(blocks: Block[], start: number, end: number) {
   const low = Math.min(start, end)
   const high = Math.max(start, end)
@@ -102,7 +151,7 @@ export function operation(mode: Operation["mode"], selected: Block[], rule?: Pru
   const messages = blockMessages(selected)
   const summaryIDs = selected.flatMap((block) => block.summaryID ? [block.summaryID] : [])
   const deletedIDs = selected.flatMap((block) => block.deletionID ? [block.deletionID] : [])
-  const pruneTargets = selected.flatMap((block) => {
+  const pruneTargets = selected.flatMap(ordinaryLeaves).flatMap((block) => {
     const layer = block.kind === "turn" && block.pruning?.at(-1)
     return layer ? [{ operationID: layer.operationID, sourceIDs: [...block.sourceIDs] }] : []
   })
@@ -124,13 +173,14 @@ export function replacement(op: Operation, selected: Block[]): Block {
   const messages = blockMessages(selected)
   const first = messages[0]
   const last = messages.at(-1)!
-  if (!summaryStart(messages)) throw new Error("Summary range must start with a visible user message or settled shell input")
+  if (!summaryRangeStart(selected)) throw new Error("Summary range must start with a visible user message, settled shell input or verified subturn")
+  const continuation = !summaryStart(messages)
   const user: Envelope = first.info.role === "user" ? first : {
-    info: { id: first.info.id, sessionID: first.info.sessionID, kind: "user", role: "user", agent: first.info.agent, time: first.info.time, model: { providerID: first.info.providerID, modelID: first.info.modelID } }, parts: [],
+    info: { id: continuation ? `msg_cm_${op.id}_user` : first.info.id, sessionID: first.info.sessionID, kind: "user", role: "user", agent: first.info.agent, time: first.info.time, model: { providerID: first.info.providerID, modelID: first.info.modelID } }, parts: [],
   }
   const assistant: Envelope = {
     info: last.info.role === "assistant"
-      ? { ...last.info, ...(last.info.id === user.info.id ? { id: `msg_cm_${op.id}` } : {}), error: undefined, finish: "stop", time: { ...last.info.time, completed: last.info.time.completed ?? op.created } }
+      ? { ...last.info, ...(continuation ? { id: `msg_cm_${op.id}_assistant` } : last.info.id === user.info.id ? { id: `msg_cm_${op.id}` } : {}), error: undefined, finish: "stop", time: { ...last.info.time, completed: last.info.time.completed ?? op.created } }
       : {
         id: `msg_cm_${op.id}`, sessionID: last.info.sessionID, role: "assistant", kind: "assistant",
         providerID: last.info.model.providerID, modelID: last.info.model.modelID,
@@ -146,6 +196,7 @@ export function replacement(op: Operation, selected: Block[]): Block {
   })
   return {
     kind: op.mode === "brief" ? "brief" : "compact", sourceIDs: op.sourceIDs, closed: true, summaryID: op.id,
+    ...(sharedSubturn(selected) ? { subturn: sharedSubturn(selected) } : {}),
     messages: [
       { info: user.info, parts: [part(user, "Earlier conversation range, replaced with an approved summary:")] },
       { info: assistant.info, parts: [part(assistant, summaryText(op))] },
@@ -159,13 +210,57 @@ export function replacementTokens(op: Operation, selected: Block[]) {
 
 export function project(active: Envelope[], policy: Policy, observe?: (op: Operation, selected: Block[]) => void, unavailable?: ReadonlySet<string>): Block[] {
   let blocks = turns(structuredClone(active))
+  const origins = new Map(blocks.flatMap(block => block.messages[0]?.info.kind === "user" && block.messages[0].info.role === "user"
+    ? block.sourceIDs.map(id => [id, block.sourceIDs[0]] as const) : []))
+  const originals = new Map(active.map(message => [message.info.id, message]))
   const sourceIDs = new Set(active.map(message => message.info.id))
+  for (const originID of policy.subturnOrigins ?? []) {
+    if (origins.get(originID) !== originID) throw new Error("Saved subturn origin is not an original native USER turn")
+    blocks = markSubturnOrigin(blocks, originID, origins)
+  }
   for (const id of policy.turnEnds ?? []) {
     if (!sourceIDs.has(id)) throw new Error("Saved fork turn boundary no longer exists")
     blocks = splitAfter(blocks, id)
   }
   const pruned = new Map<string, string>()
   for (const op of policy.operations) {
+    if (op.mode === "partition") {
+      const start = blocks.findIndex(block => block.sourceIDs[0] === op.sourceIDs[0])
+      const end = blocks.findIndex(block => block.sourceIDs.includes(op.sourceIDs.at(-1)!))
+      if (start < 0 || end < start) throw new Error("Saved partition range no longer exists")
+      const selected = blocks.slice(start, end + 1)
+      const originID = origins.get(op.sourceIDs[0])
+      if (!originID || selected.some(block => block.kind !== "turn" || block.sourceIDs.some(id => origins.get(id) !== originID)))
+        throw new Error("Partition requires ordinary siblings from one original USER turn; expand summaries or deleted ranges first")
+      const prefix = selected.map((block, index) => index === selected.length - 1
+        ? sliceOrdinary(block, 0, block.sourceIDs.indexOf(op.sourceIDs.at(-1)!) + 1) : block)
+      if (!sameIDs(prefix.flatMap(block => block.sourceIDs), op.sourceIDs) ||
+          (historyHash(blockMessages(prefix)) !== op.beforeHash && !op.sourceIDs.some(id => unavailable?.has(id))))
+        throw new Error("Saved range content changed. Restore the original host history before continuing.")
+      if (!op.cuts || (!op.cuts.length && selected.length < 2)) throw new Error("Select at least two sibling subturns to merge")
+      let previous = -1
+      for (const cut of op.cuts) {
+        const index = op.sourceIDs.indexOf(cut)
+        if (index <= previous || index >= op.sourceIDs.length - 1) throw new Error("Partition cuts must be ordered internal source endpoints")
+        previous = index
+        const message = originals.get(cut)
+        const missing = unavailable?.has(cut) && policy.sources?.some(source => source.id === cut)
+        if (!missing && (!message || !terminalToolBatch(message)))
+          throw new Error("Subturn cuts require a completed native assistant tool batch")
+      }
+      observe?.(op, prefix)
+      const merged = joinOrdinary(selected, { originID })
+      const cuts = [...op.cuts.map(id => merged.sourceIDs.indexOf(id) + 1), merged.sourceIDs.length]
+      let from = 0
+      const partitioned = cuts.map((to, index) => {
+        const block = sliceOrdinary(merged, from, to)
+        from = to
+        return { ...block, closed: index < cuts.length - 1 || block.closed, subturn: { originID } }
+      })
+      blocks.splice(start, selected.length, ...partitioned)
+      blocks = markSubturnOrigin(blocks, originID, origins)
+      continue
+    }
     const last = op.sourceIDs.at(-1)!
     if (blocks.some(block => block.kind === "turn" && block.sourceIDs.includes(last))) blocks = splitAfter(blocks, last)
     const start = blocks.findIndex((b) => b.sourceIDs[0] === op.sourceIDs[0])
@@ -188,13 +283,13 @@ export function project(active: Envelope[], policy: Policy, observe?: (op: Opera
       if (selected.every((block) => block.kind === "deleted")) throw new Error("Selected range is already deleted")
       blocks.splice(start, selected.length, {
         kind: "deleted", sourceIDs: [...op.sourceIDs], messages: [], closed: true, deletionID: op.id,
+        ...(sharedSubturn(selected) ? { subturn: sharedSubturn(selected) } : {}),
         previous: withPruning(selected, pruned),
       })
       continue
     }
     if (["tool-prune", "tool-prune-all", "tool-delete", "prune-reason"].includes(op.mode)) {
-      for (const b of selected) {
-        if (b.kind !== "turn") continue
+      for (const b of selected.flatMap(ordinaryLeaves)) {
         const before: PruningLayer["before"] = {
           messages: b.messages, pruned: withPruning([b], pruned)[0].pruned,
           ...(b.reasonPruned !== undefined ? { reasonPruned: b.reasonPruned } : {}),
@@ -235,6 +330,7 @@ export function project(active: Envelope[], policy: Policy, observe?: (op: Opera
         })
         if (changed) b.pruning = [...(b.pruning ?? []), { operationID: op.id, before }]
       }
+      blocks.splice(start, selected.length, ...selected.map(refreshOrdinary))
       continue
     }
     if (op.mode === "expand") {
@@ -246,19 +342,22 @@ export function project(active: Envelope[], policy: Policy, observe?: (op: Opera
       if (selected.filter((block) => block.kind === "deleted" && block.deletionID && deletions.has(block.deletionID)).length !== deletions.size)
         throw new Error("Selected deletion is no longer available for expansion")
       if (new Set(pruneTargets.flatMap((target) => target.sourceIDs)).size !== pruneTargets.reduce((sum, target) => sum + target.sourceIDs.length, 0) ||
-          pruneTargets.some((target) => !selected.some((block) => block.kind === "turn" && block.pruning?.at(-1)?.operationID === target.operationID && sameIDs(block.sourceIDs, target.sourceIDs))))
+          pruneTargets.some((target) => !selected.flatMap(ordinaryLeaves).some((block) => block.pruning?.at(-1)?.operationID === target.operationID && sameIDs(block.sourceIDs, target.sourceIDs))))
         throw new Error("Selected pruning layer is no longer available for restoration")
       const expanded = selected.flatMap((block) => {
-        const pruning = pruneTargets.find((target) => sameIDs(target.sourceIDs, block.sourceIDs))
-        if (pruning) {
-          const layer = block.pruning!.at(-1)!
-          const { pruning: _pruning, reasonPruned: _reason, toolsDeleted: _tools, allToolsPruned: _all, ...current } = block
-          const messages = layer.before.messages.filter((message) => block.sourceIDs.includes(message.info.id))
-          if (!sameIDs(messages.map((message) => message.info.id), block.sourceIDs)) throw new Error("Pruning restoration source changed")
-          const earlier = block.pruning!.slice(0, -1)
-          const restored: Block = { ...current, ...layer.before, messages, ...(earlier.length ? { pruning: earlier } : {}) }
-          restorePruning([restored], pruned)
-          return [restored]
+        if (block.kind === "turn") {
+          const restored = ordinaryLeaves(block).map(leaf => {
+            if (!pruneTargets.some(target => sameIDs(target.sourceIDs, leaf.sourceIDs))) return leaf
+            const layer = leaf.pruning!.at(-1)!
+            const { pruning: _pruning, reasonPruned: _reason, toolsDeleted: _tools, allToolsPruned: _all, ...current } = leaf
+            const messages = layer.before.messages.filter(message => leaf.sourceIDs.includes(message.info.id))
+            if (!sameIDs(messages.map(message => message.info.id), leaf.sourceIDs)) throw new Error("Pruning restoration source changed")
+            const earlier = leaf.pruning!.slice(0, -1)
+            const restored: Block = { ...current, ...layer.before, messages, ...(earlier.length ? { pruning: earlier } : {}) }
+            restorePruning([restored], pruned)
+            return restored
+          })
+          return [block.segments ? { ...joinOrdinary(restored, block.subturn), closed: block.closed } : restored[0]]
         }
         if (!(block.summaryID && targets.has(block.summaryID)) && !(block.deletionID && deletions.has(block.deletionID))) return [block]
         if (!block.previous) throw new Error("Selected range has no pre-compaction state")
@@ -279,6 +378,7 @@ export function project(active: Envelope[], policy: Policy, observe?: (op: Opera
 function withPruning(blocks: Block[], pruned: Map<string, string>): Block[] {
   return blocks.map((block) => ({
     ...block,
+    ...(block.segments ? { segments: withPruning(block.segments, pruned) } : {}),
     pruned: Object.fromEntries(block.messages.flatMap((message) => message.parts.flatMap((part) =>
       part.type === "tool" && pruned.has(part.id) ? [[part.id, pruned.get(part.id)!]] : []))),
   }))
@@ -292,6 +392,7 @@ function restorePruning(blocks: Block[], pruned: Map<string, string>) {
       if (block.pruned && Object.hasOwn(block.pruned, part.id)) pruned.set(part.id, block.pruned[part.id])
     }
     if (block.previous) restorePruning(block.previous, pruned)
+    if (block.segments) restorePruning(block.segments, pruned)
   }
 }
 
@@ -322,12 +423,81 @@ export function splitAfter(blocks: Block[], id: string): Block[] {
     if (index < 0 || index === block.sourceIDs.length - 1) return [block]
     if (block.kind !== "turn") throw new Error("Cannot split a saved summary or deleted range")
     const cut = index + 1
-    const prefix = block.messages.slice(0, cut)
     return [
-      { ...block, sourceIDs: block.sourceIDs.slice(0, cut), messages: prefix, closed: turns(prefix)[0].closed },
-      { ...block, sourceIDs: block.sourceIDs.slice(cut), messages: block.messages.slice(cut) },
+      sliceOrdinary(block, 0, cut),
+      sliceOrdinary(block, cut),
     ]
   })
+}
+
+function ordinaryLeaves(block: Block): Block[] {
+  return block.kind !== "turn" ? [] : block.segments?.flatMap(ordinaryLeaves) ?? [block]
+}
+
+function sharedSubturn(blocks: Block[]) {
+  const subturn = blocks[0]?.subturn
+  return subturn && blocks.every(block => block.subturn?.originID === subturn.originID) ? subturn : undefined
+}
+
+function markSubturnOrigin(blocks: Block[], originID: string, origins: ReadonlyMap<string, string>): Block[] {
+  return blocks.map(block => ({
+    ...block,
+    ...(block.sourceIDs.length && block.sourceIDs.every(id => origins.get(id) === originID) ? { subturn: { originID } } : {}),
+    ...(block.previous ? { previous: markSubturnOrigin(block.previous, originID, origins) } : {}),
+    ...(block.segments ? { segments: markSubturnOrigin(block.segments, originID, origins) } : {}),
+  }))
+}
+
+function terminalToolBatch(message: Envelope) {
+  const tools = message.parts.filter(part => part.type === "tool")
+  return message.info.kind === "assistant" && message.info.role === "assistant" && message.info.time.completed !== undefined &&
+    tools.length > 0 && tools.every(part => part.state.status === "completed" || part.state.status === "error")
+}
+
+function joinOrdinary(blocks: Block[], subturn = blocks[0]?.subturn): Block {
+  const segments = blocks.flatMap(ordinaryLeaves)
+  if (segments.length === 1) return { ...segments[0], ...(subturn ? { subturn } : {}) }
+  const pruning = segments.flatMap(segment => segment.pruning ?? [])
+  return {
+    kind: "turn", sourceIDs: segments.flatMap(segment => segment.sourceIDs), messages: blockMessages(segments), closed: blocks.at(-1)!.closed,
+    segments, ...(subturn ? { subturn } : {}), ...(pruning.length ? { pruning } : {}),
+    pruned: Object.assign({}, ...segments.map(segment => segment.pruned)),
+    ...(segments.every(segment => segment.reasonPruned) ? { reasonPruned: true } : {}),
+    ...(segments.every(segment => segment.toolsDeleted) ? { toolsDeleted: true } : {}),
+    ...(segments.every(segment => segment.allToolsPruned) ? { allToolsPruned: true } : {}),
+  }
+}
+
+function refreshOrdinary(block: Block): Block {
+  return block.segments ? { ...joinOrdinary(block.segments, block.subturn), closed: block.closed } : block
+}
+
+function sliceOrdinary(block: Block, start: number, end = block.sourceIDs.length): Block {
+  const sourceIDs = block.sourceIDs.slice(start, end)
+  const ids = new Set(sourceIDs)
+  if (block.segments) {
+    const segments = block.segments.flatMap(segment => {
+      const from = segment.sourceIDs.findIndex(id => ids.has(id))
+      if (from < 0) return []
+      return [sliceOrdinary(segment, from, segment.sourceIDs.findLastIndex(id => ids.has(id)) + 1)]
+    })
+    return { ...joinOrdinary(segments, block.subturn), closed: end === block.sourceIDs.length ? block.closed : segmentClosed(block.messages.filter(message => ids.has(message.info.id)), block.subturn) }
+  }
+  const messages = block.messages.filter(message => ids.has(message.info.id))
+  const pruneState = (state: PruningLayer["before"]): PruningLayer["before"] => {
+    const messages = state.messages.filter(message => ids.has(message.info.id))
+    const parts = new Set(messages.flatMap(message => message.parts.map(part => part.id)))
+    return { ...state, messages, ...(state.pruned ? { pruned: Object.fromEntries(Object.entries(state.pruned).filter(([id]) => parts.has(id))) } : {}) }
+  }
+  return {
+    ...block, ...pruneState(block), sourceIDs, messages,
+    closed: end === block.sourceIDs.length ? block.closed : segmentClosed(messages, block.subturn),
+    ...(block.pruning ? { pruning: block.pruning.map(layer => ({ ...layer, before: pruneState(layer.before) })) } : {}),
+  }
+}
+
+function segmentClosed(messages: Envelope[], subturn?: Block["subturn"]) {
+  return !!subturn && !!messages.length && terminalToolBatch(messages.at(-1)!) || turns(messages)[0]?.closed === true
 }
 
 export const TOOL_OUTPUT_PRUNED = "[Tool output pruned]"

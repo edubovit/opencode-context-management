@@ -1,6 +1,6 @@
 # OpenCode Context Manager
 
-Control what stays in an OpenCode session's model context. Prune reasoning or tool results, summarize or delete selected ranges, and restore them later without deleting the stored conversation.
+Control what stays in an OpenCode session's model context. Split large turns into manageable subturns, prune reasoning or tool results, summarize or delete selected ranges, and restore them later without deleting the stored conversation.
 
 This is a source-based OpenCode V2 plugin, not a published npm package. Summarization uses your provider and can cost money. Summaries are lossy, token counts are estimates, and pruning is not secure erasure.
 
@@ -43,7 +43,7 @@ Requires OpenCode **>=2.2.5 <3**, Node.js **22+**, and npm. Older OpenCode hosts
 
 OpenCode watches plugin/config changes. Coordinate updates with active work; dependency updates require a service restart and terminal reconnect. If you develop the plugin, keep the live installation in a separate frozen clone. See [Contributing](docs/contributing/README.md).
 
-RPC supports remote connections, but installation and artifact delivery are not fully remote: source entrypoints must be available to the terminal, and exports/spills remain on the server. See [OpenCode plugin configuration](https://opencode.ai/v2/docs/plugins).
+RPC supports remote connections, but installation and artifact delivery are not fully remote: source entrypoints must be available to the terminal, and exports/spills remain on the server. See [OpenCode plugin configuration](https://opencode.ai/v2/docs/build/plugins).
 
 ## Select and reduce context
 
@@ -58,8 +58,10 @@ Close a range with **Space → move → Space**. Repeat to select disjoint range
 | Summarize (detailed) | Create a detailed replacement, with at most one size-review follow-up. |
 | Summarize (brief) | Create a shorter, single-pass replacement. |
 | Delete | Remove the selected range from effective context and keep a selectable **DELETED** row for restoration. |
+| Split into subturns | Divide one ordinary turn or subturn into separately selectable parts; enter a requested count. |
+| Merge subturns | Join contiguous ordinary sibling subturns from the same original user turn. |
 
-Reasoning pruning combines with one tool mode. Summary modes and Delete are standalone. Pruning, deletion and restoration make no model calls, do not change past tool execution, and do not disable future tools.
+Reasoning pruning combines with one tool mode. Summary modes, Delete, Split and Merge are standalone. Pruning, deletion, restoration, splitting and merging make no model calls, do not change past tool execution, and do not disable future tools.
 
 Background subagents can finish after the primary agent becomes idle. Saved reductions keep their original range: later results and resumed work remain outside it. Restoring that range leaves the new results intact. A continuation may appear as a separate row with the same turn number.
 
@@ -69,9 +71,19 @@ OpenCode omits reasoning from failed or interrupted assistant attempts. The plug
 
 Deleted ranges contribute no messages, placeholder text or local content tokens. They remain indivisible until restored. A wider deletion can contain prior summaries, pruning or deletions; an already-deleted-only selection is rejected without a write.
 
+### Split and merge subturns
+
+Select **one ordinary turn or subturn**, press **c**, choose **Split into subturns**, and enter a whole-number count **≥2**. With default settings, the selected source must contain **at least 50,000 tokens**, and every resulting part must contain **at least 10,000 tokens at split time**. Later pruning or summarization may reduce a part below that minimum.
+
+Cuts follow a settled assistant message's **complete native tool batch**. Calls within one message are never split apart. The requested count is reduced to the feasible count if necessary; fewer than two valid parts means no split. Counts use current effective content and the consuming main model's tokenizer, excluding hidden restoration content, provider overhead and runtime background.
+
+Select **two or more contiguous ordinary siblings from the same original user turn** and choose **Merge subturns** to join them. Expand any summary or DELETED row first. Each sibling's independent restoration layers survive merging. Split and Merge change grouping metadata only: provider content stays unchanged. Later appended work grows the final subturn rather than creating fixed-size chunks.
+
 ## Summaries and progress
 
 Selected ranges generate in parallel from one frozen effective-context snapshot. **Only a complete successful batch applies**, in one checked write. If a range fails, successful drafts stay pending; **g** retries only failed ranges. Initial summaries apply automatically. Inspect, edit or restore them afterward.
+
+A summary starting at a continuation subturn does not insert a duplicate of the original user prompt.
 
 The batch screen shows:
 
@@ -95,7 +107,7 @@ In **c**, select detailed or brief summarization and optionally toggle one isola
 | Isolated summarization (head included) | Selected range and preceding effective history; no later history or runtime background. |
 | Isolated summarization (total) | Only the selected range; no surrounding history or runtime background. |
 
-The options are mutually exclusive, off by default, and unavailable for pruning/Delete. Switching detailed/brief preserves isolation; switching to another action clears it. These are inspector choices, not global options. Summarization instructions are always included.
+The options are mutually exclusive, off by default, and available only for summaries. Switching detailed/brief preserves isolation; switching to another action clears it. These are inspector choices, not global options. Summarization instructions are always included.
 
 Each range uses its own boundary against the frozen snapshot. Sibling summaries never become another helper's background. Retries and automatic size reviews keep the chosen scope.
 
@@ -149,13 +161,15 @@ The plugin checks every main model request, including tool continuations. When t
 
 | Strategy | Behavior |
 | --- | --- |
-| AUTO_PER_TURN — default | Group earlier eligible turns oldest first until a contiguous range exceeds `minRangeTokens`, then try the earlier prefix once if necessary. |
+| AUTO_PER_TURN — default | Split the first eligible oversized turn when possible, then group eligible turns/subturns oldest first until a contiguous range exceeds `minRangeTokens`; try the earlier prefix once if necessary. |
 | AUTO_SESSION | Try the earlier prefix once. |
 | MANUAL | Pause for cleanup; explicitly resume only when the estimate fits. Top-level sessions only. |
 
-AUTO_PER_TURN uses current effective source-content tokens, measured with the main model's tokenizer. With the default **10,000**, turns of 4,000, 5,000, 2,000, 6,000 and 7,000 tokens select **turns 1–3** for one summary. Equality is not enough: a 10,000-token range includes the next eligible turn if available. Existing summaries, deleted ranges and already-attempted turns separate ordinary ranges. If no contiguous eligible range exceeds the minimum, the existing earlier-prefix fallback still runs once, even when that prefix is smaller. The setting is not a required saving, a new request threshold or a lower post-cleanup target. AUTO rechecks the request budget after each applied summary and resumes as soon as it fits.
+AUTO_PER_TURN uses current effective source-content tokens, measured with the main model's tokenizer. With the default **10,000**, turns of 4,000, 5,000, 2,000, 6,000 and 7,000 tokens select **turns 1–3** for one summary. Equality is not enough: a 10,000-token range includes the next eligible turn if available, including when splitting produces exactly 10,000-token parts. Existing summaries, deleted ranges and already-attempted turns separate ordinary ranges. If no contiguous eligible range exceeds the minimum, the earlier-prefix fallback still runs once, even when that prefix is smaller. The setting is not a required saving, a new request threshold or a lower post-cleanup target. AUTO rechecks the request budget after each applied summary and resumes as soon as it fits.
 
-Normal cleanup protects the whole active execution turn, including steered inputs. If ordinary AUTO attempts cannot make the request fit, **last resort** summarizes the largest safe prefix before the retained tail, even within an unfinished turn. It preserves whole messages/tool pairs, existing summaries, live system instructions and tool definitions.
+Automatic splitting applies only in AUTO_PER_TURN, to an eligible ordinary turn/subturn **strictly above `splitThresholdTokens` (100,000 by default)**. It requests `ceil(content tokens / maxSubturnTokens)` parts, using the same split safeguards and minimum as manual splitting. The default **50,000-token maximum is a soft target**: legal tool boundaries can force larger parts; the minimum remains mandatory. If no valid split exists, normal summary/prefix/last-resort paths remain available. AUTO_SESSION and manual range selection do not automatically split.
+
+Normal cleanup protects active execution and steered inputs. AUTO_PER_TURN can split an oversized active turn; **only the final subturn of that original active turn remains protected**, while earlier subturns become eligible. Other active/steered groups remain protected. If ordinary AUTO attempts cannot make the request fit, **last resort** summarizes the largest safe prefix before the retained tail, even within an unfinished turn. It preserves whole messages/tool pairs, existing summaries, live system instructions and tool definitions. Entry into last resort writes a warning to the log and notifies connected TUIs; splitting does not guarantee its elimination.
 
 Last resort uses independent prefix-only helpers, with at most **four rounds and 64 requests**. It applies only a complete result that makes the request fit. If no safe prefix exists, generation fails, or the result is still too large, AUTO ends with an error—not a manual pause or an oversized dispatch. Smaller tasks, a larger model or a smaller retained tail may help.
 
@@ -202,8 +216,11 @@ This includes every configurable parameter. Numeric values and fallback encoding
           "headroom": 30000,
           "estimateMultiplier": 1.3,
           "lastResortKeepTokens": 20000,
-          "minRangeTokens": 10000
+          "minRangeTokens": 10000,
+          "splitThresholdTokens": 100000,
+          "maxSubturnTokens": 50000
         },
+        "subturns": { "minTokens": 10000, "minSplitTokens": 50000 },
         "spill": { "maxLines": 2000, "maxBytes": 51200, "headShare": 0.5 },
         "prune": { "threshold": 3000, "head": 1000, "tail": 500 },
         "tokenizer": {
@@ -230,6 +247,10 @@ This includes every configurable parameter. Numeric values and fallback encoding
 | `autocompaction.estimateMultiplier` | `1.3` | Finite number ≥ 1. Conservative fallback/growth multiplier for main guards and automatic helpers, not a manual-summary veto. |
 | `autocompaction.lastResortKeepTokens` | `20000` | Integer ≥ 0. Newest local tokens retained during emergency cleanup. Whole-message/tool-pair boundaries can make the tail larger. |
 | `autocompaction.minRangeTokens` | `10000` | Integer ≥ 0. AUTO_PER_TURN groups contiguous eligible turns until their effective source-content tokens strictly exceed this value. `0` selects the first positive-content range. Does not constrain AUTO_SESSION, prefix fallback, last resort or manual selections. |
+| `autocompaction.splitThresholdTokens` | `100000` | Positive integer ≥ `subturns.minSplitTokens`. AUTO_PER_TURN considers splitting an eligible ordinary turn/subturn strictly above this value. |
+| `autocompaction.maxSubturnTokens` | `50000` | Positive integer ≥ `subturns.minTokens`. Soft automatic part-size target; tool boundaries can force larger parts. |
+| `subturns.minTokens` | `10000` | Positive integer. Hard minimum effective content tokens per resulting part, checked only when splitting. |
+| `subturns.minSplitTokens` | `50000` | Positive integer ≥ twice `subturns.minTokens`. Minimum source size for a manual or automatic split; equality is eligible. |
 
 An observed provider/local ratio can exceed the configured multiplier. Setting it to `1` does not disable the guard. A retained tail of `0` requests no exempt tail; source, checkpoint and unsettled-tool safeguards still apply.
 

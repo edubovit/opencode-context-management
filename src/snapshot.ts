@@ -10,7 +10,7 @@ export function snapshot(sessionID: string, hostVersion: string, blocks: Block[]
   const messages = blockMessages(blocks)
   const fingerprint = historyHash(messages)
   return {
-    schemaVersion: 7, pluginVersion: VERSION, hostVersion, sessionID, created: new Date().toISOString(),
+    schemaVersion: 8, pluginVersion: VERSION, hostVersion, sessionID, created: new Date().toISOString(),
     kind: "current-effective-context", stage: "effective normalized transcript, not canonical hook messages or a provider request",
     historyHash: fingerprint, policy, runtime: runtime ?? null, tokenizer, lastReportedUsage: usage ?? null,
     warnings: [
@@ -24,6 +24,6 @@ export function snapshot(sessionID: string, hostVersion: string, blocks: Block[]
     ],
     distribution: distribution(blocks, runtime, tokenizer),
     characterDistribution: distribution(blocks, runtime, tokenizer, "characters"),
-    blocks: blocks.map(({ previous: _previous, pruning: _pruning, ...visible }) => ({ ...visible, messages: effectiveMessages(visible.messages) })), text: serialize(messages),
+    blocks: blocks.map(({ previous: _previous, pruning: _pruning, segments: _segments, ...visible }) => ({ ...visible, messages: effectiveMessages(visible.messages) })), text: serialize(messages),
   }
 }

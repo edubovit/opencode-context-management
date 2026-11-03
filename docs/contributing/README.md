@@ -67,6 +67,7 @@ npm run test:host -- /absolute/path/to/opencode --tui
 npm run test:usage -- /absolute/path/to/opencode
 npm run test:subagents -- /absolute/path/to/opencode
 node --import tsx script/auto-range-smoke.ts /absolute/path/to/opencode
+node --import tsx script/subturn-smoke.ts /absolute/path/to/opencode
 npm run test:revert -- /absolute/path/to/opencode --tui
 node --import tsx script/fork-smoke.ts /absolute/path/to/opencode --tui
 node --import tsx script/continuation-smoke.ts /absolute/path/to/opencode
@@ -80,6 +81,7 @@ node --import tsx script/helper-idle-smoke.ts /absolute/path/to/opencode
 | `usage-smoke.ts` | Deliberately mismatched provider/local usage, cached/reasoning normalization, model/route invalidation, held requests, manual/automatic helper limits, media and cache persistence. |
 | `subagent-smoke.ts` | Foreground/background/nested children, independent ledgers, automatic recovery, retained tails, queued/steered inputs, Stop and restart. |
 | `auto-range-smoke.ts` | Provider-anchored AUTO_PER_TURN grouping with exact source-token sizes, strict boundary, undersized prefix fallback, zero setting, protected held-request resume and next-wire source preservation. |
+| `subturn-smoke.ts` | Split/count reduction/merge, indivisible native tool batches, summary/restoration and exact next-request preservation across restart; oversized active-turn splitting, protected final subturn, held-request resume and genuine last-resort warning delivery. |
 | `continuation-smoke.ts` | Two paused background children, pruning after primary idle, repeated automatic continuation, untouched new results, stale restoration refusal and restoration after restart. |
 | `observation-smoke.ts` | Read-only child/nested-child discovery, paused AUTO observation, real terminal navigation, disabled mutation controls, automatic refresh through compaction/running/idle, unchanged metadata/history and no observer model requests. |
 | `helper-idle-smoke.ts` | An actual idle hook admits unrelated synthetic input into owned summary/edit helpers; extraction rejects that combined execution, a fresh prompt succeeds, and parent state stays unchanged. |
@@ -119,6 +121,7 @@ Synthetic providers prove protocol and workflow behavior, not summary quality, r
 | Shared RPC contract and remote inspector adapter | `src/rpc.ts`, `src/control.ts` |
 | Ledger schema and decoding | `src/ledger.ts` |
 | Turn grouping, replay, summaries and restoration | `src/context.ts` |
+| Legal tool-batch cuts and token-balanced subturn planning | `src/subturn-plan.ts` |
 | Canonical request editing and native validation | `src/projection.ts`, `src/tool-result.ts` |
 | Fork mapping and retained-layer reconstruction | `src/fork.ts`, `src/retention.ts` |
 | Native revert provenance and reconciliation | `src/revert.ts` |
@@ -160,12 +163,12 @@ The read-only remote adapter blocks mutations independently of UI shortcuts; con
 
 | State | Location / format |
 | --- | --- |
-| Ledger | Session metadata `opencode_context_manager`; writes format **13** |
+| Ledger | Session metadata `opencode_context_manager`; writes format **14**, decodes supported formats **7–13** |
 | Strategy and pause notice | Separate session-metadata namespace; notice is not live authority |
-| Effective export | Schema **7** |
+| Effective export | Schema **8** |
 | Budget cache | Format **2**, server-local hashes/counts rather than request text |
 
-Package, host, RPC and persisted-format compatibility are separate concerns. Do not downgrade sessions to a reader that cannot understand their stored format. Decoder compatibility is defined by `src/ledger.ts` and its frozen fixtures, not by release prose. Preserve supported records and fingerprints; refuse malformed/foreign state rather than resetting it. Unreleased source checkouts can persist real state too.
+Package, host, RPC and persisted-format compatibility are separate concerns. Do not downgrade sessions to a reader that cannot understand their stored format. Decoder compatibility is defined by `src/ledger.ts` and its frozen fixtures, not by release prose. Preserve supported records, exact frozen fingerprints and pinned legacy tokenizer codecs; refuse malformed/foreign state rather than resetting it. Unreleased source checkouts can persist real state too.
 
 Normal maintenance appends operations. Verified committed native revert rebuilds retained reversible layers instead. `historyHash` retains its established representation, including the fixed `nativeVersion: 2` discriminator inside the hash; this is not a runtime switch. Native-derived `retainReasoning` is a replay fact, not an extra fingerprint field.
 
@@ -187,13 +190,27 @@ Normalization reads current `native` provider data and checkpoint `metadata.rece
 - Successful idle is not a permanent turn boundary. Test a saved final-turn reduction followed by background completion, further tool steps, another completion, restart and restoration. New input stays visible and unpruned; main budget/protected-span guards remain authoritative. Missing, reordered, inserted or changed selected sources still fail.
 - Canonical restoration uses current incoming hook snapshots, not stored unredacted text. Restore wrappers, attachments, error content and whole tool pairs consistently.
 
+### Subturn partitions
+
+Split and Merge append ordered partition operations to the ledger. A split records internal source-message cut IDs; replay applies them at that operation's place in history. Do not mutate global `turnEnds`, change native transcript messages, rewrite source/request fingerprints or make a model call. Grouping alone must leave the next canonical/provider content unchanged. The final subturn grows when new messages are appended; the partition is not a recurring fixed-size chunker.
+
+- Split accepts exactly one ordinary turn or subturn and a safe integer requested count ≥2. Merge accepts a contiguous range of at least two ordinary siblings sharing the same original user turn. Summaries/deletions must be expanded first; merging across original user turns is invalid.
+- A legal cut follows one settled native assistant message containing a complete terminal tool batch. Never split calls within that message, separate a call/result pair, cut a native checkpoint or accept pending/running tool state.
+- Measure current effective `contentTokens` with the consuming main model's tokenizer. Exclude hidden restoration layers, host-omitted reasoning, provider overhead and runtime background; do not use raw pre-pruning size or the helper's tokenizer.
+- Source size must be ≥ `subturns.minSplitTokens` (default `50000`); each new part must be ≥ `subturns.minTokens` (default `10000`). Reduce the requested count to a feasible count ≥2; refuse a split that cannot produce two valid parts. These checks apply at split time only: later reductions may leave smaller parts.
+- Configuration requires `minSplitTokens >= 2 * minTokens`, `autocompaction.splitThresholdTokens >= minSplitTokens` and `autocompaction.maxSubturnTokens >= minTokens`. Omitted settings retain their own defaults.
+- Preserve independent restoration stacks through split and merge. A merged block must not collapse sibling pre-images into one shared pruning layer or restore unrelated siblings accidentally.
+- Explicit continuation subturns may start summaries without duplicating their original user prompt in the replacement. Do not treat arbitrary assistant-only history as equivalent to a verified partition continuation. Existing saved summary shapes and legacy replay remain intact.
+
+Regress split → prune → merge → restore, repeated splits, continuation summaries, append growth, JSON/restart replay and source mutation refusal. Retain exact frozen source/request hashes for supported legacy formats; grouping fields must not leak into provider metadata or hidden export content.
+
 ### Child and fork ownership
 
 Ordinary fresh children receive an empty own ledger only after copied ownership is verified against ancestry. Keep unrelated metadata and remove inherited pause authority. Initialization is coalesced; pending writes drain on unload.
 
 Native forks have `fork.sessionID`, not ordinary-child `parentID`. Match copied native payloads in order at the recorded cutoff, ignoring only reassigned top-level message IDs. Reconstruct independent operations with mapped sources and new fingerprints; never write the source session. Complete reductions stay applied, crossing reductions open recursively, current summary revisions remain current, and undone audit operations need not be copied.
 
-Immutable `turnEnds` preserves copied leaf/checkpoint boundaries. Initialization rechecks target policy/location/history before merging metadata. Nested uninitialized forks use the copied snapshot without initializing ancestors. Source history must match during initialization; afterward source removal is allowed. Missing or mismatched sources fail closed.
+Immutable `turnEnds` preserves copied leaf/checkpoint boundaries. Retained `subturnOrigins` identifies original native USER roots whose partition lineage survives reconstruction, including text-only continuations and clipped parts with no remaining tool cut. It grants no new boundaries and is immutable during ordinary maintenance. Initialization rechecks target policy/location/history before merging metadata. Nested uninitialized forks use the copied snapshot without initializing ancestors. Source history must match during initialization; afterward source removal is allowed. Missing or mismatched sources fail closed.
 
 ### Native revert
 
@@ -205,7 +222,7 @@ After commit, accept only a verified retained prefix followed by sufficiently ne
 
 Coalesce reconciliation and recheck policy, history, location and unload state before writing. Re-read a staged/committed race once; further drift fails. Preserve unrelated metadata and remove obsolete pause notices. Correctness must not depend on asynchronous revert events.
 
-Reconstruction changes the ledger `epoch`, invalidates incompatible usage and excludes retained reports until new requests establish their own measurements. Normal maintenance cannot rewrite `turnEnds`, `sources` or `epoch`. The host owns prompt restoration and file rollback; this is strict prefix reconciliation, not arbitrary recovery or a transaction against external writers.
+Reconstruction changes the ledger `epoch`, invalidates incompatible usage and excludes retained reports until new requests establish their own measurements. Normal maintenance cannot rewrite `turnEnds`, `subturnOrigins`, `sources` or `epoch`. The host owns prompt restoration and file rollback; this is strict prefix reconciliation, not arbitrary recovery or a transaction against external writers.
 
 ## Behavioral invariants
 
@@ -213,6 +230,7 @@ Reconstruction changes the ledger `epoch`, invalidates incompatible usage and ex
 
 - USER turns start at user messages; associated synthetic/skill/shell content belongs to the effective range. Control/system/idle records are not editable USER text. Label unfinished/user-only turns honestly.
 - Ranges are inclusive and disjoint; adjacent selections stay separate. Summaries and deleted ranges are indivisible until expanded.
+- Split/Merge are standalone **c** actions. Splitting opens a numeric requested-count input; it cannot combine with pruning, summaries, deletion or isolation.
 - Do not rewrite native transcript messages. Spilling is ingestion-time previewing, distinct from reversible request projection.
 - Reasoning pruning removes safe whole parts without matching prose. Preserve historical replay parts and fingerprints, but exclude host-omitted failed/interrupted reasoning from visible serialization, counts, helpers and effective exports. Permit a missing canonical assistant only when native content proves it contains no surviving nonempty text or tool; arbitrary missing sources still fail. Restoration uses current incoming pre-images and never resurrects omitted reasoning. Use ordinary pruning status.
 - Large-result pruning preserves inputs/attachments and Unicode boundaries, pins its rule/tokenizer, and skips duplicate/non-saving cuts. All-output pruning replaces terminal/error content and attachments. Whole-call deletion removes both calls and results and requires reasoning pruning.
@@ -257,10 +275,15 @@ Test with a synthetic SSE response paused after a content delta but before finis
 - Recount candidates against one frozen anchor. Uplift growth by at least the configured multiplier or observed input/local ratio; credit removals only by unscaled local counts. Retain unexplained overhead.
 - Unpaired reconstruction is explicitly uncertain; local fallback is visibly labeled. Fork/revert histories must measure their own requests. Do not copy parent caches or use rebuilt operation order as historical wire evidence.
 - Count typed tool media separately from text; do not count binary base64/URLs as prose. Preserve full payload identity. Text/JSON/error serialization remains counted as text. Use valid media fixtures and compare wire media with native content.
-- Protect the full active execution span, including queued/steered input. Only the live AUTO owner may create a last-resort checkpoint within it, after verifying the unchanged exempt tail.
-- AUTO_PER_TURN scans before the earliest protected block for the oldest contiguous unattempted ordinary range whose effective `contentTokens` strictly exceed `autocompaction.minRangeTokens` (default10000). Use the consuming request's pinned basis, not helper encoding, raw/pre-pruning sizes, runtime context, provider reports or media allowances. Start only where `summaryStart` permits; continuation blocks may extend a valid range but cannot start one. Summaries/deletions/attempted blocks are barriers, not entries to filter out and stitch around. Mark every chosen member attempted, including after a nonreducing candidate; never mark an unsubmitted undersized run attempted.
-- If no qualifying ordinary range remains, AUTO_PER_TURN retains one earlier-prefix fallback, including an undersized prefix; then bounded last resort if needed. AUTO_SESSION still tries the prefix directly. The minimum is not a fit target, guaranteed saving or hysteresis: resume immediately once the existing forecast fits. Children map MANUAL to AUTO_PER_TURN. Top-level MANUAL requires explicit cleanup/resume.
-- Last resort retains whole messages/tool pairs/summaries around the configured tail and uses prefix-only chunk/merge helpers bounded to four rounds/64 requests. Apply only a complete fitting candidate; otherwise end AUTO without manual fallback or oversized dispatch.
+- Protect the active execution span, including queued/steered input. AUTO_PER_TURN may partition an eligible oversized active turn and protect only the final subturn of that original turn; other active/steered groups remain protected. Only the live AUTO owner may create a last-resort checkpoint within protected content, after verifying the unchanged exempt tail.
+- Before choosing a summary range, AUTO_PER_TURN can split the first eligible ordinary turn/subturn whose effective content tokens are strictly above `autocompaction.splitThresholdTokens` (default `100000`). Request `ceil(total / autocompaction.maxSubturnTokens)` parts (default maximum `50000`), using the same planner and hard minimum as manual splitting. The maximum is soft when legal boundaries force larger parts. An impossible split leaves existing summary/prefix/last-resort paths available; do not weaken tool-boundary or minimum checks to force a split.
+- AUTO_PER_TURN scans before the earliest protected block for the oldest contiguous unattempted ordinary range whose effective `contentTokens` strictly exceed `autocompaction.minRangeTokens` (default `10000`), including after splitting. Exactly 10,000-token parts may therefore be grouped. Use the consuming request's pinned basis, not helper encoding, raw/pre-pruning sizes, runtime context, provider reports or media allowances. Start only where summary eligibility permits: verified subturn continuations can start a range; arbitrary continuation blocks can only extend one. Summaries/deletions/attempted blocks are barriers, not entries to filter out and stitch around. Mark every chosen member attempted, including after a nonreducing candidate; never mark an unsubmitted undersized run attempted.
+- If no qualifying ordinary range remains, AUTO_PER_TURN retains one earlier-prefix fallback, including an undersized prefix; then bounded last resort if needed. AUTO_SESSION still tries the prefix directly, without automatic splitting. Manual range selection is not automatically split. The range minimum is not a fit target, guaranteed saving or hysteresis: resume immediately once the existing forecast fits. Children map MANUAL to AUTO_PER_TURN. Top-level MANUAL requires explicit cleanup/resume.
+- Last resort retains whole messages/tool pairs/summaries around the configured tail and uses prefix-only chunk/merge helpers bounded to four rounds/64 requests. Log a warning and emit a connected-TUI notification when entering it. Splitting does not guarantee last resort is avoided. Apply only a complete fitting candidate; otherwise end AUTO without manual fallback or oversized dispatch.
+
+Persistent warnings use the host's inherited Effect logging context through a small public Effect/fromPromise entrypoint adapter. Process stderr alone is not the host log. The warning RPC event carries session and pause identity; TUI delivery is deduplicated and never navigates or acquires control authority. Recheck gate ownership/phase, configuration, activity, source/policy identity and native revert after asynchronous validation and immediately before writing; cancellation before that final check must leave the ledger unchanged.
+
+The local native adapter must carry the final synchronous authority guard through its own awaited session/context reads and invoke it immediately before native persistence. Check expected source/revision at that boundary too. A controller-only pre-call check is insufficient. This callback stays local; never serialize it into RPC input. Native persistence already admitted by the host cannot be rolled back by a later cancellation.
 - Refuse oversized synthetic-only context with no USER turn. Deliver queued inputs exactly once.
 - Idle observations are evidence, not an admission lock. Recheck before acquiring a pause. Only the in-memory owner can resume; saved notices cannot revive waits.
 - Release the original hook on Resume; never create a prompt/synthetic substitute. Stop/move/delete/reload/unload/event loss revoke authority. Late finalizers must not overwrite a newer owner.

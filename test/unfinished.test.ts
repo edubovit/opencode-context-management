@@ -37,7 +37,7 @@ test("user-only turns get a distinct synthetic summary response and restore exac
   assert.deepEqual(block.sourceIDs, ids)
   assert.deepEqual(block.messages.map((message) => message.info.role), ["user", "assistant"])
   assert.notEqual(block.messages[0].info.id, block.messages[1].info.id)
-  assert.equal(readPolicy(data.session).version, 13)
+  assert.equal(readPolicy(data.session).version, 14)
   assert.deepEqual(data.messages, original)
   await controller.restoreRanges([ids])
   assert.deepEqual((await controller.load()).blocks[0].messages, original)

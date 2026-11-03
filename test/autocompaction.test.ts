@@ -316,7 +316,7 @@ for (const mode of ["AUTO_PER_TURN", "AUTO_SESSION"] as const) test(`${mode} las
   const original = structuredClone(data.messages)
   await auto.beforeRequest(data.messages)
   const policy = readPolicy(data.session)
-  assert.equal(policy.version, 13)
+  assert.equal(policy.version, 14)
   assert.equal(policy.operations.length, 1)
   assert.equal(policy.operations[0].checkpoint, true)
   assert.ok(!policy.operations[0].sourceIDs.includes(original.at(-1)!.info.id))

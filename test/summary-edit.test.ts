@@ -44,7 +44,7 @@ test("summary revision operations survive dependent compaction and expansion wit
   const originalOp = structuredClone(readPolicy(data.session).operations[0])
   await editor.apply("MANUAL_EDIT")
   assert.deepEqual(readPolicy(data.session).operations[0], originalOp)
-  assert.equal(readPolicy(data.session).version, 13)
+  assert.equal(readPolicy(data.session).version, 14)
   assert.equal((await controller.load()).blocks[0].summaryID, id)
   assert.equal((await controller.summary(id)).text, "MANUAL_EDIT")
   const all = (await controller.load()).blocks.slice(0, 2).flatMap((block) => block.sourceIDs)

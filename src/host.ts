@@ -5,7 +5,7 @@ import { AUTO_KEY, strategy } from "./auto-state.ts"
 import type { HelperTrigger, Host } from "./host-contract.ts"
 import { Activity } from "./activity.ts"
 import { modelView, sessionView, transcriptView } from "./normalize.ts"
-import { emptyPolicy, hash, readPolicy, type Policy } from "./context.ts"
+import { emptyPolicy, hash, historyHash, readPolicy, type Policy } from "./context.ts"
 import { validateNativePolicy } from "./projection.ts"
 import { inheritFork } from "./fork.ts"
 import { rememberPolicy, revertPolicy } from "./revert.ts"
@@ -114,15 +114,28 @@ export function pluginHost(ctx: PluginContext) {
     idle: (id) => activity.idle(id),
     configured: async () => !closed,
     models: async () => (await ctx.model.list()).data.map(modelView),
-    update: async (id, metadata) => {
+    update: async (id, metadata, expected, guard) => {
       const session = await nativeSession(id)
       const native = await ctx.session.context({ sessionID: id })
-      const raw = transcriptView(session, native)
-      const policy = readPolicy({ ...sessionView(session), metadata })
+      const current = await ctx.session.get({ sessionID: id })
+      if (current.location.directory !== ctx.location.directory) throw new Error("Session location changed before context maintenance")
+      const raw = transcriptView(current, native)
+      if (expected) {
+        if (current.revert) throw new Error("Finish native undo/unrevert before context maintenance")
+        const before = readPolicy(sessionView(current))
+        if (before.revision !== expected.revision || historyHash(raw) !== expected.fingerprint || hash(before) !== hash(readPolicy(sessionView(session))))
+          throw new Error("Session or policy changed before native maintenance commit")
+      }
+      const saved = metadata[KEY] === undefined ? current.metadata?.[KEY] : metadata[KEY]
+      const policy = readPolicy({ id, metadata: { [KEY]: saved } })
       validateNativePolicy(native, raw, policy)
-      await ctx.session.update({ sessionID: id, metadata: JSON.parse(JSON.stringify({ ...metadata,
-        ...(metadata[KEY] !== undefined ? { [KEY]: rememberPolicy(raw, policy) } : {}),
-      })) })
+      const next = JSON.parse(JSON.stringify({ ...current.metadata,
+        ...(metadata[AUTO_KEY] !== undefined ? { [AUTO_KEY]: metadata[AUTO_KEY] } : {}),
+        ...(saved !== undefined ? { [KEY]: rememberPolicy(raw, policy) } : {}),
+      }))
+      if (closed) throw new Error("Context manager unloaded before native maintenance commit")
+      guard?.()
+      await ctx.session.update({ sessionID: id, metadata: next })
     },
     createJob: async (purpose = "summary", ownerID, trigger = "auto") => {
       if (!ownerID) throw new Error("Summary job owner is required")

@@ -7,6 +7,7 @@ import { fixture } from "./host-fixture.ts"
 import { Controller } from "../src/controller.ts"
 import { remoteHost } from "../src/control.ts"
 import { KEY, settings } from "../src/config.ts"
+import { POLICY_VERSION } from "../src/ledger.ts"
 import { hash, historyHash } from "../src/context.ts"
 import { nativeFixture } from "../test/native-fixtures.ts"
 import { syntheticImage } from "../test/media-fixture.ts"
@@ -72,7 +73,8 @@ try {
   const continuedRemote = remoteHost(test.client, continued.id)
   const continuedInitial = await continuedRemote.load()
   const continuedController = new Controller(continuedRemote.host, continued.id, settings(continuedInitial.settings), continuedRemote.artifacts)
-  assert.deepEqual((await continuedController.load()).policy, continuedPolicy)
+  assert.deepEqual((await continuedController.load()).policy, { ...continuedPolicy, version: POLICY_VERSION })
+  assert.deepEqual((await test.client.session.get({ sessionID: continued.id })).metadata?.[KEY], continuedPolicy, "Reading an older ledger must not rewrite its saved operations or envelope")
   await test.client.session.synthetic({ sessionID: continued.id, text: "CONTINUE_AFTER_UPGRADE" })
   await test.client.session.wait({ sessionID: continued.id }, { signal: AbortSignal.timeout(45000) })
   assert.equal((await test.client.session.get({ sessionID: continued.id })).outcome, "succeeded")
@@ -93,7 +95,8 @@ try {
   const controller = new Controller(remote.host, session.id, settings(inspected.settings), remote.artifacts)
   const loaded = await controller.load()
   assert.equal(loaded.blocks[0].kind, "compact")
-  assert.deepEqual(loaded.policy, policy)
+  assert.deepEqual(loaded.policy, { ...policy, version: POLICY_VERSION })
+  assert.deepEqual((await test.client.session.get({ sessionID: session.id })).metadata?.[KEY], policy)
   assert.equal(historyHash(normalize.transcriptView(session, before)), historyHash(loaded.raw))
   const forked = await test.client.session.fork({ sessionID: session.id })
   const forkRemote = remoteHost(test.client, forked.id)
@@ -111,7 +114,8 @@ try {
   const forkWire = JSON.stringify(test.requests.at(-1)!.messages)
   assert.equal(forkWire.split(syntheticImage.uri).length - 1, 2, "Both hydrated user and tool media must reach the fork's provider")
   assert.doesNotMatch(forkWire, /(?:FAILED|INTERRUPTED)_REASONING_MUST_STAY_OMITTED/)
-  assert.deepEqual((await controller.load()).policy, policy)
+  assert.deepEqual((await controller.load()).policy, { ...policy, version: POLICY_VERSION })
+  assert.deepEqual((await test.client.session.get({ sessionID: session.id })).metadata?.[KEY], policy)
   await forkController.dispose()
   await forkRemote.close()
   const send = async (text: string) => {

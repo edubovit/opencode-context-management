@@ -38,7 +38,10 @@ export const ContextManager = Rpc.define({
     removeJob: { input: job, output: z.null(), errors },
     dump: { input: session, output: z.string(), errors },
   },
-  events: { changed: { schema: z.object({ sessionID: id }) } },
+  events: {
+    changed: { schema: z.object({ sessionID: id }) },
+    warning: { schema: z.object({ sessionID: id, pauseID: z.string().min(1), message: z.string().min(1) }).strict() },
+  },
 })
 
 export function errorMessage(error: unknown) {

@@ -1,4 +1,6 @@
-import { Plugin } from "@opencode/plugin"
+import { Plugin } from "@opencode/plugin/effect"
+import { fromPromise } from "@opencode/plugin/promise/adapter"
+import { Effect } from "effect"
 import { AGENT, EDIT_AGENT, KEY, VERSION, settings } from "./config.ts"
 import { blockMessages, hash, historyHash, activeMessages, project, readPolicy } from "./context.ts"
 import { Controller } from "./controller.ts"
@@ -13,14 +15,17 @@ import { protectedMessages } from "./history.ts"
 import { projectRequest } from "./projection.ts"
 import { FALLBACK_BASIS, tokenBasis, type TokenBasis } from "./tokens.ts"
 import { budgetScope, budgetUnits, estimateBudget, prepareBudget, recordRequest } from "./budget.ts"
-import { inputBudget } from "./auto-state.ts"
+import { inputBudget, type AutoWarning } from "./auto-state.ts"
 import { summaryProgress, updateProgress, type ProgressParts } from "./summary-progress.ts"
 
-export async function setupServer(ctx: PluginContext, store = new Storage(ctx.location.directory)) {
+export async function setupServer(ctx: PluginContext, store = new Storage(ctx.location.directory), logWarning: (warning: AutoWarning) => void | Promise<void> = warning => { console.warn("Context manager last resort:", JSON.stringify(warning)) }) {
   const config = settings(ctx.options)
   const adapter = pluginHost(ctx)
   const host = adapter.host
-  const auto = new Autocompaction(host, config, store)
+  const auto = new Autocompaction(host, config, store, async warning => {
+    await logWarning(warning)
+    await rpc.events.emit("warning", warning)
+  })
   let closed = false
   const budgetWrites = new Set<Promise<unknown>>()
   const progress = new Map<string, { owner: string; tokenizer: TokenBasis; parts: ProgressParts }>()
@@ -275,4 +280,13 @@ export async function setupServer(ctx: PluginContext, store = new Storage(ctx.lo
   }
 }
 
-export default Plugin.define({ id: "context-manager", setup: setupServer })
+export default Plugin.define({
+  id: "context-manager",
+  effect: ctx => Effect.gen(function* () {
+    const runtime = yield* Effect.context()
+    yield* fromPromise({
+      id: "context-manager",
+      setup: context => setupServer(context, undefined, warning => Effect.runPromiseWith(runtime)(Effect.logWarning("Context manager last resort:", warning))),
+    }).effect(ctx)
+  }),
+})

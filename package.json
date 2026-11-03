@@ -1,6 +1,6 @@
 {
   "name": "opencode-context-manager",
-  "version": "4.7.0",
+  "version": "4.8.0",
   "private": true,
   "type": "module",
   "engines": { "opencode": ">=2.2.5 <3", "node": ">=22" },
@@ -22,6 +22,7 @@
     "solid-js": ">=1.9.16 <2"
   },
   "dependencies": {
+    "effect": "4.0.6",
     "gpt-tokenizer": "4.1.0",
     "gpt-tokenizer-legacy": "npm:gpt-tokenizer@4.0.0",
     "@opencode/ai": "2.2.5",

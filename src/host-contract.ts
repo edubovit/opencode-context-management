@@ -12,7 +12,7 @@ export interface Host {
   messages(id: string): Promise<Envelope[]>
   progress?(id: string): Promise<SummaryProgress>
   idle(id: string): Promise<boolean>
-  update(id: string, metadata: Record<string, unknown>, expected?: Expected): Promise<void>
+  update(id: string, metadata: Record<string, unknown>, expected?: Expected, guard?: () => void): Promise<void>
   models(): Promise<Model[]>
   configured(): Promise<boolean>
   createJob(purpose?: HelperPurpose, ownerID?: string, trigger?: HelperTrigger): Promise<string>

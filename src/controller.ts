@@ -1,6 +1,6 @@
 import type { Model, ModelChoice, Session } from "./model.ts"
 import { KEY, type Settings } from "./config.ts"
-import { append, hash, historyHash, activeMessages, operation, project, readPolicy, summaryStart, type Block, type Envelope, type Operation, type Policy } from "./context.ts"
+import { append, hash, historyHash, activeMessages, operation, project, readPolicy, summaryRangeStart, splitOperation, validatePartition, type Block, type Envelope, type Operation, type Policy } from "./context.ts"
 import { validatePruning, type Isolation, type Pruning } from "./compaction.ts"
 import { generateSummary, inputEstimate, summaryEditPrompt, SUMMARIZER_SYSTEM, type SummaryReview } from "./summarize.ts"
 import type { Artifacts, RuntimeCapture } from "./storage.ts"
@@ -24,6 +24,7 @@ export class Controller {
   private jobTokenizer?: TokenBasis
   private cleanup?: Promise<void>
   private cancelled = false
+  private cancellation = 0
   private working = false
   private disposed = false
   constructor(readonly host: Host, readonly sessionID: string, readonly config: Settings, readonly storage: Artifacts, private readonly purpose: HelperPurpose = "summary", private readonly trigger: HelperTrigger = "manual") {}
@@ -46,6 +47,28 @@ export class Controller {
 
   async prune(ids: string[], options: Pruning = { reasoning: false, tools: "large" }) {
     return this.pruneRanges([ids], options)
+  }
+
+  async splitTurn(ids: string[], requested: number): Promise<number> {
+    await this.requireIdle()
+    const loaded = await this.load()
+    this.requireNotReverted(loaded.session)
+    const selected = resolveRanges(loaded.blocks, [ids])[0]
+    if (selected.length !== 1) throw new Error("Select exactly one ordinary turn or subturn to split")
+    const result = splitOperation(selected[0], requested, loaded.tokenizer, this.config.subturns)
+    await this.applyOperations([result.operation], { revision: loaded.policy.revision, fingerprint: loaded.fingerprint })
+    return result.parts
+  }
+
+  async mergeSubturns(ids: string[]): Promise<void> {
+    await this.requireIdle()
+    const loaded = await this.load()
+    this.requireNotReverted(loaded.session)
+    const selected = resolveRanges(loaded.blocks, [ids])[0]
+    const originID = selected[0]?.subturn?.originID
+    if (selected.length < 2 || !originID || selected.some(block => block.kind !== "turn" || block.subturn?.originID !== originID))
+      throw new Error("Select at least two ordinary sibling subturns from the same original USER turn; expand summaries or deleted ranges first")
+    await this.applyOperations([{ ...operation("partition", selected, undefined, loaded.tokenizer), cuts: [] }], { revision: loaded.policy.revision, fingerprint: loaded.fingerprint })
   }
 
   async pruneRanges(ranges: string[][], options: Pruning = { reasoning: false, tools: "large" }) {
@@ -109,10 +132,16 @@ export class Controller {
   async applyOperations(operations: Operation[], expected: Expected, guard?: () => void) {
     if (!operations.length) throw new Error("No operations to apply")
     const loaded = await this.checkSnapshot(expected)
-    this.requireUnprotected(loaded, operations.flatMap((op) => op.sourceIDs))
     const next = operations.reduce(append, loaded.policy)
     readPolicy({ id: this.sessionID, metadata: { [KEY]: next } })
-    project(activeMessages(loaded.raw, loaded.session.revert), next)
+    let checked = loaded.policy
+    let blocks = loaded.blocks
+    for (const op of operations) {
+      if (op.mode === "partition") validatePartition(op, blocks, loaded.tokenizer, this.config.subturns)
+      checked = append(checked, op)
+      blocks = project(activeMessages(loaded.raw, loaded.session.revert), checked)
+    }
+    this.requireUnprotected(loaded, operations.filter(op => op.mode !== "partition").flatMap((op) => op.sourceIDs))
     await this.save(next, expected, guard)
   }
 
@@ -158,7 +187,7 @@ export class Controller {
       this.requireNotReverted(loaded.session)
       const selected = resolveRanges(loaded.blocks, [ids])[0]
       this.requireUnprotected(loaded, ids)
-      if (!summaryStart(selected.flatMap((block) => block.messages))) throw new Error("Summary range must start with a visible user message or settled shell input")
+      if (!summaryRangeStart(selected)) throw new Error("Summary range must start with a visible user message, settled shell input or verified subturn")
       const op = operation(mode, selected, undefined, loaded.tokenizer)
       const chosen = override ?? this.defaultModel(loaded)
       if (!chosen) throw new Error("Choose a compaction model first")
@@ -191,6 +220,7 @@ export class Controller {
 
   async cancel() {
     this.cancelled = true
+    this.cancellation++
     if (this.working && this.job) await this.host.abort(this.job)
   }
 
@@ -274,14 +304,30 @@ export class Controller {
   }
 
   private async save(next: Policy, expected: Expected, guard?: () => void) {
+    const cancellation = this.cancellation
     await this.requireIdle()
     const [session, raw] = await Promise.all([this.host.session(this.sessionID), this.host.messages(this.sessionID)])
     this.requireNotReverted(session)
     if (readPolicy(session).revision !== expected.revision || historyHash(raw) !== expected.fingerprint)
       throw new Error("Session or policy changed; refresh before applying")
-    this.requireOpen()
-    guard?.()
-    await this.host.update(this.sessionID, { ...session.metadata, [KEY]: next }, { revision: expected.revision, fingerprint: expected.fingerprint })
+    const added = next.operations.slice(expected.revision)
+    if (added.some(op => op.mode === "partition")) {
+      const choice = sessionModel(session, raw)
+      const model = (await this.host.models()).find(model => model.id === choice?.modelID && model.providerID === choice.providerID)
+      const basis = tokenBasis(choice, model, this.config.tokenizer)
+      let policy = readPolicy(session)
+      for (const op of added) {
+        if (op.mode === "partition") validatePartition(op, project(activeMessages(raw), policy), basis, this.config.subturns)
+        policy = append(policy, op)
+      }
+    }
+    const authorize = () => {
+      this.requireOpen()
+      if (this.cancellation !== cancellation) throw new Error("Context operation cancelled")
+      guard?.()
+    }
+    authorize()
+    await this.host.update(this.sessionID, { ...session.metadata, [KEY]: next }, { revision: expected.revision, fingerprint: expected.fingerprint }, authorize)
   }
 }
 

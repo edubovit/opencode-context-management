@@ -1,7 +1,7 @@
 import { activeMessages, hash, historyHash, project, type Envelope, type Policy } from "./context.ts"
 import { retainPolicy } from "./retention.ts"
 
-const references = (policy: Policy) => [...policy.operations.flatMap((op) => op.sourceIDs), ...policy.turnEnds ?? []]
+const references = (policy: Policy) => [...policy.operations.flatMap((op) => op.sourceIDs), ...policy.turnEnds ?? [], ...policy.subturnOrigins ?? []]
 
 export function rememberPolicy(raw: Envelope[], policy: Policy): Policy {
   const active = activeMessages(raw)
@@ -56,5 +56,5 @@ export function revertPolicy(raw: Envelope[], policy: Policy, boundary?: string)
   const inherited = project(original, policy, undefined, unavailable)
   const ids = new Map(original.filter((message) => present.has(message.info.id) && !unavailable?.has(message.info.id)).map((message) => [message.info.id, message.info.id]))
   const next = retainPolicy(retained, inherited, policy, ids, policy.sessionID)
-  return rememberPolicy(retained, { ...next, epoch: hash([policy.epoch, policy.operations, policy.turnEnds, [...ids]]) })
+  return rememberPolicy(retained, { ...next, epoch: hash([policy.epoch, policy.operations, policy.turnEnds, ...(policy.subturnOrigins ? [policy.subturnOrigins] : []), [...ids]]) })
 }

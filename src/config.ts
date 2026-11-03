@@ -1,7 +1,7 @@
 import { z } from "zod"
 import { ENCODINGS } from "./tokens.ts"
 
-export const VERSION = "4.7.0"
+export const VERSION = "4.8.0"
 export const KEY = "opencode_context_manager"
 export const AGENT = "context-manager-summarizer"
 export const EDIT_AGENT = "context-manager-editor"
@@ -14,7 +14,15 @@ const schema = z.strictObject({
     estimateMultiplier: z.number().min(1).default(1.3),
     lastResortKeepTokens: integer(0).default(20000),
     minRangeTokens: integer(0).default(10000),
+    splitThresholdTokens: integer(1).default(100000),
+    maxSubturnTokens: integer(1).default(50000),
   }).prefault({}),
+  subturns: z.strictObject({
+    minTokens: integer(1).default(10000),
+    minSplitTokens: integer(1).default(50000),
+  }).prefault({}).refine(value => value.minTokens <= value.minSplitTokens / 2, {
+    error: "must be at least twice subturns.minTokens", path: ["minSplitTokens"],
+  }),
   ui: z.strictObject({ maxLinesPerTurn: integer(3).default(4) }).prefault({}),
   spill: z.strictObject({
     maxLines: integer(2).default(2000),
@@ -33,7 +41,11 @@ const schema = z.strictObject({
   summarizer: z.strictObject({
     providerID: name.optional(), modelID: name.optional(), variant: name.optional(),
   }).prefault({}).refine(value => !!value.providerID === !!value.modelID, "Set both summarizer.providerID and summarizer.modelID, or neither"),
-}).prefault({})
+}).prefault({}).refine(value => value.autocompaction.splitThresholdTokens >= value.subturns.minSplitTokens, {
+  error: "must be at least subturns.minSplitTokens", path: ["autocompaction", "splitThresholdTokens"],
+}).refine(value => value.autocompaction.maxSubturnTokens >= value.subturns.minTokens, {
+  error: "must be at least subturns.minTokens", path: ["autocompaction", "maxSubturnTokens"],
+})
 
 export type Settings = z.infer<typeof schema>
 

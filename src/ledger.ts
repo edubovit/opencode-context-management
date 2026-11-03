@@ -3,7 +3,7 @@ import { KEY } from "./config.ts"
 import type { Session } from "./model.ts"
 import { ENCODINGS, TOKENIZER_LIBRARIES } from "./tokens.ts"
 
-export const POLICY_VERSION = 13
+export const POLICY_VERSION = 14
 export type Mode = "tool-prune" | "tool-prune-all" | "tool-delete" | "prune-reason" | "compact" | "brief" | "delete"
 
 const count = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)
@@ -22,10 +22,11 @@ const pruneTargets = z.array(z.object({ operationID: z.string().min(1), sourceID
     return new Set(sources).size === sources.length
   }, "Overlapping pruning restoration targets")
 const operation = z.object({
-  id: z.string().min(1), mode: z.enum(["tool-prune", "tool-prune-all", "tool-delete", "prune-reason", "compact", "brief", "delete", "expand", "revise"]),
+  id: z.string().min(1), mode: z.enum(["tool-prune", "tool-prune-all", "tool-delete", "prune-reason", "compact", "brief", "delete", "expand", "revise", "partition"]),
   sourceIDs: ids, beforeHash: z.string().min(1), beforeChars: count, beforeTokens: count, tokenizer, created: count,
   summary: z.string().refine((text) => text.trim().length > 0, "Empty summary").optional(), rule: rule.optional(), summaryIDs: ids.optional(), targetID: z.string().min(1).optional(),
   pruneReason: z.literal(true).optional(), checkpoint: z.literal(true).optional(), pruneTargets: pruneTargets.optional(), deletedIDs: ids.optional(),
+  cuts: z.array(z.string().min(1)).optional(),
 }).strict().superRefine((op, ctx) => {
   const reject = (message: string) => ctx.addIssue({ code: "custom", message })
   if (op.mode === "tool-prune" && !op.rule) reject("Missing saved token pruning rule")
@@ -40,11 +41,22 @@ const operation = z.object({
   if (op.pruneTargets && op.mode !== "expand") reject("Pruning restoration targets require expansion")
   if (op.pruneTargets?.some((target) => target.sourceIDs.some((id) => !op.sourceIDs.includes(id)))) reject("Pruning restoration target is outside the selected range")
   if (op.checkpoint && op.mode !== "compact") reject("Invalid last-resort checkpoint")
+  if (op.mode === "partition") {
+    if (!op.cuts) reject("Missing structural partition cuts")
+    if (op.summary || op.rule || op.summaryIDs || op.targetID || op.pruneReason || op.checkpoint || op.pruneTargets || op.deletedIDs)
+      reject("Structural partitions cannot change content or restoration layers")
+    let previous = -1
+    for (const cut of op.cuts ?? []) {
+      const index = op.sourceIDs.indexOf(cut)
+      if (index <= previous || index >= op.sourceIDs.length - 1) reject("Partition cuts must be ordered internal source endpoints")
+      previous = index
+    }
+  } else if (op.cuts !== undefined) reject("Partition cuts require a structural operation")
 })
 
 export type Operation = z.infer<typeof operation>
 export const policySchema = z.object({
-  version: z.literal(POLICY_VERSION), sessionID: z.string().min(1), revision: count, operations: z.array(operation), turnEnds: ids.optional(),
+  version: z.literal(POLICY_VERSION), sessionID: z.string().min(1), revision: count, operations: z.array(operation), turnEnds: ids.optional(), subturnOrigins: ids.optional(),
   sources: z.array(z.object({ id: z.string().min(1), hash: z.string().length(64), user: z.boolean(), created: count.optional() }).strict()).nonempty().optional(), epoch: z.string().min(1).optional(),
 }).strict().superRefine((policy, ctx) => {
   if (policy.revision !== policy.operations.length || new Set(policy.operations.map((op) => op.id)).size !== policy.operations.length)
@@ -67,9 +79,14 @@ export function readPolicy(session: Pick<Session, "id" | "metadata">): Policy {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid context-manager state")
   if (!("sessionID" in value) || value.sessionID !== session.id)
     throw new Error("Context-manager ledger belongs to another session or has no owner; original data is preserved")
-  if (!("version" in value) || ![7, 8, 9, 10, 11, 12, POLICY_VERSION].includes(Number(value.version)) || typeof value.version !== "number")
-    throw new Error("Unsupported context-manager ledger; only V2 formats 7–13 are supported. Original data is preserved.")
+  if (!("version" in value) || ![7, 8, 9, 10, 11, 12, 13, POLICY_VERSION].includes(Number(value.version)) || typeof value.version !== "number")
+    throw new Error("Unsupported context-manager ledger; only V2 formats 7–14 are supported. Original data is preserved.")
   if (value.version === POLICY_VERSION) return policySchema.parse(value)
+  if ("subturnOrigins" in value) throw new Error("Subturn provenance requires ledger format 14; original data is preserved")
+  if ("operations" in value && Array.isArray(value.operations) && value.operations.some((op: unknown) =>
+    op !== null && typeof op === "object" && ("cuts" in op || ("mode" in op && op.mode === "partition"))))
+    throw new Error("Structural partitions require ledger format 14; original data is preserved")
+  if (value.version === 13) return policySchema.parse({ ...value, version: POLICY_VERSION })
   if (value.version === 12) {
     if ("sources" in value || "epoch" in value) throw new Error("Revert provenance requires ledger format 13")
     return policySchema.parse({ ...value, version: POLICY_VERSION })

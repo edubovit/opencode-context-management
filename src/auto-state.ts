@@ -12,6 +12,7 @@ export type Pause = {
   accounting?: BudgetReading
 }
 export type AutoState = { strategy: Strategy; pause?: Pause }
+export type AutoWarning = { sessionID: string; pauseID: string; message: string }
 export type AutoCommand = { action: "strategy"; strategy: Strategy } | { action: "run" | "resume" | "abort"; pauseID: string; model?: ModelChoice }
 export type AutoControl = {
   state(sessionID: string): Promise<AutoState>

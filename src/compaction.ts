@@ -1,7 +1,7 @@
 export type ToolPruning = "large" | "all" | "delete"
 export type Pruning = { reasoning: boolean; tools?: ToolPruning }
 export type Isolation = "off" | "head" | "total"
-export type Compaction = ({ kind: "prune" } & Pruning) | { kind: "summary"; mode: "compact" | "brief"; isolation?: Isolation } | { kind: "delete" }
+export type Compaction = ({ kind: "prune" } & Pruning) | { kind: "summary"; mode: "compact" | "brief"; isolation?: Isolation } | { kind: "delete" } | { kind: "split" } | { kind: "merge" }
 
 export const COMPACTION_MODES = [
   { name: "Prune reasoning", description: "Remove reasoning; keep prompts, calls and visible responses" },
@@ -13,15 +13,20 @@ export const COMPACTION_MODES = [
   { name: "Delete", description: "Remove selected ranges from effective context; Ctrl+E restores them" },
   { name: "Isolated summarization (head included)", description: "Summary sees preceding context and the range only; no later or runtime background" },
   { name: "Isolated summarization (total)", description: "Summary sees only the selected range; no preceding, later or runtime background" },
+  { name: "Split into subturns", description: "Split one ordinary turn/subturn at tool boundaries; asks for a count" },
+  { name: "Merge subturns", description: "Join one contiguous range of sibling subturns from the same original turn" },
 ] as const
 
 export function selectedModes(value: Compaction): number[] {
+  if (value.kind === "split") return [9]
+  if (value.kind === "merge") return [10]
   if (value.kind === "delete") return [6]
   if (value.kind === "summary") return [value.mode === "compact" ? 4 : 5, ...(value.isolation === "head" ? [7] : value.isolation === "total" ? [8] : [])]
   return [...(value.reasoning ? [0] : []), ...(value.tools ? [{ large: 1, all: 2, delete: 3 }[value.tools]] : [])]
 }
 
 export function toggleMode(value: Compaction, index: number): Compaction {
+  if (index === 9 || index === 10) return { kind: index === 9 ? "split" : "merge" }
   if (index === 7 || index === 8) {
     if (value.kind !== "summary") return value
     const isolation = index === 7 ? "head" : "total"

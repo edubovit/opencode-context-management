@@ -25,9 +25,13 @@ export function remoteHost(client: OpenCodeClient, sessionID: string, readOnly =
   const auto = {
     state: async (_id: string) => readOnly ? (await load()).auto : call((options) => rpc.state({ sessionID }, options)),
     command: async (_id: string, command: Parameters<NonNullable<Host["auto"]>["command"]>[1]) => { writable(); return call((options) => rpc.command({ sessionID, command }, options)) },
-    commit: async (_id: string, metadata: Record<string, unknown>, expected: Parameters<NonNullable<Host["auto"]>["commit"]>[2]) => {
+    commit: async (_id: string, metadata: Record<string, unknown>, expected: Parameters<NonNullable<Host["auto"]>["commit"]>[2], guard?: () => void) => {
       writable()
-      await call((options) => rpc.commit({ sessionID, policy: metadata[KEY] as Policy, expected }, options))
+      await call((options) => {
+        if (closed) throw new Error("Inspector is closed")
+        guard?.()
+        return rpc.commit({ sessionID, policy: metadata[KEY] as Policy, expected }, options)
+      })
     },
   }
   const host: Host = {
@@ -39,9 +43,9 @@ export function remoteHost(client: OpenCodeClient, sessionID: string, readOnly =
     models: async () => (await load()).models,
     idle: async () => readOnly ? (await load() as Observation).idle : call((options) => rpc.idle({ sessionID }, options)),
     configured: async () => { await load(); return true },
-    update: async (_id, metadata, expected) => {
+    update: async (_id, metadata, expected, guard) => {
       if (!expected) throw new Error("Missing maintenance source check")
-      await auto.commit(sessionID, metadata, expected)
+      await auto.commit(sessionID, metadata, expected, guard)
     },
     createJob: (purpose = "summary") => {
       writable()

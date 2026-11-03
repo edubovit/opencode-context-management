@@ -17,7 +17,7 @@ export function Hotkeys(props: { api: InspectorUI; lines: HotkeyLine[] }) {
 
 export const helpText = `RANGE MENU HOTKEYS
 
-SELECT & REDUCE
+SELECT & CHANGE
 Space starts/finishes a range; inside a closed range, removes it.
 Arrows move the cursor. Esc cancels an open range, then returns.
 c configures actions for selected ranges.
@@ -31,6 +31,10 @@ Isolated (total) sends selection only. Both omit runtime/later background.
 Isolation defaults off; toggle one option with Space after choosing a summary mode.
 Delete removes each selected range entirely, leaving a zero-content DELETED row.
 No model call for deletion/pruning. Stored history is unchanged.
+Split into subturns: select one ordinary turn/subturn, then enter a count ≥2.
+Tool boundaries and configured minimum sizes may reduce the count. Esc cancels.
+Merge subturns: select one contiguous range of siblings from the same original turn.
+Split/merge make no model calls. Turn 3.1/3.2 share original Turn 3.
 
 READ & EXPAND
 Enter reads the hovered USER or SUMMARY fullscreen.
@@ -60,7 +64,8 @@ The observer refreshes automatically. Esc leaves without stopping or resuming wo
 AUTOMATIC CLEANUP
 a saves a strategy without running it. g runs AUTO while paused.
 Paused exit: s/Esc stays; r resumes only below threshold; a aborts.
-Manual edits protect the active turn. AUTO last resort may summarize its prefix,
+Splitting may include the active turn; after splitting, only its final subturn is protected.
+Other manual edits protect the active turn. AUTO last resort may summarize its prefix,
 preserving the configured recent tail. Subagents cannot use MANUAL.
 Incomplete batch: g retries failed ranges; m/t changes model/effort; Esc discards.
 There is no global Undo/Redo or ledger rewind.`

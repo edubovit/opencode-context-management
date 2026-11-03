@@ -47,6 +47,26 @@ test("default tail preserves at least 20000 local tokens inside one unfinished t
   assert.deepEqual(blockMessages([...range.selected, ...range.tail]), raw)
 })
 
+test("last resort accepts a verified subturn after the original prompt subturn is deleted", () => {
+  const source = messages("ses_test", 6)
+  const raw = [source[0], ...source.filter(message => message.info.role === "assistant")]
+  let policy = append(emptyPolicy("ses_test"), { ...operation("partition", turns(raw)), cuts: [raw[1].info.id, raw[3].info.id] })
+  policy = append(policy, operation("delete", [project(raw, policy)[0]]))
+  const before = project(raw, policy)
+  const original = historyHash(blockMessages(before))
+  const range = lastResortRange(before, 1000, FALLBACK_BASIS)
+  assert.equal(range.selected[0].kind, "deleted")
+  assert.equal(range.selected[1].subturn?.originID, raw[0].info.id)
+  const op = { ...operation("compact", range.selected), checkpoint: true as const, summary: "Continue from the retained subturn facts" }
+  const next = append(policy, op)
+  const compacted = project(raw, next)
+  assert.deepEqual(compacted.slice(1), range.tail)
+  const restored = project(raw, append(next, operation("expand", [compacted[0]])))
+  assert.equal(historyHash(blockMessages(restored)), original)
+  const unverified = before.map(({ subturn: _subturn, ...block }) => block)
+  assert.throws(() => lastResortRange(unverified, 1000, FALLBACK_BASIS), /prefix must begin/)
+})
+
 test("repeated partial-turn checkpoints and nested expansion retain exact source boundaries", () => {
   const source = messages("ses_test", 6)
   const raw = [source[0], ...source.filter((message) => message.info.role === "assistant")]
@@ -76,7 +96,7 @@ test("active-prefix checkpoint replays after tool continuation, nesting, revisio
   const range = lastResortRange(project(active, policy), 1, FALLBACK_BASIS)
   const checkpoint = { ...operation("compact", range.selected), checkpoint: true as const, summary: "Unfinished task: preserve ROOT_FACT and continue validation" }
   policy = append(policy, checkpoint)
-  assert.equal(policy.version, 13)
+  assert.equal(policy.version, 14)
   assert.deepEqual(readPolicy({ id: session.id, metadata: { [KEY]: policy } }), policy)
   const output = projectRequest(native, raw, canonical, policy)
   assert.equal(output.at(-1), canonical.at(-1))

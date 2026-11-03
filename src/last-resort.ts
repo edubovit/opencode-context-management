@@ -1,7 +1,7 @@
 import type { Host } from "./host-contract.ts"
 import type { ModelChoice } from "./model.ts"
 import type { Settings } from "./config.ts"
-import { blockMessages, serialize, splitAfter, summaryStart, type Block } from "./context.ts"
+import { blockMessages, serialize, splitAfter, summaryRangeStart, type Block } from "./context.ts"
 import { contentTokens } from "./metrics.ts"
 import { inputBudget } from "./auto-state.ts"
 import { inputEstimate } from "./summarize.ts"
@@ -24,7 +24,7 @@ export function lastResortRange(blocks: Block[], keep: number, basis: TokenBasis
   const divided = splitAfter(blocks, end)
   const boundary = divided.findIndex((block) => block.sourceIDs.at(-1) === end) + 1
   const selected = divided.slice(0, boundary)
-  if (!summaryStart(blockMessages(selected))) throw new Error("Last-resort prefix must begin with a visible user message or settled shell input")
+  if (!summaryRangeStart(selected)) throw new Error("Last-resort prefix must begin with a visible user message, settled shell input or verified subturn")
   if (blockMessages(selected).some((message) => message.info.kind === "compaction" || message.parts.some((part) => part.type === "tool" && ["pending", "running"].includes(part.state.status)))) throw new Error("Last resort cannot replace native checkpoints or unsettled tool calls")
   return { selected, tail: divided.slice(boundary), tokens }
 }

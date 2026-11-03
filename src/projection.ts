@@ -10,9 +10,13 @@ type Entry = { message: Message; sourceIDs: string[]; anchor: number; slot: numb
 
 export function projectRequest(native: readonly SessionMessageInfo[], raw: Envelope[], incoming: readonly Message[], policy: Policy): Message[] {
   if (!policy.operations.length) return [...incoming]
+  if (policy.operations.every(op => op.mode === "partition")) {
+    project(activeMessages(raw), policy)
+    return [...incoming]
+  }
   const active = activeMessages(raw)
   const selectable = new Set(active.map((message) => message.info.id))
-  const edited = new Set(policy.operations.flatMap((op) => op.sourceIDs))
+  const edited = new Set(policy.operations.filter(op => op.mode !== "partition").flatMap((op) => op.sourceIDs))
   const originals = new Map(native.map((message) => [message.id, message]))
   const tools = new Map<string, Map<string, Tool>>()
   for (const message of native) if (message.type === "assistant") {
@@ -79,6 +83,7 @@ export function projectRequest(native: readonly SessionMessageInfo[], raw: Envel
     return removed
   }
   project(active, policy, (op, selected) => {
+    if (op.mode === "partition") return
     for (const block of selected) if (block.kind === "turn") {
       for (const message of block.messages) {
         const source = originals.get(message.info.id)
@@ -166,6 +171,7 @@ export function validateNativePolicy(native: readonly SessionMessageInfo[], raw:
   const source = new Map(native.map((message) => [message.id, message]))
   const active = activeMessages(raw)
   project(active, policy, (op, selected) => {
+    if (op.mode === "partition") return
     for (const block of selected) {
       if (block.kind !== "turn") continue
       for (const id of block.sourceIDs) {

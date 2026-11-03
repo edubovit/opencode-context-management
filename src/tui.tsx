@@ -1,5 +1,6 @@
 /** @jsxImportSource @opentui/solid */
 import { Plugin } from "@opencode/plugin/tui"
+import type { Context } from "@opencode/plugin/tui/context"
 import { createSignal, onCleanup, onMount, Show } from "solid-js"
 import { useKeyboard } from "@opentui/solid"
 import { inputBlocked, type InspectorUI } from "./ui.ts"
@@ -9,6 +10,7 @@ import { Controller } from "./controller.ts"
 import { remoteHost } from "./control.ts"
 import { settings, VERSION } from "./config.ts"
 import { AUTO_KEY, type AutoControl, type AutoState } from "./auto-state.ts"
+import { ContextManager } from "./rpc.ts"
 
 export default Plugin.define({
   id: "context-manager",
@@ -70,9 +72,32 @@ export default Plugin.define({
       },
     }] }))
     const unsubscribe = watchSuspensions(api, async (id) => remoteHost(api.client, id).host.auto)
-    return async () => { unregister(); unregisterAgents(); unsubscribe(); await Promise.allSettled([...remotes].map((remote) => remote.close())); remotes.clear() }
+    const unwarn = watchWarnings(api)
+    return async () => { unregister(); unregisterAgents(); unsubscribe(); unwarn(); await Promise.allSettled([...remotes].map((remote) => remote.close())); remotes.clear() }
   },
 })
+
+export function watchWarnings(api: Pick<Context, "client" | "data" | "ui">) {
+  const seen = new Set<string>()
+  let closed = false
+  let generation = 0
+  let off = () => {}
+  const subscribe = () => {
+    if (closed) return
+    off()
+    const current = ++generation
+    off = api.client.rpc(ContextManager).events.on("warning", event => {
+      const warning = event.data
+      const key = `${warning.sessionID}:${warning.pauseID}`
+      if (closed || generation !== current || seen.has(key)) return
+      seen.add(key)
+      api.ui.toast.show({ title: "Last-resort context cleanup", message: warning.message, sessionID: warning.sessionID, variant: "warning" })
+    })
+  }
+  subscribe()
+  const reconnect = api.data.on("server.connected", subscribe)
+  return () => { closed = true; off(); reconnect(); seen.clear() }
+}
 
 export function watchSuspensions(api: InspectorUI, control: (sessionID: string) => Promise<AutoControl | undefined>) {
   const seen = new Map<string, string>()

@@ -13,7 +13,7 @@ import { TurnReader } from "./turn-reader.tsx"
 import { RangeList } from "./range-list.tsx"
 import { ContextOverview } from "./context-overview.tsx"
 import { budgetView, compactCount } from "./inspector-view.ts"
-import { CompactionMenu } from "./compaction-menu.tsx"
+import { CompactionMenu, SplitCount } from "./compaction-menu.tsx"
 import { COMPACTION_MODES, selectedModes, toggleMode, type Compaction, type Isolation } from "./compaction.ts"
 import { rangePreview, rangeToolStats } from "./range-rows.ts"
 import { helpText, Hotkeys, type HotkeyLine } from "./tui-help.tsx"
@@ -61,6 +61,8 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
   const [configuring, setConfiguring] = createSignal(false)
   const [compaction, setCompaction] = createSignal<Compaction>({ kind: "summary", mode: "compact" })
   const [compactionIndex, setCompactionIndex] = createSignal(4)
+  const [splitting, setSplitting] = createSignal<string[]>()
+  const [splitCount, setSplitCount] = createSignal("")
   let detailsScroll: ScrollBoxRenderable | undefined
   const automatic = () => auto().pause?.phase === "auto"
   const canResume = () => auto().pause?.phase === "manual" && auto().pause!.tokens <= auto().pause!.threshold
@@ -74,6 +76,16 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
   onCleanup(() => { alive = false; popMode(); void Promise.all([summaries.dispose(), props.controller.dispose()]).catch((error) => api.ui.toast.show({ message: String(error), variant: "warning" })) })
   const blocks = () => loaded()?.blocks ?? []
   const sourceTurns = createMemo(() => turnIndex(activeMessages(loaded()?.raw ?? [], loaded()?.session.revert)))
+  const blockLabels = createMemo(() => {
+    const siblings = new Map<string, number>()
+    return blocks().map(block => {
+      const origin = block.subturn?.originID
+      if (!origin) return rangeLabel(block.sourceIDs, sourceTurns())
+      const ordinal = (siblings.get(origin) ?? 0) + 1
+      siblings.set(origin, ordinal)
+      return `${rangeLabel([origin], sourceTurns())}.${ordinal}`
+    })
+  })
   const ranges = () => visibleRanges(selection(), cursor())
   const inspected = () => selectedBlocks(blocks(), ranges())
   const localCounts = createMemo(() => distribution(blocks(), loaded()?.runtime, basis(), unit()))
@@ -190,14 +202,35 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
     await finishBatch()
   }
   const openCompaction = () => {
+    if (readOnly || busy() || automatic()) return
     try { selectedIDs() } catch (error) { setNotice(error instanceof Error ? error.message : String(error)); return }
     setCompactionIndex(selectedModes(compaction())[0] ?? 0)
     setPane("list")
     setConfiguring(true)
   }
   const runCompaction = async () => {
+    if (readOnly || automatic()) return
     const value = compaction()
     if (!selectedModes(value).length) throw new Error("Select at least one compaction mode")
+    if (value.kind === "split" || value.kind === "merge") {
+      const ids = selectedIDs()
+      const selected = inspected()
+      if (value.kind === "split") {
+        if (ids.length !== 1 || selected.length !== 1 || selected[0].kind !== "turn")
+          throw new Error("Select exactly one ordinary turn or subturn to split")
+        setSplitCount("")
+        setSplitting(ids[0])
+        return
+      }
+      const origin = selected[0]?.subturn?.originID
+      if (ids.length !== 1 || selected.length < 2 || !origin || selected.some(block => block.subturn?.originID !== origin))
+        throw new Error("Select one contiguous range of sibling subturns to merge")
+      setConfiguring(false)
+      await props.controller.mergeSubturns(ids[0])
+      await refresh(ids, ids[0])
+      setNotice("Subturns merged. No model call; stored history is unchanged.")
+      return
+    }
     setConfiguring(false)
     if (value.kind === "summary") { await beginSummary(value.mode, value.isolation); return }
     const ids = selectedIDs()
@@ -211,6 +244,21 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
     await refresh(ids)
     setNotice("Pruning applied. Ctrl+E restores one layer; stored history is unchanged.")
   }
+  const splitTurn = async () => {
+    if (readOnly || automatic()) return
+    const ids = splitting()!
+    const value = splitCount().trim()
+    const requested = Number(value)
+    if (!/^\d+$/.test(value) || !Number.isSafeInteger(requested) || requested < 2)
+      throw new Error("Enter a whole subturn count of at least 2")
+    const actual = await props.controller.splitTurn(ids, requested)
+    setSplitting(undefined)
+    setConfiguring(false)
+    await refresh([ids], ids)
+    setNotice(actual < requested
+      ? `Split into ${actual} subturns; requested ${requested}. Count reduced for tool boundaries/minimum size.`
+      : `Split into ${actual} subturns. No model call; stored history is unchanged.`)
+  }
   const openReader = async () => {
     const block = blocks()[cursor()]
     if (!block) throw new Error("Hover a turn or summary and press Enter")
@@ -219,7 +267,7 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
       setReader({ kind: "summary", editor: new SummaryEditor(props.controller, await props.controller.summary(block.summaryID)) })
       return
     }
-    setReader({ kind: "turn", block, label: rangeLabel(block.sourceIDs, sourceTurns()) })
+    setReader({ kind: "turn", block, label: blockLabels()[cursor()] })
   }
   const closeSummary = async () => {
     const current = reader()!
@@ -294,9 +342,20 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
       return
     }
     if (reader()) return
+    if (splitting()) {
+      if (busy() || automatic()) { key.preventDefault(); return }
+      if (key.name === "escape") {
+        key.preventDefault()
+        setSplitting(undefined)
+        setNoticeError(false)
+        setNotice("Split cancelled; context unchanged.")
+      }
+      if (key.name === "return") { key.preventDefault(); void run(splitTurn) }
+      return
+    }
     if (configuring()) {
       key.preventDefault()
-      if (busy()) return
+      if (busy() || automatic()) return
       if (key.name === "escape") setConfiguring(false)
       if (key.ctrl || key.meta) return
       if (key.name === "up" || key.name === "k") setCompactionIndex(Math.max(0, compactionIndex() - 1))
@@ -363,7 +422,7 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
     const detail = rowDetails()[index]
     const protectedTurn = auto().pause && block.sourceIDs.some((id) => (auto().pause!.protectedIDs ?? [auto().pause!.userID]).includes(id))
     return {
-      title: `${selected ? "●" : "○"} ${tag ? `${tag} · ` : ""}${rangeLabel(block.sourceIDs, sourceTurns())} · ${block.kind === "deleted" ? "DELETED" : block.kind === "turn" ? block.messages[0]?.info.role === "user" ? "USER" : block.messages[0]?.info.kind === "shell" ? "SHELL" : block.messages[0]?.info.kind === "assistant" ? "CONTINUATION" : "HOST CONTEXT" : "SUMMARY"}`,
+      title: `${selected ? "●" : "○"} ${tag ? `${tag} · ` : ""}${blockLabels()[index]} · ${block.kind === "deleted" ? "DELETED" : block.kind === "turn" ? block.messages[0]?.info.role === "user" ? "USER" : block.messages[0]?.info.kind === "shell" ? "SHELL" : block.messages[0]?.info.kind === "assistant" ? "CONTINUATION" : "HOST CONTEXT" : "SUMMARY"}`,
       size: detail.size,
       stats: [protectedTurn ? "PROTECTED" : !block.closed ? "Unfinished" : "", block.kind === "turn" ? rangeToolStats(detail.status) : ""].filter(Boolean).join(" · ") || undefined,
       preview: detail.preview,
@@ -417,15 +476,16 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
     : automatic() ? [["Automatic compaction in progress"], [{ key: "Esc", label: "exit choices / abort run" }]]
     : picker() ? [[{ key: "Up/Down", label: "select" }, { key: "Enter", label: "confirm" }, { key: "Esc", label: "cancel" }, "type to filter"]]
     : help() ? [[{ key: "Esc", label: "close help" }]]
+    : splitting() ? busy() ? [["Splitting subturns…"]] : [[{ key: "Enter", label: "split" }, { key: "Esc", label: "cancel" }, "type a count ≥2"]]
     : busy() ? [[{ key: "Esc", label: runningBatch() ? "cancel agents" : "cancel requests" }]]
     : runningBatch() ? [[{ key: "g", label: "retry failed" }, { key: "m/t", label: "model/effort" }, { key: "Esc", label: "discard" }]]
     : configuring() ? [[{ key: "Up/Down", label: "mode" }, { key: "Space", label: "toggle" }, { key: "Enter", label: "run" }], [{ key: "m/t", label: "model/effort" }, { key: "Esc", label: "cancel" }]]
     : narrow() ? [
-      [{ key: "Space", label: "select" }, { key: "c", label: "reduce" }, { key: "Enter", label: "read" }],
+      [{ key: "Space", label: "select" }, { key: "c", label: "actions" }, { key: "Enter", label: "read" }],
       [{ key: "Ctrl+E", label: "restore" }, { key: "v", label: "details" }, { key: "Tab", label: "pane" }],
       [{ key: "a", label: "auto" }, { key: "s", label: "subagents" }, { key: "?", label: "help" }, { key: "Esc", label: "back" }],
     ] : [
-      [{ key: "Space", label: "select" }, { key: "c", label: "reduce" }, { key: "Enter", label: "read" }, { key: "Ctrl+E", label: "restore" }],
+      [{ key: "Space", label: "select" }, { key: "c", label: "actions" }, { key: "Enter", label: "read" }, { key: "Ctrl+E", label: "restore" }],
       [{ key: "v", label: "details" }, { key: "Tab", label: "pane" }, { key: "a", label: "auto" }, { key: "s", label: "subagents" }, { key: "?", label: "help" }, { key: "Esc", label: "back" }],
     ]
   const batchStatus = () => {
@@ -471,7 +531,9 @@ export function Inspector(props: { api: InspectorUI; sessionID: string; controll
               title={runningBatch() ? "Summaries" : `Conversation · ${unit() === "tokens" ? "tokens" : "chars"}`} paddingLeft={1} paddingRight={1}>
                 <Show when={runningBatch()} fallback={
                   <Show when={configuring()} fallback={<RangeList api={api} rows={rows()} maxLines={props.controller.config.ui.maxLinesPerTurn} selectedIndex={cursor()} onChange={setCursor} focused={!busy() && (readOnly || !automatic()) && !exitDialog() && !strategyPicker() && !picker() && pane() === "list"} />}>
-                    <CompactionMenu api={api} value={compaction()} index={compactionIndex()} toggle={(index) => { if (!picker() && !inputBlocked(api)) setCompaction(toggleMode(compaction(), index)) }} />
+                    <Show when={splitting()} fallback={<CompactionMenu api={api} value={compaction()} index={compactionIndex()} toggle={(index) => { if (!readOnly && !busy() && !automatic() && !picker() && !inputBlocked(api)) setCompaction(toggleMode(compaction(), index)) }} />}>
+                      <SplitCount api={api} value={splitCount()} change={setSplitCount} focused={!busy() && !automatic() && !inputBlocked(api)} minimum={props.controller.config.subturns.minTokens} sourceMinimum={props.controller.config.subturns.minSplitTokens} />
+                    </Show>
                   </Show>
                 }>
                    <text height={1} fg={api.theme.text.base}>{batchHeading()}</text>
